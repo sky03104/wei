@@ -1,0 +1,29 @@
+# 像素風娃娃機圖案（16 × 20）
+# 這是唯一的權威版本：tools/make-icons.py 與 docs/app.js 都必須跟這份一致，
+# 改圖案後請跑 node tools/check-pixelmap.js 確認兩邊沒有走鐘。
+#
+# 色鍵：
+#   .  透明          K  外框（深）      B  機身（主色，依機台顏色替換）
+#   L  機身亮部      G  玻璃窗          C  金屬（吊臂與爪子）
+#   W  高光          P  娃娃（粉）      Y  娃娃（黃）
+#   S  狀態燈（依機台狀態替換）
+................
+..KKKKKKKKKKKK..
+..KLLLLLLLLLLK..
+..KLBBBBBBBBLK..
+.KKKKKKKKKKKKKK.
+.KBGGGGGGGGGGBK.
+.KBGCCCCCCCCGBK.
+.KBGGGGCCGGGGBK.
+.KBGGGCCCCGGGBK.
+.KBGGGCGGCGGGBK.
+.KBGGGGGGGGGGBK.
+.KBGGGGGGGGGGBK.
+.KBGGPPGGYYGGBK.
+.KBGPPPPGYYYYBK.
+.KKKKKKKKKKKKKK.
+.KBBBBBBBBBBBBK.
+.KBSSBBBBBBWWBK.
+.KBBBBBBBBBBBBK.
+.KKKKKKKKKKKKKK.
+..KK........KK..

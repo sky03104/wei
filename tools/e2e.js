@@ -1,0 +1,282 @@
+/**
+ * tools/e2e.js — 用真的瀏覽器操作前端
+ *
+ *   node tools/dev-server.js &
+ *   node tools/e2e.js
+ *
+ * 走完三種角色的主要流程，順便把每個畫面截圖下來。
+ * 任何 console 錯誤或未攔截的例外都會讓測試失敗 —— 前端的破圖多半先在這裡出現。
+ */
+
+'use strict';
+
+const path = require('path');
+const { chromium } = require(process.env.PW_PATH || '/opt/node22/lib/node_modules/playwright');
+
+const BASE = process.env.BASE_URL || 'http://localhost:8080';
+const SHOTS = process.env.SHOT_DIR || '/tmp/shots';
+
+const results = [];
+function check(name, fn) {
+  return Promise.resolve()
+    .then(fn)
+    .then(() => { results.push('  ✅ ' + name); })
+    .catch((err) => { results.push('  ❌ ' + name + ' → ' + err.message); });
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg || '斷言失敗');
+}
+
+async function main() {
+  const browser = await chromium.launch({ args: ['--no-sandbox'] });
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },   // iPhone 直式
+    deviceScaleFactor: 2,
+    locale: 'zh-TW'
+  });
+
+  const consoleErrors = [];
+  context.on('page', (p) => {
+    p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    p.on('pageerror', (e) => { consoleErrors.push('pageerror: ' + e.message); });
+  });
+
+  const page = await context.newPage();
+  const shot = (name) => page.screenshot({ path: path.join(SHOTS, name + '.png'), fullPage: true });
+
+  async function login(username, password, remember) {
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.waitForSelector('form');
+    await page.fill('input[autocomplete="username"]', username);
+    await page.fill('input[type="password"]', password);
+    if (remember) await page.check('.checkbox input');
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('.machine-card, .card.empty', { timeout: 8000 });
+  }
+
+  async function logout() {
+    await page.click('button:has-text("登出")');
+    await page.waitForSelector('form', { timeout: 8000 });
+  }
+
+  // ── 管理員 ──
+  await check('登入頁可以正常開啟並登入', async () => {
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.login-wrap');
+    assert(await page.locator('.pixel-machine').count() > 0, '登入頁應該有像素娃娃機');
+    assert(await page.locator('.checkbox input').count() === 1, '應該有記住我勾選框');
+    assert(!(await page.locator('#update-bar').isVisible()), '首次載入不該跳出「有新版本」提示');
+    assert(!(await page.locator('#offline-bar').isVisible()), '連線正常時不該顯示離線提示');
+    await shot('01-login');
+    await login('admin', 'admin123', true);
+  });
+
+  await check('管理員首頁看得到全部 3 台機台', async () => {
+    const n = await page.locator('.machine-card').count();
+    assert(n === 3, '應有 3 台，實際 ' + n);
+    assert(await page.locator('button:has-text("⚙ 系統管理")').count() === 1, '管理員應該看得到系統管理入口');
+    await shot('02-home-admin');
+  });
+
+  await check('進入機台詳細頁，三顆記帳按鈕都在', async () => {
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    for (const label of ['入幣', '出幣', '🎁 開獎']) {
+      assert(await page.locator('.action-buttons button:has-text("' + label + '")').count() === 1, '缺少按鈕：' + label);
+    }
+    await shot('03-machine-detail');
+  });
+
+  await check('按快捷金額可以記一筆入幣，數字即時變動', async () => {
+    const before = await page.locator('.net-stat .stat-value').textContent();
+    await page.click('.action-buttons button:has-text("入幣")');
+    await page.waitForSelector('.quick-grid');
+    await shot('04-panel-in');
+    await page.click('.quick-grid button:has-text("$100")');
+    await page.waitForFunction(
+      (prev) => document.querySelector('.net-stat .stat-value').textContent !== prev,
+      before, { timeout: 8000 }
+    );
+    const after = await page.locator('.net-stat .stat-value').textContent();
+    assert(before !== after, '淨收益應該有變化');
+  });
+
+  // 開發伺服器是長駐的，資料會一直累積，所以一律驗「差額」而不是絕對值
+  const num = (s) => Number(String(s).replace(/[^0-9.-]/g, ''));
+  const statValue = async (label) => {
+    const all = await page.locator('.figures-panel .stat').allTextContents();
+    return num(all.find((t) => t.indexOf(label) >= 0));
+  };
+  let prizeBefore = 0;
+
+  await check('開獎面板可以一次登錄多個獎型，合計正確', async () => {
+    prizeBefore = await statValue('今日開獎');
+    await page.click('.action-buttons button:has-text("開獎")');
+    await page.waitForSelector('.prize-row');
+    const rows = await page.locator('.prize-row').count();
+    assert(rows === 3, '應有 3 個預設獎型，實際 ' + rows);
+
+    // 大娃 $150 ×1、小娃 $40 ×2 → 合計 $230
+    await page.locator('.prize-row').nth(0).locator('button:has-text("＋")').click();
+    await page.locator('.prize-row').nth(2).locator('button:has-text("＋")').click();
+    await page.locator('.prize-row').nth(2).locator('button:has-text("＋")').click();
+
+    const total = await page.locator('.panel-total .amount').textContent();
+    assert(total.replace(/[^0-9]/g, '') === '230', '合計應為 230，實際 ' + total);
+    await shot('05-panel-prize');
+
+    await page.click('.panel-total button:has-text("送出")');
+    await page.waitForSelector('.record-item .badge-prize', { timeout: 8000 });
+    await shot('06-after-prize');
+  });
+
+  await check('開獎確實被當成本扣掉淨收益', async () => {
+    const prizeAfter = await statValue('今日開獎');
+    assert(prizeAfter - prizeBefore === 230,
+      '今日開獎應增加 230，實際從 ' + prizeBefore + ' 變成 ' + prizeAfter);
+
+    const net = num(await page.locator('.net-stat .stat-value').textContent());
+    const inAmt = await statValue('今日入幣');
+    const outAmt = await statValue('今日出幣');
+    assert(net === inAmt - outAmt - prizeAfter,
+      '淨收益應等於 入−出−開獎：' + net + ' vs ' + inAmt + '−' + outAmt + '−' + prizeAfter);
+  });
+
+  await check('報表頁可以切換區間並顯示獎型統計', async () => {
+    await page.click('button:has-text("📊 查詢報表")');
+    await page.waitForSelector('.report-stats');
+    assert(await page.locator('.chart').count() === 1, '應該有趨勢圖');
+    assert(await page.locator('text=獎型統計').count() === 1, '應該有獎型統計');
+    await shot('07-report');
+
+    await page.click('.seg button:has-text("本月")');
+    await page.waitForSelector('.report-stats');
+    await page.click('.seg button:has-text("自訂")');
+    await page.waitForSelector('input[type="date"]');
+    await shot('08-report-custom');
+  });
+
+  await check('系統管理頁四個分頁都打得開', async () => {
+    await page.click('button:has-text("← 返回")');
+    await page.waitForSelector('.detail-hero');
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.click('button:has-text("⚙ 系統管理")');
+    await page.waitForSelector('.tabs');
+
+    await page.waitForSelector('.admin-item');
+    await shot('09-admin-users');
+
+    for (const [tab, marker] of [['機台', '.admin-item'], ['獎型', '.admin-item'], ['台主授權', '.perm-note']]) {
+      await page.click('.tabs button:has-text("' + tab + '")');
+      await page.waitForSelector(marker, { timeout: 8000 });
+    }
+    await shot('10-admin-perms');
+  });
+
+  // ── 巡邏人員 ──
+  await check('巡邏人員：看得到全部機台、能記帳、但沒有管理功能', async () => {
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await logout();
+    await login('patrol1', 'patrol123', false);
+
+    assert(await page.locator('.machine-card').count() === 3, '巡邏人員應看得到 3 台');
+    assert(await page.locator('button:has-text("⚙ 系統管理")').count() === 0, '巡邏人員不該看到系統管理');
+    await shot('11-home-patrol');
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    assert(await page.locator('.action-buttons button').count() === 3, '巡邏人員應該有三顆記帳按鈕');
+
+    await page.click('.action-buttons button:has-text("入幣")');
+    await page.waitForSelector('.quick-grid');
+    assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到編輯快捷鍵');
+
+    await page.click('.action-buttons button:has-text("開獎")');
+    await page.waitForSelector('.prize-row');
+    assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到編輯獎型');
+    assert(await page.locator('.record-item button:has-text("✕")').count() === 0, '巡邏人員不該看到作廢按鈕');
+    await shot('12-patrol-detail');
+  });
+
+  // ── 台主 ──
+  await check('台主：只看得到被授權的機台，且沒有任何記帳按鈕', async () => {
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await logout();
+    await login('owner1', 'owner123', false);
+
+    const n = await page.locator('.machine-card').count();
+    assert(n === 1, '台主應只看得到 1 台，實際 ' + n);
+    assert(await page.locator('button:has-text("⚙ 系統管理")').count() === 0, '台主不該看到系統管理');
+    await shot('13-home-owner');
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    assert(await page.locator('.action-buttons').count() === 0, '台主不該有記帳按鈕區');
+    assert(await page.locator('.record-item button:has-text("✕")').count() === 0, '台主不該看到作廢按鈕');
+    assert(await page.locator('button:has-text("📊 查詢報表")').count() === 1, '台主仍應該能看報表');
+    await shot('14-owner-detail');
+
+    await page.click('button:has-text("📊 查詢報表")');
+    await page.waitForSelector('.report-stats');
+    await shot('15-owner-report');
+  });
+
+  // ── 記住我 ──
+  await check('沒勾記住我：token 存在 sessionStorage 而非 localStorage', async () => {
+    const store = await page.evaluate(() => ({
+      local: localStorage.getItem('claw_token'),
+      session: sessionStorage.getItem('claw_token')
+    }));
+    assert(!store.local, '沒勾記住我不該寫進 localStorage');
+    assert(store.session, '應該寫進 sessionStorage');
+  });
+
+  await check('勾了記住我：重開分頁不用重新登入', async () => {
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
+    await login('admin', 'admin123', true);
+
+    const fresh = await context.newPage();
+    await fresh.goto(BASE, { waitUntil: 'networkidle' });
+    await fresh.waitForSelector('.machine-card', { timeout: 8000 });
+    assert(await fresh.locator('form input[type="password"]').count() === 0, '應該直接進首頁，不該再看到登入表單');
+    await fresh.close();
+  });
+
+  // ── 桌機版面 ──
+  await check('桌機寬度下詳細頁排成左圖／中面板／右按鈕三欄', async () => {
+    const desktop = await context.newPage();
+    await desktop.setViewportSize({ width: 1280, height: 900 });
+    await desktop.goto(BASE, { waitUntil: 'networkidle' });
+    await desktop.waitForSelector('.machine-card', { timeout: 8000 });
+    await desktop.locator('.machine-card').first().click();
+    await desktop.waitForSelector('.detail-top');
+
+    const cols = await desktop.evaluate(() =>
+      getComputedStyle(document.querySelector('.detail-top')).gridTemplateColumns);
+    assert(cols.split(' ').length === 3, '桌機應為三欄，實際 ' + cols);
+    await desktop.screenshot({ path: path.join(SHOTS, '16-desktop-detail.png'), fullPage: true });
+    await desktop.close();
+  });
+
+  await check('全程沒有 console 錯誤', async () => {
+    assert(consoleErrors.length === 0, '出現 ' + consoleErrors.length + ' 個錯誤：' + consoleErrors.slice(0, 3).join(' | '));
+  });
+
+  await browser.close();
+
+  const failed = results.filter((r) => r.indexOf('❌') >= 0);
+  console.log('前端 E2E 結果：' + (results.length - failed.length) + ' / ' + results.length + ' 通過');
+  console.log(results.join('\n'));
+  console.log(failed.length ? '\n⚠️ 有項目未通過。' : '\n🎉 全部通過。');
+  process.exit(failed.length ? 1 : 0);
+}
+
+main().catch((err) => {
+  console.error('E2E 執行失敗：', err);
+  process.exit(1);
+});

@@ -1,0 +1,16 @@
+{
+  "name": "claw-machine-manager",
+  "version": "1.0.0",
+  "description": "娃娃機機台管理系統：GitHub Pages PWA 前端 + Google Apps Script 後端 + Google 試算表",
+  "private": true,
+  "scripts": {
+    "dev": "node tools/dev-server.js",
+    "test": "npm run check:syntax && npm run check:pixelmap && npm run test:backend",
+    "test:backend": "node tools/local-test.js",
+    "test:e2e": "node tools/e2e.js",
+    "check:syntax": "sh tools/check-gs.sh && node --check docs/app.js && node --check docs/sw.js",
+    "check:pixelmap": "node tools/check-pixelmap.js",
+    "icons": "python3 tools/make-icons.py"
+  },
+  "license": "UNLICENSED"
+}
