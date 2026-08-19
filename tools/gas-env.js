@@ -221,11 +221,18 @@ const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'Reports.gs', 'Code.gs
 function createGasSandbox(options) {
   const opts = options || {};
   const dir = path.join(__dirname, '..', 'apps-script');
-  const files = opts.files || GAS_FILE_ORDER;
 
-  const source = files
-    .map((f) => '/* ==== ' + f + ' ==== */\n' + fs.readFileSync(path.join(dir, f), 'utf8'))
-    .join('\n\n');
+  let source;
+  if (opts.bundlePath) {
+    // 讀合併後的單一檔案（apps-script/dist/Code.gs），
+    // 用來驗證「貼給使用者的那份檔案」本身真的能動，不是只驗證分開的原始檔。
+    source = fs.readFileSync(opts.bundlePath, 'utf8');
+  } else {
+    const files = opts.files || GAS_FILE_ORDER;
+    source = files
+      .map((f) => '/* ==== ' + f + ' ==== */\n' + fs.readFileSync(path.join(dir, f), 'utf8'))
+      .join('\n\n');
+  }
 
   const sandbox = {
     SpreadsheetApp, DriveApp, PropertiesService, CacheService,

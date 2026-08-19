@@ -5,11 +5,14 @@
   "private": true,
   "scripts": {
     "dev": "node tools/dev-server.js",
-    "test": "npm run check:syntax && npm run check:pixelmap && npm run test:backend",
+    "bundle": "node tools/bundle-gas.js",
+    "test": "npm run check:syntax && npm run check:pixelmap && npm run check:bundle && npm run test:backend && npm run test:backend:bundle",
     "test:backend": "node tools/local-test.js",
+    "test:backend:bundle": "node tools/local-test.js --bundle",
     "test:e2e": "node tools/e2e.js",
     "check:syntax": "sh tools/check-gs.sh && node --check docs/app.js && node --check docs/sw.js",
     "check:pixelmap": "node tools/check-pixelmap.js",
+    "check:bundle": "node tools/bundle-gas.js --check",
     "icons": "python3 tools/make-icons.py"
   },
   "license": "UNLICENSED"

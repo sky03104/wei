@@ -51,6 +51,7 @@
 ## 安裝
 
 看 **[guide/DEPLOY.md](guide/DEPLOY.md)**，從建試算表到裝進手機，一步一步照著做。
+後端只需要貼 `apps-script/dist/Code.gs` 這一份合併檔案，不用開六次「新增指令碼」。
 
 試算表每一欄的意思在 **[guide/SHEETS.md](guide/SHEETS.md)**。
 
@@ -68,13 +69,14 @@ docs/                  GitHub Pages 發佈目錄（前端 PWA）
   manifest.webmanifest
   icons/               App 圖示
 
-apps-script/           貼進 Google Apps Script 的檔案
-  Code.gs              doPost 進入點、API 路由、setup()
-  Db.gs                試算表存取層
-  Auth.gs              密碼、Session、角色與機台權限
-  Service.gs           機台、紀錄、開獎、獎型、快捷金額、帳號
-  Reports.gs           報表彙總與 CSV
-  Test.gs              自我測試（選擇性貼上）
+apps-script/            後端（Google Apps Script）
+  dist/Code.gs          ← 部署時貼這一份就好（自動合併，見下方「開發」）
+  Code.gs                doPost 進入點、API 路由、setup()
+  Db.gs                  試算表存取層
+  Auth.gs                密碼、Session、角色與機台權限
+  Service.gs             機台、紀錄、開獎、獎型、快捷金額、帳號
+  Reports.gs              報表彙總與 CSV
+  Test.gs                 自我測試（含在合併檔案裡）
 
 tools/                 開發工具，不會被部署
 guide/                 部署與資料說明
@@ -88,10 +90,18 @@ guide/                 部署與資料說明
 
 ```bash
 npm run dev          # 本機開起整個 App（含假的後端）→ http://localhost:8080
-npm test             # 語法檢查 + 像素圖一致性 + 後端 37 項自我測試
-npm run test:e2e     # 用真的瀏覽器跑 14 項流程測試（需要先開著 npm run dev）
+npm run bundle       # 把 apps-script/*.gs 合併成 apps-script/dist/Code.gs（部署要貼的那份）
+npm test             # 語法檢查 + 像素圖一致性 + 合併檔案是否最新 + 後端自我測試（分開檔案版與合併檔案版都跑）
+npm run test:e2e     # 用真的瀏覽器跑流程測試（需要先開著 npm run dev）
 npm run icons        # 重新產生 App 圖示
 ```
+
+**後端的維護方式**：實際會改的原始碼是 `apps-script/` 底下 6 個分開的檔案
+（`Db.gs` 資料層、`Auth.gs` 認證、`Service.gs` 業務邏輯、`Reports.gs` 報表、
+`Code.gs` 路由、`Test.gs` 測試）。改完執行 `npm run bundle` 重新產生
+`apps-script/dist/Code.gs`——這份合併檔案才是要貼進 GAS 的東西。
+`npm test` 會檢查合併檔案是不是最新版本，忘記重跑會直接測試失敗，
+不會有「原始碼改了、貼上去的版本卻沒跟著改」這種事。
 
 `npm run dev` 會用記憶體模擬一套 Apps Script 環境（`tools/gas-env.js`），
 直接執行 `apps-script/*.gs` 的真實程式碼，並附上示範資料：
