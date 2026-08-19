@@ -1,1 +1,125 @@
-# wei
+# 娃娃機機台管理系統
+
+手機上像 App 一樣操作的娃娃機營運管理工具。加到主畫面後沒有網址列，
+現場巡機時開起來就能記帳。
+
+```
+┌─────────────────┐        ┌──────────────────┐        ┌─────────────────┐
+│  GitHub Pages   │ ─────▶ │  Apps Script     │ ─────▶ │  Google 試算表   │
+│  前端 PWA        │  JSON  │  只回 JSON 的 API │        │  8 個分頁        │
+│  docs/          │        │  apps-script/    │        │                 │
+└─────────────────┘        └──────────────────┘        └─────────────────┘
+```
+
+**前端為什麼不放在 Apps Script？** GAS 的 `/exec` 會把頁面塞進 Google 的 iframe 沙箱，
+裡面的 `manifest.json`、`apple-mobile-web-app-capable`、Service Worker 通通無效，
+做不出「加到主畫面沒有網址列」的效果。要有自己的網域才行，所以前端放 GitHub Pages。
+
+跨網域是用 `application/x-www-form-urlencoded` 的 POST 過的——這屬於 CORS simple request，
+瀏覽器不會先發 preflight，而 GAS 沒辦法回應 preflight。換成 `application/json` 會直接壞掉。
+
+---
+
+## 功能
+
+**三種角色**
+
+| 角色 | 看得到哪些機台 | 記帳 | 報表 | 管理功能 |
+|---|---|---|---|---|
+| 管理員 | 全部 | ✅ | 全部 | ✅ 帳號、機台、獎型、快捷鍵、授權、作廢 |
+| 巡邏人員 | 全部 | ✅ | 全部 | ❌ |
+| 台主 | 僅被授權的 | ❌ 唯讀 | 僅自己的 | ❌ |
+
+**主要畫面**
+- **首頁**：每台機台一張卡片，左邊像素風娃娃機，右邊今日淨收益，每 20 秒自動更新
+- **詳細頁**：收益面板 + 入幣／出幣／🎁 開獎三顆按鈕 + 本機台紀錄
+- **報表**：日／週／月／自訂區間、趨勢圖、獎型統計、明細篩選、匯出 CSV
+- **系統管理**：帳號、機台、獎型、台主授權
+
+**記帳方式**
+- 入幣／出幣：按快捷金額，或輸入自訂金額
+- 開獎：列出各獎型，右邊填次數，一次可登錄多種
+- 快捷金額與獎型都支援「全局預設 + 單台可覆寫」
+
+**收益怎麼算**
+```
+淨收益 = 入幣 − 出幣 − 開獎成本
+```
+
+---
+
+## 安裝
+
+看 **[guide/DEPLOY.md](guide/DEPLOY.md)**，從建試算表到裝進手機，一步一步照著做。
+
+試算表每一欄的意思在 **[guide/SHEETS.md](guide/SHEETS.md)**。
+
+---
+
+## 檔案結構
+
+```
+docs/                  GitHub Pages 發佈目錄（前端 PWA）
+  index.html           外殼與 PWA meta
+  app.js               全部前端邏輯
+  styles.css           全部樣式
+  config.js            ← 唯一需要你手動填的檔案（GAS 網址）
+  sw.js                Service Worker
+  manifest.webmanifest
+  icons/               App 圖示
+
+apps-script/           貼進 Google Apps Script 的檔案
+  Code.gs              doPost 進入點、API 路由、setup()
+  Db.gs                試算表存取層
+  Auth.gs              密碼、Session、角色與機台權限
+  Service.gs           機台、紀錄、開獎、獎型、快捷金額、帳號
+  Reports.gs           報表彙總與 CSV
+  Test.gs              自我測試（選擇性貼上）
+
+tools/                 開發工具，不會被部署
+guide/                 部署與資料說明
+```
+
+---
+
+## 開發
+
+不需要 `npm install`，沒有任何相依套件。
+
+```bash
+npm run dev          # 本機開起整個 App（含假的後端）→ http://localhost:8080
+npm test             # 語法檢查 + 像素圖一致性 + 後端 37 項自我測試
+npm run test:e2e     # 用真的瀏覽器跑 14 項流程測試（需要先開著 npm run dev）
+npm run icons        # 重新產生 App 圖示
+```
+
+`npm run dev` 會用記憶體模擬一套 Apps Script 環境（`tools/gas-env.js`），
+直接執行 `apps-script/*.gs` 的真實程式碼，並附上示範資料：
+
+| 帳號 | 密碼 | 角色 |
+|---|---|---|
+| `admin` | `admin123` | 管理員 |
+| `patrol1` | `patrol123` | 巡邏人員 |
+| `owner1` | `owner123` | 台主（只授權一號機） |
+
+改完 GAS 程式碼先跑 `npm test`，改完前端先跑 `npm run test:e2e`，再貼上去／push。
+
+> 本機測試不能取代在 GAS 上實跑——配額、授權、真實試算表的行為仍要在正式環境確認一次。
+> 但它能在幾秒內抓出絕大多數迴歸。
+
+---
+
+## 安全性
+
+- **權限一律在伺服器端把關。** 台主看不到的機台，資料根本不會送到前端；
+  直接偽造機台 id 呼叫 API 也會被擋。前端隱藏按鈕只是體驗，不是防護。
+- **開獎金額由後端算。** 前端只送獎型 id 與次數，單價一律從試算表查。
+- **獎型改價不影響歷史帳。** 名稱與單價會快照進每一筆紀錄。
+- **密碼**用每個帳號各自的 salt + 全站 pepper（存在指令碼屬性，不進 repo）
+  迭代 SHA-256 一千次。GAS 沒有 bcrypt，這是平台限制下的合理強度——
+  所以**試算表本身千萬不要開共用連結**。
+- **沒有自助改密碼的路徑。** 新增帳號與改密碼只有管理員的 API 做得到。
+- **改密碼會踢掉該帳號所有裝置**的登入狀態。
+- **記帳帶 clientToken 做冪等**，連點兩下或網路重試都只會寫入一筆。
+- 前端原始碼是公開的（GitHub Pages 需要 public repo），裡面只有 GAS 的網址——
+  沒有帳號密碼就拿不到任何資料。試算表 ID 與 pepper 都只存在 GAS 端。
