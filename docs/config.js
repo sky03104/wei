@@ -8,5 +8,5 @@
  * 反過來說，試算表 ID、密碼、任何金鑰都不要寫在這個檔案裡。
  */
 window.APP_CONFIG = {
-  GAS_API_URL: ''
+  GAS_API_URL: 'https://script.google.com/macros/s/AKfycbwSs43_EcQjZSrNqHjq1OF0dMPYNTj_MTrvjgQTgx1gDHq6A8wgWCWpKS4NnGMbNaw29A/exec'
 };
