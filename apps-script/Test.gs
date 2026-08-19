@@ -107,6 +107,14 @@ function _selfTestBody(results) {
   // ── 佈置：3 個帳號、2 台機台，台主只授權機台 A ──
   Object.keys(SCHEMA).forEach(function (n) { dbReadAll(n); });
 
+  _t(results, '新建立的分頁表頭是中文', function () {
+    const ss = _spreadsheet();
+    Object.keys(SCHEMA).forEach(function (name) {
+      const header = ss.getSheetByName(name).getRange(1, 1, 1, SCHEMA[name].length).getValues()[0];
+      _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS[name]), name + ' 分頁的表頭應該是中文');
+    });
+  });
+
   const admin = _mkUser('t_admin', ROLE_ADMIN, 'admin123');
   const patrol = _mkUser('t_patrol', ROLE_PATROL, 'patrol123');
   const owner = _mkUser('t_owner', ROLE_OWNER, 'owner123');
@@ -427,5 +435,34 @@ function _selfTestBody(results) {
     users.forEach(function (u) {
       _assert(u.password_hash === undefined && u.salt === undefined, '帳號清單不該含密碼欄位');
     });
+  });
+
+  // 放在最後：這裡會呼叫真正的 setup()，它在「目前沒有啟用中的管理員」時
+  // 會自動新增一個，可能干擾前面依賴「剛好只有 t_admin 一個管理員」的測試
+  // （例如「不能把最後一個管理員降級」）。此時 t_admin 一直是啟用中的管理員，
+  // setup() 不會再造一個，所以放最後執行是安全的。
+  _t(results, '重新執行 setup 會把舊表頭修正成中文，且不動既有資料', function () {
+    const ss = _spreadsheet();
+    const usersSheet = ss.getSheetByName('Users');
+
+    _clearSheetCache();
+    const before = dbReadAll('Users');
+    const beforeCount = before.length;
+    const sample = before[0];
+
+    // 模擬「用改版前的程式碼建立的舊試算表」：表頭被改回英文
+    usersSheet.getRange(1, 1, 1, SCHEMA.Users.length).setValues([SCHEMA.Users]);
+    _clearSheetCache();
+
+    setup();
+    _clearSheetCache();
+
+    const header = usersSheet.getRange(1, 1, 1, SCHEMA.Users.length).getValues()[0];
+    _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS.Users), '重跑 setup 後表頭應變回中文');
+
+    const after = dbReadAll('Users');
+    _assertEq(after.length, beforeCount, '不該新增或刪除既有的資料列');
+    const stillThere = after.some(function (u) { return u.user_id === sample.user_id && u.username === sample.username; });
+    _assert(stillThere, '既有的帳號資料應該原封不動還在');
   });
 }

@@ -35,6 +35,28 @@ const SCHEMA = {
 /** 這些欄位存 ISO 時間字串，欄位格式必須設成純文字，否則 Sheets 會自作主張轉時區。 */
 const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at'];
 
+/**
+ * 表頭給人看的中文標籤。
+ *
+ * 只影響試算表第一列顯示的文字，跟 SCHEMA 的英文鍵值是兩件事——
+ * 程式碼裡到處都是 r.user_id、dbFind('Users', 'username', ...) 這種寫法，
+ * 內部欄位名稱維持英文不變，才不用把整個後端的存取邏輯都改一輪。
+ *
+ * 每個分頁的陣列長度與順序必須跟 SCHEMA[name] 完全對應，
+ * applyHeaderLabels() 會在對不上時直接丟錯，避免兩份手動維護的陣列悄悄不同步。
+ */
+const HEADER_LABELS = {
+  Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
+  Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
+    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖'],
+  Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
+  QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
+  Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
+  Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
+  Config: ['設定鍵', '設定值']
+};
+
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
 let _sheetCache = {};
 
@@ -63,8 +85,7 @@ function _sheet(name) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
-    sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight('bold');
-    sh.setFrozenRows(1);
+    _writeHeaderRow(sh, name, cols);
     cols.forEach(function (col, i) {
       if (TEXT_COLUMNS.indexOf(col) >= 0) {
         sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
@@ -72,6 +93,30 @@ function _sheet(name) {
     });
   }
   return sh;
+}
+
+function _writeHeaderRow(sh, name, cols) {
+  const labels = HEADER_LABELS[name];
+  if (!labels || labels.length !== cols.length) {
+    throw new Error('HEADER_LABELS[' + name + '] 跟 SCHEMA 對不起來，兩邊長度必須一致');
+  }
+  sh.getRange(1, 1, 1, labels.length).setValues([labels]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+}
+
+/**
+ * 把某分頁的表頭（第一列）重新覆寫成中文標籤。
+ *
+ * 跟 _sheet() 建立新分頁時寫表頭不同，這個是無條件執行的——
+ * 用來修正「用改版前的程式碼建立、表頭還是英文」的既有試算表。
+ * 只動第一列，不會碰到任何資料列。setup() 會對每個分頁都呼叫一次，
+ * 所以只要重新執行一次 setup，既有試算表的表頭就會自動換成中文。
+ */
+function applyHeaderLabels(name) {
+  const cols = SCHEMA[name];
+  if (!cols) throw new Error('未知的分頁：' + name);
+  const sh = _sheet(name);
+  _writeHeaderRow(sh, name, cols);
 }
 
 /**
@@ -1685,6 +1730,7 @@ function setup() {
 
   Object.keys(SCHEMA).forEach(function (name) {
     dbReadAll(name); // 觸發建表
+    applyHeaderLabels(name); // 表頭一律覆寫成中文，既有分頁也會被修正，不影響資料列
     out.push('分頁 ' + name + ' 就緒');
   });
 
@@ -1861,6 +1907,14 @@ function _token(username, password, remember) {
 function _selfTestBody(results) {
   // ── 佈置：3 個帳號、2 台機台，台主只授權機台 A ──
   Object.keys(SCHEMA).forEach(function (n) { dbReadAll(n); });
+
+  _t(results, '新建立的分頁表頭是中文', function () {
+    const ss = _spreadsheet();
+    Object.keys(SCHEMA).forEach(function (name) {
+      const header = ss.getSheetByName(name).getRange(1, 1, 1, SCHEMA[name].length).getValues()[0];
+      _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS[name]), name + ' 分頁的表頭應該是中文');
+    });
+  });
 
   const admin = _mkUser('t_admin', ROLE_ADMIN, 'admin123');
   const patrol = _mkUser('t_patrol', ROLE_PATROL, 'patrol123');
@@ -2182,6 +2236,35 @@ function _selfTestBody(results) {
     users.forEach(function (u) {
       _assert(u.password_hash === undefined && u.salt === undefined, '帳號清單不該含密碼欄位');
     });
+  });
+
+  // 放在最後：這裡會呼叫真正的 setup()，它在「目前沒有啟用中的管理員」時
+  // 會自動新增一個，可能干擾前面依賴「剛好只有 t_admin 一個管理員」的測試
+  // （例如「不能把最後一個管理員降級」）。此時 t_admin 一直是啟用中的管理員，
+  // setup() 不會再造一個，所以放最後執行是安全的。
+  _t(results, '重新執行 setup 會把舊表頭修正成中文，且不動既有資料', function () {
+    const ss = _spreadsheet();
+    const usersSheet = ss.getSheetByName('Users');
+
+    _clearSheetCache();
+    const before = dbReadAll('Users');
+    const beforeCount = before.length;
+    const sample = before[0];
+
+    // 模擬「用改版前的程式碼建立的舊試算表」：表頭被改回英文
+    usersSheet.getRange(1, 1, 1, SCHEMA.Users.length).setValues([SCHEMA.Users]);
+    _clearSheetCache();
+
+    setup();
+    _clearSheetCache();
+
+    const header = usersSheet.getRange(1, 1, 1, SCHEMA.Users.length).getValues()[0];
+    _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS.Users), '重跑 setup 後表頭應變回中文');
+
+    const after = dbReadAll('Users');
+    _assertEq(after.length, beforeCount, '不該新增或刪除既有的資料列');
+    const stillThere = after.some(function (u) { return u.user_id === sample.user_id && u.username === sample.username; });
+    _assert(stillThere, '既有的帳號資料應該原封不動還在');
   });
 }
 

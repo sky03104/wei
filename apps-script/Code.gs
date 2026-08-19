@@ -175,6 +175,7 @@ function setup() {
 
   Object.keys(SCHEMA).forEach(function (name) {
     dbReadAll(name); // 觸發建表
+    applyHeaderLabels(name); // 表頭一律覆寫成中文，既有分頁也會被修正，不影響資料列
     out.push('分頁 ' + name + ' 就緒');
   });
 

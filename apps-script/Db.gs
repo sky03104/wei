@@ -20,6 +20,28 @@ const SCHEMA = {
 /** 這些欄位存 ISO 時間字串，欄位格式必須設成純文字，否則 Sheets 會自作主張轉時區。 */
 const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at'];
 
+/**
+ * 表頭給人看的中文標籤。
+ *
+ * 只影響試算表第一列顯示的文字，跟 SCHEMA 的英文鍵值是兩件事——
+ * 程式碼裡到處都是 r.user_id、dbFind('Users', 'username', ...) 這種寫法，
+ * 內部欄位名稱維持英文不變，才不用把整個後端的存取邏輯都改一輪。
+ *
+ * 每個分頁的陣列長度與順序必須跟 SCHEMA[name] 完全對應，
+ * applyHeaderLabels() 會在對不上時直接丟錯，避免兩份手動維護的陣列悄悄不同步。
+ */
+const HEADER_LABELS = {
+  Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
+  Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
+    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖'],
+  Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
+  QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
+  Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
+  Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
+  Config: ['設定鍵', '設定值']
+};
+
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
 let _sheetCache = {};
 
@@ -48,8 +70,7 @@ function _sheet(name) {
   let sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
-    sh.getRange(1, 1, 1, cols.length).setValues([cols]).setFontWeight('bold');
-    sh.setFrozenRows(1);
+    _writeHeaderRow(sh, name, cols);
     cols.forEach(function (col, i) {
       if (TEXT_COLUMNS.indexOf(col) >= 0) {
         sh.getRange(1, i + 1, sh.getMaxRows(), 1).setNumberFormat('@');
@@ -57,6 +78,30 @@ function _sheet(name) {
     });
   }
   return sh;
+}
+
+function _writeHeaderRow(sh, name, cols) {
+  const labels = HEADER_LABELS[name];
+  if (!labels || labels.length !== cols.length) {
+    throw new Error('HEADER_LABELS[' + name + '] 跟 SCHEMA 對不起來，兩邊長度必須一致');
+  }
+  sh.getRange(1, 1, 1, labels.length).setValues([labels]).setFontWeight('bold');
+  sh.setFrozenRows(1);
+}
+
+/**
+ * 把某分頁的表頭（第一列）重新覆寫成中文標籤。
+ *
+ * 跟 _sheet() 建立新分頁時寫表頭不同，這個是無條件執行的——
+ * 用來修正「用改版前的程式碼建立、表頭還是英文」的既有試算表。
+ * 只動第一列，不會碰到任何資料列。setup() 會對每個分頁都呼叫一次，
+ * 所以只要重新執行一次 setup，既有試算表的表頭就會自動換成中文。
+ */
+function applyHeaderLabels(name) {
+  const cols = SCHEMA[name];
+  if (!cols) throw new Error('未知的分頁：' + name);
+  const sh = _sheet(name);
+  _writeHeaderRow(sh, name, cols);
 }
 
 /**
