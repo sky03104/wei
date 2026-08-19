@@ -271,7 +271,8 @@ async function run(fn, opts) {
     if (options.success) toast(options.success, 'success');
     return result;
   } catch (err) {
-    if (err.code !== 'AUTH') toast(err.message, 'error');
+    // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每 20 秒再彈一次）
+    if (err.code !== 'AUTH' && !options.silent) toast(err.message, 'error');
     return undefined;
   } finally {
     runDepth--;
@@ -1351,13 +1352,13 @@ function adminPerms(data) {
 
 // ── 資料載入 ────────────────────────────────────────────
 
-async function loadHome() {
-  const data = await run(() => api('dashboard'));
+async function loadHome(opts) {
+  const data = await run(() => api('dashboard'), opts);
   if (data) { state.home = data; render(); }
 }
 
-async function loadDetail(machineId) {
-  const data = await run(() => api('machineDetail', { machineId: machineId }));
+async function loadDetail(machineId, opts) {
+  const data = await run(() => api('machineDetail', { machineId: machineId }), opts);
   if (data) { state.detail = data; render(); }
 }
 
@@ -1463,9 +1464,9 @@ function viewSetupNotice() {
 function startPolling() {
   stopPolling();
   pollTimer = setInterval(() => {
-    if (document.hidden || state.busy || !state.token) return;
-    if (state.view === 'home') loadHome();
-    else if (state.view === 'machine' && state.machineId && !state.panel) loadDetail(state.machineId);
+    if (document.hidden || state.busy || !state.token || !navigator.onLine) return;
+    if (state.view === 'home') loadHome({ silent: true });
+    else if (state.view === 'machine' && state.machineId && !state.panel) loadDetail(state.machineId, { silent: true });
   }, POLL_MS);
 }
 

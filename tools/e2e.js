@@ -37,8 +37,13 @@ async function main() {
   });
 
   const consoleErrors = [];
+  let offlineOnPurpose = false;   // 離線測試期間的網路錯誤是預期中的，不算數
   context.on('page', (p) => {
-    p.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    p.on('console', (m) => {
+      if (m.type() !== 'error') return;
+      if (offlineOnPurpose) return;
+      consoleErrors.push(m.text());
+    });
     p.on('pageerror', (e) => { consoleErrors.push('pageerror: ' + e.message); });
   });
 
@@ -261,6 +266,39 @@ async function main() {
     assert(cols.split(' ').length === 3, '桌機應為三欄，實際 ' + cols);
     await desktop.screenshot({ path: path.join(SHOTS, '16-desktop-detail.png'), fullPage: true });
     await desktop.close();
+  });
+
+  // ── PWA 本體 ──
+  await check('manifest 設定正確（standalone、圖示齊全）', async () => {
+    const res = await page.request.get(BASE + '/manifest.webmanifest');
+    assert(res.ok(), 'manifest 應該讀得到');
+    const m = await res.json();
+    assert(m.display === 'standalone', 'display 必須是 standalone，否則會有網址列');
+    assert(m.start_url && m.scope, 'start_url 與 scope 都要有');
+    const purposes = m.icons.map((i) => i.purpose);
+    assert(purposes.indexOf('maskable') >= 0, '缺少 maskable 圖示，Android 裁切後會很醜');
+    assert(m.icons.some((i) => i.sizes === '512x512'), '缺少 512x512 圖示');
+
+    const html = await (await page.request.get(BASE + '/index.html')).text();
+    assert(html.indexOf('apple-mobile-web-app-capable') > 0, '缺少 iOS 全螢幕 meta');
+    assert(html.indexOf('viewport-fit=cover') > 0, '缺少 viewport-fit=cover，瀏海機型會被切到');
+    assert(html.indexOf('apple-touch-icon') > 0, '缺少 apple-touch-icon');
+  });
+
+  await check('離線時 App 仍開得起來，並顯示離線提示', async () => {
+    const off = await context.newPage();
+    await off.goto(BASE, { waitUntil: 'networkidle' });   // 先讓 Service Worker 裝好
+    await off.waitForTimeout(600);
+
+    offlineOnPurpose = true;
+    await context.setOffline(true);
+    await off.reload({ waitUntil: 'domcontentloaded' });
+    await off.waitForSelector('.login-wrap, .machine-card, .boot', { timeout: 8000 });
+    assert(await off.locator('#offline-bar').isVisible(), '離線時應該顯示離線提示條');
+
+    await context.setOffline(false);
+    await off.close();
+    offlineOnPurpose = false;
   });
 
   await check('全程沒有 console 錯誤', async () => {
