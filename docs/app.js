@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -567,9 +567,26 @@ function viewMachine() {
  * （首頁載入時就有了，不用為了這排按鈕多打一次 API）；
  * 只有一台機台或首頁資料還沒載入過時就不顯示，沒有意義。
  */
+/**
+ * 記住上一次 machineSwitcher() 是幫哪一台機台畫的，用來分辨這次重畫
+ * 是「真的切到別台」還是「同一台機台原地重繪」（記帳送出後的背景
+ * 重新整理、20 秒輪詢…）。render() 每次都整個 replaceChildren，
+ * 這排籤跟著整個重建，瀏覽器自己的捲動位置記憶完全沒用，
+ * 一定要手動處理，不然使用者手動滑到後面找機台，一遇到背景重繪
+ * 就會被強制捲回目前這台，變成「切著切著自己彈回去」。
+ */
+let _switcherLastMachineId = null;
+
 function machineSwitcher(currentMachineId) {
   const machines = state.home && state.home.machines;
   if (!machines || machines.length < 2) return null;
+
+  const prevEl = document.querySelector('.machine-switcher');
+  // prevEl 不存在（剛進頁面／從別頁回來）也當成「新的」，理由同下面切換的情況：
+  // 都該把目前這台捲到看得到的地方，而不是沿用一個不存在的捲動位置。
+  const isNavigation = !prevEl || currentMachineId !== _switcherLastMachineId;
+  const prevScrollLeft = prevEl ? prevEl.scrollLeft : 0;
+  _switcherLastMachineId = currentMachineId;
 
   const chips = machines.map(function (m) {
     const active = m.machineId === currentMachineId;
@@ -585,10 +602,15 @@ function machineSwitcher(currentMachineId) {
   });
 
   const el = h('div', { class: 'machine-switcher' }, chips);
-  // 捲到看得到目前這台，機台一多、目前這台剛好在畫面外時不用自己找
   requestAnimationFrame(() => {
-    const activeChip = el.querySelector('.machine-chip.active');
-    if (activeChip) activeChip.scrollIntoView({ inline: 'center', block: 'nearest' });
+    if (isNavigation) {
+      // 真的切機台了：捲到看得到目前這台，機台一多、剛好在畫面外時不用自己找。
+      const activeChip = el.querySelector('.machine-chip.active');
+      if (activeChip) activeChip.scrollIntoView({ inline: 'center', block: 'nearest' });
+    } else {
+      // 同一台機台的背景重繪：把使用者手動滑到的位置還原回去，不要幫倒忙。
+      el.scrollLeft = prevScrollLeft;
+    }
   });
   return el;
 }

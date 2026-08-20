@@ -531,6 +531,35 @@ async function main() {
     await desktop.close();
   });
 
+  await check('手動把機台切換籤滑到後面之後，背景重繪不會把捲動位置彈回去', async () => {
+    // render() 每次都整個 replaceChildren 重建 DOM，切換籤原本每次重繪
+    // 都會強制捲回「置中目前這台」，使用者手動滑到後面找機台，只要
+    // 一遇到背景重新整理（送出帳目後的刷新、輪詢…）就會被彈回去，
+    // 體感上像是「切著切著自己跳回上一台」。
+    // 前一個測試（「勾了記住我」）結束時停在首頁，不是機台詳細頁，
+    // 不能假設「← 返回主畫面」這顆按鈕現在看得到。
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.machine-switcher');
+
+    await page.evaluate(() => { document.querySelector('.machine-switcher').scrollLeft = 300; });
+    await page.waitForTimeout(50);
+    const before = await page.evaluate(() => document.querySelector('.machine-switcher').scrollLeft);
+    assert(before > 0, '手動滑動應該真的有捲動才對，實際 ' + before);
+
+    // 送一筆出幣：送出後 submitAmount 會呼叫 loadDetail 背景重新整理、
+    // 觸發一次跟輪詢/背景刷新同樣性質的重繪。
+    await page.click('.action-buttons button:has-text("出幣")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '50');
+    await page.click('.custom-amount button:has-text("送出")');
+    await page.waitForSelector('.record-item', { timeout: 8000 });
+    await page.waitForTimeout(300);
+
+    const after = await page.evaluate(() => document.querySelector('.machine-switcher').scrollLeft);
+    assert(Math.abs(after - before) < 5, '背景重繪不該把手動捲動的位置改掉，捲動前 ' + before + '、之後 ' + after);
+  });
+
   // ── PWA 本體 ──
   await check('manifest 設定正確（standalone、圖示齊全）', async () => {
     const res = await page.request.get(BASE + '/manifest.webmanifest');
