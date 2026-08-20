@@ -304,9 +304,12 @@ input[type="date"] { min-width: 0; }
 .detail-hero .title h2 { font-size: 19px; }
 
 /* 巡機依序切換用，橫向捲動、不佔太多高度；隱藏捲軸讓它看起來像一排籤，
-   不是一個要注意的捲動區塊。 */
+   不是一個要注意的捲動區塊。
+   min-width: 0 是關鍵：這個容器在桌機版是 grid 的子項目（跨三欄），
+   grid 子項目預設 min-width:auto，會被裡面一整排機台籤的內容撐開，
+   結果變成整排溢出版面右邊、而不是在自己的框裡橫向捲動。 */
 .machine-switcher {
-  display: flex; gap: 8px; overflow-x: auto;
+  display: flex; gap: 8px; overflow-x: auto; min-width: 0;
   padding: 2px 2px 4px; margin: -2px -2px 2px;
   scrollbar-width: none;
 }
