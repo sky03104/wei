@@ -268,10 +268,14 @@ async function api(action, payload) {
  * 防連點靠的是後端的 clientToken 冪等，不是靠這裡。
  */
 let runDepth = 0;
+let visibleRunDepth = 0;
 async function run(fn, opts) {
   const options = opts || {};
   runDepth++;
   state.busy = true;
+  // 背景輪詢（silent）不顯示讀取動畫，只有按鈕按下去這種使用者主動觸發的
+  // 才顯示，不然每 20 秒的背景刷新也會跳一下，反而更干擾。
+  if (!options.silent && ++visibleRunDepth === 1) showBusy(true);
   try {
     const result = await fn();
     if (options.success) toast(options.success, 'success');
@@ -283,7 +287,13 @@ async function run(fn, opts) {
   } finally {
     runDepth--;
     if (runDepth === 0) state.busy = false;
+    if (!options.silent && --visibleRunDepth === 0) showBusy(false);
   }
+}
+
+function showBusy(show) {
+  const el = document.getElementById('busy-badge');
+  if (el) el.hidden = !show;
 }
 
 // ── Session 儲存 ────────────────────────────────────────
