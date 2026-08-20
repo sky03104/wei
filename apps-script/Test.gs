@@ -1037,4 +1037,29 @@ function _selfTestBody(results) {
     const stillThere = after.some(function (u) { return u.user_id === sample.user_id && u.username === sample.username; });
     _assert(stillThere, '既有的帳號資料應該原封不動還在');
   });
+
+  // 一樣放最後：這裡會弄壞 t_admin 的密碼欄位並讓 setup() 重新產生，
+  // adminTok 之後就失效了，後面不能再有測試依賴它。
+  _t(results, '忘記密碼救援：手動清空管理員密碼欄位後重跑 setup 會認出來並重新產生，不是誤判成「已有管理員」而跳過', function () {
+    const admin = dbReadAll('Users').find(function (u) { return u.username === 't_admin'; });
+    _assert(admin, '應該找得到 t_admin');
+
+    // 模擬 DEPLOY.md 記載的救援流程：使用者到試算表手動清空 password_hash/salt
+    dbUpdate('Users', admin._row, { password_hash: '', salt: '' });
+    _clearSheetCache();
+
+    const beforeAdminCount = dbReadAll('Users').filter(function (u) { return String(u.role) === ROLE_ADMIN; }).length;
+    const msg = setup();
+    _clearSheetCache();
+
+    _assert(msg.indexOf('管理員密碼已重設') >= 0, 'setup() 訊息應該說明是重設密碼，不是新建帳號');
+    const afterAdmins = dbReadAll('Users').filter(function (u) { return String(u.role) === ROLE_ADMIN; });
+    _assertEq(afterAdmins.length, beforeAdminCount, '不該多建一個管理員帳號，應該是修正原本那一筆');
+
+    const fixed = dbFind('Users', 'user_id', admin.user_id);
+    _assert(fixed.password_hash && fixed.salt, '密碼欄位應該被重新填上，不再是空的');
+
+    // 舊 session 應該跟著真正的「重設密碼」行為一樣立刻失效
+    _fails({ action: 'me', token: adminTok }, 'AUTH');
+  });
 }

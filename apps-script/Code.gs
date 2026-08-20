@@ -218,9 +218,12 @@ function setup() {
 
   const props = PropertiesService.getScriptProperties();
   const admins = dbReadAll('Users').filter(function (u) { return String(u.role) === ROLE_ADMIN; });
+  // 忘記密碼的救援流程：使用者在試算表把某個 admin 列的 password_hash/salt 清空後重跑 setup，
+  // 這裡要能認出「有 admin 但密碼是空的」，不能只看「完全沒有 admin」。
+  const brokenAdmin = admins.find(function (u) { return !u.password_hash || !u.salt; });
 
-  if (!admins.length) {
-    const username = props.getProperty('INITIAL_ADMIN_USERNAME') || 'admin';
+  if (!admins.length || brokenAdmin) {
+    const username = brokenAdmin ? brokenAdmin.username : (props.getProperty('INITIAL_ADMIN_USERNAME') || 'admin');
     let password = props.getProperty('INITIAL_ADMIN_PASSWORD');
     let generated = false;
     if (!password) {
@@ -228,19 +231,26 @@ function setup() {
       generated = true;
     }
     const salt = newSalt();
-    dbInsert('Users', {
-      user_id: newId('usr'),
-      username: username,
-      display_name: '系統管理員',
-      password_hash: hashPassword(password, salt),
-      salt: salt,
-      role: ROLE_ADMIN,
-      status: 'active',
-      created_at: nowIso(),
-      last_login_at: ''
-    });
+    const passwordHash = hashPassword(password, salt);
+
+    if (brokenAdmin) {
+      dbUpdate('Users', brokenAdmin._row, { password_hash: passwordHash, salt: salt });
+      invalidateUserSessions(brokenAdmin.user_id);
+    } else {
+      dbInsert('Users', {
+        user_id: newId('usr'),
+        username: username,
+        display_name: '系統管理員',
+        password_hash: passwordHash,
+        salt: salt,
+        role: ROLE_ADMIN,
+        status: 'active',
+        created_at: nowIso(),
+        last_login_at: ''
+      });
+    }
     out.push('');
-    out.push('=== 管理員帳號已建立 ===');
+    out.push(brokenAdmin ? '=== 管理員密碼已重設 ===' : '=== 管理員帳號已建立 ===');
     out.push('帳號：' + username);
     out.push('密碼：' + password + (generated ? '（系統隨機產生，請立刻登入後改掉）' : ''));
     out.push('========================');
