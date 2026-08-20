@@ -36,13 +36,21 @@ const SCHEMA = {
 };
 
 /**
- * 這些欄位存 ISO 時間字串或 yyyy-MM-dd 日期字串，欄位格式必須設成純文字，
- * 否則 Sheets 會自作主張轉成日期／時間型別（改天再讀出來就變成 Date 物件，
- * 不是原本存的字串，字串排序、比對全部跟著壞掉——這正是入幣改版那次
- * 欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，這裡把 business_date
- * 也一併鎖住，不要重蹈覆轍）。
+ * 這些欄位格式必須鎖成純文字，不能讓 Sheets 自己依內容猜型別：
+ *
+ *   - 日期／時間欄位：存 ISO 時間字串或 yyyy-MM-dd 日期字串，沒鎖住的話
+ *     Sheets 會自作主張轉成日期／時間型別（改天再讀出來就變成 Date 物件，
+ *     不是原本存的字串，字串排序、比對全部跟著壞掉）。
+ *   - name / prize_name：使用者自由輸入的名稱，理論上什麼都可能打，
+ *     萬一剛好整串是數字（例如把獎型直接取名叫「432」，這個系統就真的
+ *     有這種用法——首頁「今日432數量」卡片認的就是這個名字），沒鎖住
+ *     文字格式的話會被 Sheets 自動轉成數字型別 432（不是字串 "432"），
+ *     跟程式裡拿字串常數做 `===` 比對就永遠對不起來。
+ *
+ * 這是入幣改版那次欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，
+ * 不要重蹈覆轍。
  */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at'];
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at', 'name', 'prize_name'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -209,11 +217,16 @@ function _migrateRecordsMeterColumns() {
     if (!looksLikeUserId(row[10])) return row; // 兩邊都不是，無法辨識，不動
 
     fixed++;
+    // 重組出來的是「改版前 17 欄」的排法；第 17 欄（索引 17）之後不管未來
+    // 又加了幾個新欄位（目前是 business_date，之後也可能更多），這些欄位
+    // 的位置本來就是對的，原封不動用 slice 接在後面帶過去——不能漏掉，
+    // 漏掉的話 setValues() 寫回去的欄數會跟範圍對不起來，真正的 Sheets
+    // 會直接丟錯（本機模擬器不會驗欄數，這個地雷不會在本機測試現形）。
     return [
       row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7],
       row[10], row[11], row[12], row[13], row[14], row[15], row[16],
       row[8], row[9]
-    ];
+    ].concat(row.slice(17));
   });
 
   if (fixed > 0) {
@@ -227,23 +240,35 @@ function _migrateRecordsMeterColumns() {
 const DATE_ONLY_TEXT_COLUMNS = ['business_date'];
 
 /**
- * 修正「這一欄該存純文字，卻被 Sheets 自動轉成日期／時間型別」的舊資料。
+ * 修正「這一欄該存純文字，卻被 Sheets 自動猜成別的型別」的舊資料。
  *
  * `_sheet()` 只有在「分頁是全新建立」的當下，才會把 TEXT_COLUMNS 的欄位鎖成
  * 純文字格式（`'@'`）。這對「分頁本身早就存在、schema 後來才加了新欄位」的情況
  * 沒有回溯生效——`Records.business_date` 就是這樣：`Records` 分頁從系統一開始
- * 就存在，`business_date` 是後來才加進 schema 的新欄位，從來沒機會被鎖成文字。
- * 欄位格式停留在 Sheets 預設的「一般」，寫進去的 `'2026-08-20'` 這種字串
- * 會被自動解析成真正的日期序列值，讀出來變成 JS `Date` 物件，不是原本存的字串——
- * 所有拿這幾欄做字串比對的地方（今日彙總、營業日比對）就全部對不起來，
- * 而且不會噴任何錯誤，只是默默算出 0。`BizDays` 不會踩到這個坑，因為它是
- * 跟「營業日」功能一起誕生的全新分頁，建立當下 `business_date` 就已經在
- * schema 裡了，`isNew` 分支照樣鎖住了格式。
+ * 就存在，`business_date` 是後來才加進 schema 的新欄位，從來沒機會被鎖成文字，
+ * 寫進去的 `'2026-08-20'` 會被自動解析成日期序列值，讀出來變成 `Date` 物件。
+ * `name`／`prize_name` 則是另一種情況：這兩欄從系統一開始就存在，但從來沒被
+ * 認為需要鎖文字格式——直到這個系統真的出現「獎型名稱剛好整串是數字」的用法
+ * （首頁「今日432數量」卡片認的就是名叫「432」的獎型），寫進去的 `'432'`
+ * 被自動轉成數字 `432`。兩種情況共同點都是：所有拿這幾欄做字串比對的地方
+ * （今日彙總、營業日比對、432 名稱比對）就全部對不起來，而且不會噴任何錯誤，
+ * 只是默默算出 0。`BizDays` 不會踩到日期那個坑，因為它是跟「營業日」功能
+ * 一起誕生的全新分頁，建立當下 `business_date` 就已經在 schema 裡了，
+ * `isNew` 分支照樣鎖住了格式。
  *
- * 這裡對每張分頁的每個 TEXT_COLUMNS 欄位：先把整欄格式重新鎖回純文字，
- * 再把目前已經被誤存成 Date 物件的儲存格轉換回正確的文字格式重新寫回去
- * （`business_date` 轉回 `'yyyy-MM-dd'`，其餘轉回完整 ISO 字串）。
+ * 這裡對每張分頁的每個 TEXT_COLUMNS 欄位：**先讀出目前的值，再把整欄格式
+ * 鎖回純文字，最後才把讀到的、已經被誤存成 `Date` 物件或數字的儲存格轉回
+ * 正確的文字格式寫回去**（日期類欄位視 `DATE_ONLY_TEXT_COLUMNS` 轉回
+ * `'yyyy-MM-dd'` 或完整 ISO 字串；數字直接 `String()` 轉回字串）。
  * 已經是字串的儲存格原封不動，天生冪等，重跑不會誤傷正常資料。
+ *
+ * 讀值跟鎖格式的順序不能反過來。曾經寫成「先鎖格式、再讀值」，結果讀出來的
+ * `Date` 物件全部已經被 Sheets 自己用它預設的地區日期格式（例如
+ * `8/20/2026`）转成字串了——不是我這裡指定的 `'yyyy-MM-dd'`，
+ * 而且因為讀到的已經是字串（不再是 `Date` 物件），`v instanceof Date`
+ * 判斷會直接跳過，錯誤格式的字串就這樣被誤判成「已經是正常資料」留下來，
+ * 完全沒被修正。一定要在還沒動格式之前，先把當下還是 `Date`／數字的原始值
+ * 讀出來存好，才不會被 Sheets 自己搶先轉成不受控的格式。
  */
 function _fixTextColumnFormatting() {
   const tz = _tz();
@@ -255,19 +280,18 @@ function _fixTextColumnFormatting() {
     if (!textCols.length) return;
 
     const sh = _sheet(name);
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+
+    const range = sh.getRange(2, 1, lastRow - 1, cols.length);
+    const values = range.getValues(); // 一定要在改格式之前讀，見上面的說明
 
     textCols.forEach(function (col) {
       const c = cols.indexOf(col) + 1;
       sh.getRange(1, c, sh.getMaxRows(), 1).setNumberFormat('@');
     });
 
-    const lastRow = sh.getLastRow();
-    if (lastRow < 2) return;
-
-    const range = sh.getRange(2, 1, lastRow - 1, cols.length);
-    const values = range.getValues();
     let changed = false;
-
     for (let r = 0; r < values.length; r++) {
       textCols.forEach(function (col) {
         const c = cols.indexOf(col);
@@ -276,6 +300,12 @@ function _fixTextColumnFormatting() {
           values[r][c] = DATE_ONLY_TEXT_COLUMNS.indexOf(col) >= 0
             ? Utilities.formatDate(v, tz, 'yyyy-MM-dd')
             : v.toISOString();
+          changed = true;
+          fixedCells++;
+        } else if (typeof v === 'number') {
+          // name／prize_name 剛好整串是數字（例如獎型叫「432」）被 Sheets 自動轉成
+          // 數字型別時會落在這裡，不是 Date——直接轉回字串就能還原成原本打的內容。
+          values[r][c] = String(v);
           changed = true;
           fixedCells++;
         }
@@ -2919,13 +2949,24 @@ function _selfTestBody(results) {
     _assertEq(found.category, 'electronic', '應該存成電子分類');
   });
 
-  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分', function () {
+  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分（今日與累計都要對）', function () {
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_in', amount: 500, clientToken: newId('ct') });
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_out', amount: 200, clientToken: newId('ct') });
     const d = _ok({ action: 'machineDetail', token: adminTok, machineId: electronicMachine });
-    _assertEq(d.total.chipIn, 500, '開分總額');
-    _assertEq(d.total.chipOut, 200, '洗分總額');
-    _assertEq(d.total.chipNet, 300, '盈虧＝開分－洗分');
+    _assertEq(d.total.chipIn, 500, '累計開分總額');
+    _assertEq(d.total.chipOut, 200, '累計洗分總額');
+    _assertEq(d.total.chipNet, 300, '累計盈虧＝開分－洗分');
+    // 前端「盈虧金額」卡片實際讀的是 today 這個桶，不是 total——
+    // 只驗 total 沒驗到 today 曾經是一個測試盲點，這裡兩個都要驗。
+    _assertEq(d.today.chipIn, 500, '今日開分總額');
+    _assertEq(d.today.chipOut, 200, '今日洗分總額');
+    _assertEq(d.today.chipNet, 300, '今日盈虧＝開分－洗分');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    const mine = dash.machines.filter(function (m) { return m.machineId === electronicMachine; })[0];
+    _assertEq(mine.today.chipIn, 500, '首頁機台卡片的今日開分也要對');
+    _assertEq(mine.today.chipOut, 200, '首頁機台卡片的今日洗分也要對');
+    _assert(dash.electronicTotal.chipIn >= 500, '電子分頁籤的今日開分加總至少要包含這台剛記的');
   });
 
   _t(results, '電子機台不能記錄入幣/出幣/活動', function () {
@@ -3259,6 +3300,43 @@ function _selfTestBody(results) {
     _clearSheetCache();
     const stillOk = dbFind('Records', 'record_id', recordId);
     _assertEq(stillOk.business_date, todayKey(), '重複執行 setup 不該誤傷已經是文字的正常資料');
+  });
+
+  _t(results, '修正獎型名稱剛好是純數字被 Sheets 自動轉成數字型別：prize_name 修回文字，今日432數量恢復正常', function () {
+    // 這是使用者實際回報的真實根因：獎型直接取名叫「432」，這個名字整串是
+    // 數字，沒鎖文字格式的欄位會被 Sheets 自動轉成數字 432（不是字串 "432"），
+    // 跟程式裡的字串常數 TRACKED_PRIZE_NAME 做 === 比對就永遠對不起來，
+    // 「今日432數量」卡片因此永遠是 0，即使紀錄本身都寫對了。
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '獎型數字修復測試台', sortOrder: 99 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 70, sortOrder: 1 }).prizeId;
+    const res = _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 2 }], clientToken: newId('ct')
+    });
+    const recordId = res.records[0].recordId;
+
+    const row = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('prize_name') + 1;
+    sh.getRange(row._row, col).setValue(Number(row.prize_name));
+    _clearSheetCache();
+
+    const corrupted = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof corrupted.prize_name, 'number', '模擬應該要讓這格變成數字型別（測試前置條件）');
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.today432Count, 0, '損壞狀態下，今日432數量應該抓不到這筆（重現使用者回報的症狀）');
+
+    const fixedCells = _fixTextColumnFormatting();
+    _assert(fixedCells > 0, '應該回報修正了至少一個儲存格');
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.prize_name, 'string', '修好之後應該是字串，不是數字');
+    _assertEq(repaired.prize_name, '432', '修好之後名稱應該還原成 "432"');
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.today432Count, 2, '修好之後，今日432數量應該正確抓到這筆');
   });
 
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {

@@ -42,7 +42,16 @@ class FakeRange {
     return out;
   }
   setValues(values) {
+    // 真正的 Google Sheets 對 setValues() 的欄數/列數會嚴格驗證，對不上就直接丟錯——
+    // 這裡故意複製這個行為，不是放寬。之前這裡沒驗證，_migrateRecordsMeterColumns()
+    // 重組陣列時漏掉最後一欄的 bug 在本機測試完全沒現形，直到在真正的 GAS 上才炸開。
+    if (values.length !== this.numRows) {
+      throw new Error('The number of rows in the data does not match the number of rows in the range. The data has ' + values.length + ' but the range has ' + this.numRows + '.');
+    }
     for (let r = 0; r < values.length; r++) {
+      if (values[r].length !== this.numCols) {
+        throw new Error('The number of columns in the data does not match the number of columns in the range. The data has ' + values[r].length + ' but the range has ' + this.numCols + '.');
+      }
       for (let c = 0; c < values[r].length; c++) {
         this.sheet._set(this.row + r, this.col + c, values[r][c]);
       }

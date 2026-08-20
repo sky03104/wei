@@ -422,13 +422,24 @@ function _selfTestBody(results) {
     _assertEq(found.category, 'electronic', '應該存成電子分類');
   });
 
-  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分', function () {
+  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分（今日與累計都要對）', function () {
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_in', amount: 500, clientToken: newId('ct') });
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_out', amount: 200, clientToken: newId('ct') });
     const d = _ok({ action: 'machineDetail', token: adminTok, machineId: electronicMachine });
-    _assertEq(d.total.chipIn, 500, '開分總額');
-    _assertEq(d.total.chipOut, 200, '洗分總額');
-    _assertEq(d.total.chipNet, 300, '盈虧＝開分－洗分');
+    _assertEq(d.total.chipIn, 500, '累計開分總額');
+    _assertEq(d.total.chipOut, 200, '累計洗分總額');
+    _assertEq(d.total.chipNet, 300, '累計盈虧＝開分－洗分');
+    // 前端「盈虧金額」卡片實際讀的是 today 這個桶，不是 total——
+    // 只驗 total 沒驗到 today 曾經是一個測試盲點，這裡兩個都要驗。
+    _assertEq(d.today.chipIn, 500, '今日開分總額');
+    _assertEq(d.today.chipOut, 200, '今日洗分總額');
+    _assertEq(d.today.chipNet, 300, '今日盈虧＝開分－洗分');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    const mine = dash.machines.filter(function (m) { return m.machineId === electronicMachine; })[0];
+    _assertEq(mine.today.chipIn, 500, '首頁機台卡片的今日開分也要對');
+    _assertEq(mine.today.chipOut, 200, '首頁機台卡片的今日洗分也要對');
+    _assert(dash.electronicTotal.chipIn >= 500, '電子分頁籤的今日開分加總至少要包含這台剛記的');
   });
 
   _t(results, '電子機台不能記錄入幣/出幣/活動', function () {
@@ -762,6 +773,43 @@ function _selfTestBody(results) {
     _clearSheetCache();
     const stillOk = dbFind('Records', 'record_id', recordId);
     _assertEq(stillOk.business_date, todayKey(), '重複執行 setup 不該誤傷已經是文字的正常資料');
+  });
+
+  _t(results, '修正獎型名稱剛好是純數字被 Sheets 自動轉成數字型別：prize_name 修回文字，今日432數量恢復正常', function () {
+    // 這是使用者實際回報的真實根因：獎型直接取名叫「432」，這個名字整串是
+    // 數字，沒鎖文字格式的欄位會被 Sheets 自動轉成數字 432（不是字串 "432"），
+    // 跟程式裡的字串常數 TRACKED_PRIZE_NAME 做 === 比對就永遠對不起來，
+    // 「今日432數量」卡片因此永遠是 0，即使紀錄本身都寫對了。
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '獎型數字修復測試台', sortOrder: 99 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 70, sortOrder: 1 }).prizeId;
+    const res = _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 2 }], clientToken: newId('ct')
+    });
+    const recordId = res.records[0].recordId;
+
+    const row = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('prize_name') + 1;
+    sh.getRange(row._row, col).setValue(Number(row.prize_name));
+    _clearSheetCache();
+
+    const corrupted = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof corrupted.prize_name, 'number', '模擬應該要讓這格變成數字型別（測試前置條件）');
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.today432Count, 0, '損壞狀態下，今日432數量應該抓不到這筆（重現使用者回報的症狀）');
+
+    const fixedCells = _fixTextColumnFormatting();
+    _assert(fixedCells > 0, '應該回報修正了至少一個儲存格');
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.prize_name, 'string', '修好之後應該是字串，不是數字');
+    _assertEq(repaired.prize_name, '432', '修好之後名稱應該還原成 "432"');
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.today432Count, 2, '修好之後，今日432數量應該正確抓到這筆');
   });
 
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {
