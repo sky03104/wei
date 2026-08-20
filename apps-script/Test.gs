@@ -115,6 +115,11 @@ function _selfTestBody(results) {
     });
   });
 
+  // 手動塞這一列，模擬真實環境跑過 setup() 之後的狀態——這裡故意不直接呼叫
+  // 真正的 setup()，因為它在「目前沒有啟用中管理員」時會自動建一個，
+  // 會干擾後面依賴「當下只有一個管理員」的測試（見檔案最後方的說明）。
+  dbInsert('MeterRates', { rate_id: newId('mr'), machine_id: '', rate: 100 });
+
   const admin = _mkUser('t_admin', ROLE_ADMIN, 'admin123');
   const patrol = _mkUser('t_patrol', ROLE_PATROL, 'patrol123');
   const owner = _mkUser('t_owner', ROLE_OWNER, 'owner123');
@@ -359,6 +364,109 @@ function _selfTestBody(results) {
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: prizeMachine }).total.prize, 230, '停用後歷史帳仍算得出來');
   });
 
+  // ── 入幣（碼表計算）──
+  const meterMachine = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表測試台', sortOrder: 15 }).machineId;
+
+  _t(results, '入幣：(下班表－上班表)×費率，預設費率 100', function () {
+    const res = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: meterMachine,
+      meterStart: 1000, meterEnd: 1050, clientToken: newId('ct')
+    });
+    _assertEq(res.records.length, 1, '應該只寫入一筆');
+    _assertEq(res.records[0].amount, 5000, '(1050-1000)×100 應該是 5000');
+    _assertEq(res.records[0].meterStart, 1000, '應保留上班表讀數');
+    _assertEq(res.records[0].meterEnd, 1050, '應保留下班表讀數');
+    _assertEq(res.records[0].type, 'in', '應該算成入幣');
+  });
+
+  _t(results, '入幣：金額與費率一律由後端算，前端塞假資料沒有用', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表偽造測試台', sortOrder: 16 }).machineId;
+    const res = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 0, meterEnd: 10, amount: 1, rate: 1, clientToken: newId('ct')
+    });
+    _assertEq(res.records[0].amount, 1000, '應該用伺服器的費率 100 計算，不理會前端傳來的 amount/rate');
+  });
+
+  _t(results, '入幣：下班表必須大於上班表', function () {
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 500, meterEnd: 500, clientToken: newId('ct') });
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 500, meterEnd: 400, clientToken: newId('ct') });
+  });
+
+  _t(results, '入幣：碼表讀數必須是非負整數', function () {
+    [-1, 1.5].forEach(function (bad) {
+      _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: bad, meterEnd: 999999, clientToken: newId('ct') });
+    });
+  });
+
+  _t(results, '入幣：台主不能記帳，巡邏人員可以', function () {
+    _fails({ action: 'addMeterRecord', token: ownerTok, machineId: machineA, meterStart: 0, meterEnd: 10, clientToken: newId('ct') }, 'PERMISSION');
+    _ok({ action: 'addMeterRecord', token: patrolTok, machineId: meterMachine, meterStart: 1050, meterEnd: 1060, clientToken: newId('ct') });
+  });
+
+  _t(results, '入幣：同一個 clientToken 送兩次只會寫入一筆', function () {
+    const ct = newId('ct');
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 2000, meterEnd: 2010, clientToken: ct });
+    const second = _ok({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 2000, meterEnd: 2010, clientToken: ct });
+    _assertEq(second.duplicated, true, '第二次應被判定為重複');
+  });
+
+  _t(results, '入幣：detail 頁會帶出上次的下班表，給前端自動帶入下一次的上班表', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表接續測試台', sortOrder: 17 }).machineId;
+    let d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, null, '從沒記過帳的機台應該是 null');
+
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 100, meterEnd: 200, clientToken: newId('ct') });
+    d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, 200, '應該是最新一筆的下班表讀數');
+
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 200, meterEnd: 350, clientToken: newId('ct') });
+    d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, 350, '再記一筆後應該更新成最新的下班表讀數');
+  });
+
+  _t(results, '入幣費率：全局預設 + 單台覆寫，改回沿用全局；費率變動不影響歷史紀錄', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率覆寫測試台', sortOrder: 18 }).machineId;
+
+    let rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'global', '一開始應沿用全局');
+    _assertEq(rate.rate, 100, '全局預設費率應該是 100');
+
+    const before = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 0, meterEnd: 10, clientToken: newId('ct')
+    });
+    _assertEq(before.records[0].amount, 1000, '用全局費率 100 算出來應該是 1000');
+
+    _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 300 });
+    rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'machine', '設定過後應該切成 machine');
+    _assertEq(rate.rate, 300, '應該是剛設定的單台費率');
+
+    const other = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率不受影響測試台', sortOrder: 19 }).machineId;
+    _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: other }).rate, 100, '改單台費率不該影響其他機台');
+
+    const historicalCheck = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    const oldRecord = historicalCheck.records.filter(function (r) { return r.recordId === before.records[0].recordId; })[0];
+    _assertEq(oldRecord.amount, 1000, '改費率不該動到已經記好的舊帳');
+
+    const after = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 10, meterEnd: 20, clientToken: newId('ct')
+    });
+    _assertEq(after.records[0].amount, 3000, '改費率後的新紀錄要用新費率 300 算');
+
+    _ok({ action: 'resetScope', token: adminTok, sheet: 'MeterRates', machineId: mid });
+    rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'global', '清掉單台費率後應該落回全局');
+    _assertEq(rate.rate, 100, '落回全局後應該是全局的 100');
+  });
+
+  _t(results, '入幣費率：只有管理員能設定', function () {
+    _fails({ action: 'saveMeterRate', token: patrolTok, machineId: '', rate: 999 }, 'PERMISSION');
+    _fails({ action: 'saveMeterRate', token: ownerTok, machineId: '', rate: 999 }, 'PERMISSION');
+  });
+
   // ── 全局預設 + 單台覆寫 ──
   _t(results, '快捷金額：單台設定覆寫全局，刪掉後落回全局', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '覆寫測試台', sortOrder: 13 }).machineId;
@@ -388,6 +496,22 @@ function _selfTestBody(results) {
     _assertEq(after.scope, 'machine', '複製後應切成 machine');
     _assertEq(after.prizes.length, before.prizes.length, '複製後獎型數量應相同');
     _assert(after.prizes[0].prizeId !== before.prizes[0].prizeId, '複製出來的應該是新的獎型 id');
+  });
+
+  _t(results, '入幣費率：forkScope 也支援 MeterRates（先複製全局值再各自調整）', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率 fork 測試台', sortOrder: 20 }).machineId;
+    const before = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(before.scope, 'global', '一開始沿用全局');
+    _assertEq(before.rate, 100, '全局費率是 100');
+
+    _ok({ action: 'forkScope', token: adminTok, sheet: 'MeterRates', machineId: mid });
+    const after = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(after.scope, 'machine', '複製後應切成 machine');
+    _assertEq(after.rate, 100, '複製當下應該還是跟全局一樣的值，之後才各自調整');
+
+    _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 250 });
+    const untouched = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率 fork 對照台', sortOrder: 21 }).machineId;
+    _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: untouched }).rate, 100, '調整這台之後不該動到全局（另一台仍是全局的 100）');
   });
 
   // ── 報表 ──

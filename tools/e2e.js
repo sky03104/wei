@@ -48,6 +48,10 @@ async function main() {
   });
 
   const page = await context.newPage();
+  // 有幾個動作（作廢、刪除快捷鍵/獎型、改回沿用全局）會跳原生 confirm()；
+  // Playwright 預設是自動按「取消」，這裡改成自動按「確定」，
+  // 因為測試點下去的意思本來就是「要繼續」。
+  page.on('dialog', (d) => d.accept());
   const shot = (name) => page.screenshot({ path: path.join(SHOTS, name + '.png'), fullPage: true });
 
   async function login(username, password, remember) {
@@ -93,18 +97,110 @@ async function main() {
     await shot('03-machine-detail');
   });
 
-  await check('按快捷金額可以記一筆入幣，數字即時變動', async () => {
-    const before = await page.locator('.net-stat .stat-value').textContent();
+  // 開發伺服器是長駐的，一號機的示範資料本來就已經有一筆入幣了
+  // （上班表會自動帶入，不是空的）；之後每跑一次這支 E2E 又會再疊加一筆。
+  // 所以這裡一律讀「畫面當下實際帶入的值」往下接著記，不假設它是全新機台，
+  // 也不寫死絕對值，只驗證差額與試算邏輯本身對不對。
+  let lastMeterEnd = null;
+
+  await check('入幣改用碼表登錄：(下班表－上班表)×費率，數字即時變動', async () => {
     await page.click('.action-buttons button:has-text("入幣")');
-    await page.waitForSelector('.quick-grid');
+    await page.waitForSelector('.panel');
     await shot('04-panel-in');
-    await page.click('.quick-grid button:has-text("$100")');
+
+    // 入幣不該再看到舊版的快捷金額格子
+    assert(await page.locator('.quick-grid').count() === 0, '入幣面板不該再有快捷金額按鈕');
+
+    const startInput = page.locator('.panel input').nth(0);
+    const endInput = page.locator('.panel input').nth(1);
+    const submitBtn = page.locator('.panel-total button:has-text("送出")');
+
+    const prefilled = await startInput.inputValue();
+    assert(await submitBtn.isDisabled(), '還沒填下班表之前送出鈕應該是不能按的');
+
+    const start = prefilled === '' ? 0 : Number(prefilled);
+    const end = start + 10;
+    if (prefilled === '') await startInput.fill(String(start));
+    await endInput.fill(String(end));
+    await page.waitForTimeout(100);
+
+    const preview = await page.locator('.panel-total .amount').textContent();
+    assert(preview.replace(/[^0-9]/g, '') === '1000', '預設費率 100，差 10 格應該是 1000，實際 ' + preview);
+
+    const before = await page.locator('.net-stat .stat-value').textContent();
+    await submitBtn.click();
     await page.waitForFunction(
       (prev) => document.querySelector('.net-stat .stat-value').textContent !== prev,
       before, { timeout: 8000 }
     );
-    const after = await page.locator('.net-stat .stat-value').textContent();
-    assert(before !== after, '淨收益應該有變化');
+    assert(await page.locator('.record-item:has-text("上班表")').count() > 0, '紀錄清單應該顯示上班表/下班表明細');
+    lastMeterEnd = end;
+  });
+
+  await check('入幣：下班表不能小於等於上班表', async () => {
+    const startInput = page.locator('.panel input').nth(0);
+    const endInput = page.locator('.panel input').nth(1);
+    const submitBtn = page.locator('.panel-total button:has-text("送出")');
+
+    await startInput.fill(String(lastMeterEnd));
+    await endInput.fill(String(lastMeterEnd));
+    await page.waitForTimeout(100);
+    assert(await submitBtn.isDisabled(), '下班表等於上班表時不該能送出');
+    assert(await page.locator('text=下班表必須大於上班表').count() > 0, '應該顯示錯誤提示');
+
+    await endInput.fill(String(lastMeterEnd - 500));
+    await page.waitForTimeout(100);
+    assert(await submitBtn.isDisabled(), '下班表小於上班表時不該能送出');
+  });
+
+  await check('入幣：送出後上班表會自動帶入剛剛的下班表', async () => {
+    // 上一個測試結束時輸入框裡還留著沒送出的無效值，重新關開面板，
+    // 確認 detail 資料裡的 lastMeterReading（第一個測試送出的那筆）正確反映到畫面。
+    await page.click('.action-buttons button:has-text("入幣")'); // 關
+    await page.click('.action-buttons button:has-text("入幣")'); // 開
+    await page.waitForSelector('.panel');
+    const startVal = await page.locator('.panel input').nth(0).inputValue();
+    assert(startVal === String(lastMeterEnd), '上班表應該自動帶入上一筆的下班表 ' + lastMeterEnd + '，實際 ' + startVal);
+  });
+
+  await check('入幣費率：管理員可以改成本台自訂、儲存新費率、改回沿用全局', async () => {
+    // 用另一台乾淨的機台，不影響前面幾個測試已經在算的一號機。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').nth(2).click();
+    await page.waitForSelector('.detail-hero');
+
+    await page.click('.action-buttons button:has-text("入幣")');
+    await page.waitForSelector('.panel');
+    await page.click('.panel-head button:has-text("✎ 編輯")');
+    await page.waitForSelector('.meter-rate-panel');
+    assert(await page.locator('text=每格 $100（全局）').count() > 0, '一開始應該沿用全局費率 100');
+
+    await page.click('button:has-text("改成本台自訂")');
+    await page.waitForFunction(() => document.body.textContent.includes('目前是本台專屬設定'), { timeout: 8000 });
+
+    await page.fill('.meter-rate-panel input', '250');
+    await page.click('.meter-rate-panel button:has-text("儲存")');
+    await page.waitForFunction(() => document.body.textContent.includes('每格 $250（本台自訂）'), { timeout: 8000 });
+
+    await page.click('.panel-head button:has-text("完成")');
+    await page.waitForSelector('.panel');
+    await page.fill('.panel input >> nth=0', '0');
+    await page.fill('.panel input >> nth=1', '10');
+    await page.waitForTimeout(100);
+    const preview = await page.locator('.panel-total .amount').textContent();
+    assert(preview.replace(/[^0-9]/g, '') === '2500', '改成本台自訂費率 250 後，(10-0)×250 應該是 2500，實際 ' + preview);
+
+    await page.click('.panel-head button:has-text("✎ 編輯")');
+    await page.waitForSelector('.meter-rate-panel');
+    await page.click('button:has-text("改回沿用全局")');
+    await page.waitForFunction(() => document.body.textContent.includes('每格 $100（全局）'), { timeout: 8000 });
+
+    await page.click('.panel-head button:has-text("完成")');
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
   });
 
   await check('首頁大額負淨收益不會被拆成兩行，也不會把頁面撐到橫向捲動', async () => {
@@ -280,8 +376,8 @@ async function main() {
     assert(await page.locator('.action-buttons button').count() === 3, '巡邏人員應該有三顆記帳按鈕');
 
     await page.click('.action-buttons button:has-text("入幣")');
-    await page.waitForSelector('.quick-grid');
-    assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到編輯快捷鍵');
+    await page.waitForSelector('.panel');
+    assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到入幣的費率編輯');
 
     await page.click('.action-buttons button:has-text("開獎")');
     await page.waitForSelector('.prize-row');

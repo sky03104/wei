@@ -24,9 +24,10 @@
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
   Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at'],
-  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token'],
+  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'meter_start', 'meter_end', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
+  MeterRates: ['rate_id', 'machine_id', 'rate'],
   Permissions: ['user_id', 'machine_id', 'granted_by', 'granted_at'],
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
   Config: ['key', 'value']
@@ -49,9 +50,10 @@ const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
   Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
-    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖'],
+    '上班表', '下班表', '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
   QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
+  MeterRates: ['設定編號', '機台編號', '每格金額'],
   Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
   Config: ['設定鍵', '設定值']
@@ -617,6 +619,24 @@ function activeRecords() {
   return dbReadAll('Records').filter(function (r) { return !toBool(r.voided); });
 }
 
+/**
+ * 「最新在前」排序，含毫秒同框時的決勝點。
+ *
+ * created_at 是 new Date().toISOString()，只有毫秒精度——連續兩個動作
+ * （例如同一次請求連續呼叫、或很快點兩下）完全可能落在同一毫秒，字串比較
+ * 就分不出先後了。這時候用 _row（試算表列號，dbReadAll 附上的，永遠隨
+ * 插入順序遞增）當決勝點：列號大代表比較晚寫入。
+ *
+ * 不只是排序好不好看的問題——machineDetail 用「最新一筆」的下班表
+ * 自動帶入下一次的上班表，兩筆入幣紀錄同一毫秒寫入時，這裡如果分不出
+ * 先後，自動帶入就可能帶到錯的（比較舊的）那一筆。
+ */
+function _byCreatedAtDesc(a, b) {
+  const byTime = String(b.created_at).localeCompare(String(a.created_at));
+  if (byTime !== 0) return byTime;
+  return (b._row || 0) - (a._row || 0);
+}
+
 // ── 首頁 ────────────────────────────────────────────────
 
 function getDashboard(user) {
@@ -686,8 +706,18 @@ function getMachineDetail(user, machineId, recordLimit) {
     mine.push(r);
   });
 
-  mine.sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
+  mine.sort(_byCreatedAtDesc);
   const limit = recordLimit || 50;
+
+  // 上次入幣紀錄的下班表讀數，前端拿來自動帶入這次的上班表——
+  // 操作人不用每次憑記憶手打一長串碼表數字，接續前一次就好。
+  let lastMeterReading = null;
+  for (let i = 0; i < mine.length; i++) {
+    if (mine[i].type === RECORD_IN && mine[i].meter_end !== '' && mine[i].meter_end !== undefined) {
+      lastMeterReading = toNumber(mine[i].meter_end);
+      break;
+    }
+  }
 
   return {
     machine: {
@@ -703,7 +733,9 @@ function getMachineDetail(user, machineId, recordLimit) {
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
     quickAmounts: _resolveQuickAmounts(machineId),
-    prizes: _resolvePrizes(machineId)
+    prizes: _resolvePrizes(machineId),
+    meterRate: _resolveMeterRate(machineId),
+    lastMeterReading: lastMeterReading
   };
 }
 
@@ -721,6 +753,8 @@ function _publicRecord(r) {
     prizeName: r.prize_name || '',
     unitAmount: r.unit_amount === '' ? null : toNumber(r.unit_amount),
     count: r.count === '' ? null : toNumber(r.count),
+    meterStart: r.meter_start === '' || r.meter_start === undefined ? null : toNumber(r.meter_start),
+    meterEnd: r.meter_end === '' || r.meter_end === undefined ? null : toNumber(r.meter_end),
     userName: name,
     createdAt: r.created_at,
     note: r.note || ''
@@ -751,6 +785,8 @@ function addRecord(user, payload) {
       prize_name: '',
       unit_amount: '',
       count: '',
+      meter_start: '',
+      meter_end: '',
       user_id: user.userId,
       created_at: nowIso(),
       note: String(payload.note || '').substring(0, 200),
@@ -762,6 +798,61 @@ function addRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+}
+
+/**
+ * 入幣改用碼表讀數計算：金額 = (下班表 − 上班表) × 每格金額。
+ * 費率一律從 MeterRates 表查（_resolveMeterRate），前端完全不會、
+ * 也不需要傳費率過來——跟開獎金額只信伺服器算出來的、不信前端傳來的
+ * 同一個道理。
+ */
+function addMeterRecord(user, payload) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
+  assertMachineAccess(user, payload.machineId);
+
+  const meterStart = _validMeterReading(payload.meterStart);
+  const meterEnd = _validMeterReading(payload.meterEnd);
+  if (meterEnd <= meterStart) throw new Error('下班表必須大於上班表');
+
+  const rate = _resolveMeterRate(payload.machineId).rate;
+  const amount = _validAmount((meterEnd - meterStart) * rate);
+
+  return withLock(function () {
+    const dup = _findByClientToken(payload.clientToken);
+    if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
+
+    const rec = {
+      record_id: newId('rec'),
+      machine_id: String(payload.machineId),
+      type: RECORD_IN,
+      amount: amount,
+      prize_id: '',
+      prize_name: '',
+      unit_amount: '',
+      count: '',
+      meter_start: meterStart,
+      meter_end: meterEnd,
+      user_id: user.userId,
+      created_at: nowIso(),
+      note: String(payload.note || '').substring(0, 200),
+      voided: false,
+      voided_by: '',
+      voided_at: '',
+      client_token: String(payload.clientToken || '')
+    };
+    dbInsert('Records', rec);
+    return { duplicated: false, records: [_publicRecord(rec)] };
+  });
+}
+
+/** 碼表讀數只接受非負整數（機械式計數器不會有小數，也不會是負的）。 */
+function _validMeterReading(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) throw new Error('碼表讀數必須是數字');
+  if (n < 0) throw new Error('碼表讀數不能是負數');
+  if (Math.floor(n) !== n) throw new Error('碼表讀數必須是整數');
+  if (n > 99999999) throw new Error('碼表讀數超出上限');
+  return n;
 }
 
 function _validAmount(raw) {
@@ -929,6 +1020,49 @@ function listPrizes(user, machineId) {
   return { scope: _scopedRows('Prizes', machineId).scope, prizes: _resolvePrizes(machineId) };
 }
 
+/**
+ * 入幣用的碼表費率（每格代表多少錢）。跟快捷金額／獎型同一套
+ * 「全局預設 + 單台可覆寫」規則，只是這裡的設定只有一個數字，不是一份清單。
+ * 找不到任何列（理論上 setup() 一定會建好全局那一列）時退回 100 保底。
+ */
+function _resolveMeterRate(machineId) {
+  const res = _scopedRows('MeterRates', machineId);
+  const row = res.rows[0];
+  return { scope: res.scope, rate: row ? toNumber(row.rate) : 100 };
+}
+
+function listMeterRate(user, machineId) {
+  assertMachineAccess(user, machineId);
+  return _resolveMeterRate(machineId);
+}
+
+/**
+ * 設定碼表費率。跟快捷金額/獎型不同的是這裡永遠只有一列（單一數字，
+ * 不是清單），所以不需要先「複製全局成單台」再編輯——直接依 machineId
+ * 找出這個範圍現有的列就更新，沒有就新增一列，一步到位。
+ * machineId 空字串＝改全局預設；有值＝改（或建立）該機台的專屬費率。
+ * 「改回沿用全局」則沿用既有的 resetScope action（見 Code.gs）。
+ */
+function saveMeterRate(user, payload) {
+  requireRole(user, [ROLE_ADMIN]);
+  const scopeMachine = String(payload.machineId || '');
+  if (scopeMachine) assertMachineAccess(user, scopeMachine);
+  const rate = _validAmount(payload.rate);
+
+  return withLock(function () {
+    const existing = dbReadAll('MeterRates').filter(function (r) {
+      return String(r.machine_id || '') === scopeMachine;
+    });
+    if (existing.length) {
+      dbUpdate('MeterRates', existing[0]._row, { rate: rate });
+      return { rateId: String(existing[0].rate_id), rate: rate };
+    }
+    const row = { rate_id: newId('mr'), machine_id: scopeMachine, rate: rate };
+    dbInsert('MeterRates', row);
+    return { rateId: row.rate_id, rate: rate };
+  });
+}
+
 function saveQuickAmount(user, payload) {
   requireRole(user, [ROLE_ADMIN]);
   const scopeMachine = String(payload.machineId || '');
@@ -973,20 +1107,31 @@ function deleteQuickAmount(user, qaId) {
 }
 
 /** 把全局設定複製一份成這台機台的專屬設定，之後改這台不影響其他台。 */
+/** 每張可覆寫設定表新增一列時，主鍵欄位名稱與 id 前綴。 */
+const SCOPED_ID_FIELD = {
+  QuickAmounts: { field: 'qa_id', prefix: 'qa' },
+  Prizes: { field: 'prize_id', prefix: 'prz' },
+  MeterRates: { field: 'rate_id', prefix: 'mr' }
+};
+
 function forkScopeToMachine(user, sheetName, machineId) {
   requireRole(user, [ROLE_ADMIN]);
   assertMachineAccess(user, machineId);
-  if (sheetName !== 'QuickAmounts' && sheetName !== 'Prizes') throw new Error('不支援的設定類型');
+  const idField = SCOPED_ID_FIELD[sheetName];
+  if (!idField) throw new Error('不支援的設定類型');
 
   return withLock(function () {
     const own = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id) === String(machineId); });
     if (own.length) return { scope: 'machine', created: 0 };
 
     const globals = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id || '') === ''; });
+    // 全局本身是空的就沒東西可複製——不要靜默回報「已複製成單台」，
+    // 那樣 created:0 卻宣稱 scope:'machine' 會誤導呼叫端。
+    if (!globals.length) throw new Error('全局設定是空的，沒有東西可以複製');
     const copies = globals.map(function (r) {
       const copy = {};
       SCHEMA[sheetName].forEach(function (col) { copy[col] = r[col]; });
-      copy[sheetName === 'Prizes' ? 'prize_id' : 'qa_id'] = newId(sheetName === 'Prizes' ? 'prz' : 'qa');
+      copy[idField.field] = newId(idField.prefix);
       copy.machine_id = String(machineId);
       return copy;
     });
@@ -995,11 +1140,15 @@ function forkScopeToMachine(user, sheetName, machineId) {
   });
 }
 
-/** 刪掉這台的專屬設定，回頭沿用全局。 */
+/**
+ * 刪掉這台的專屬設定，回頭沿用全局。
+ * MeterRates 也走這條：「改成本台自訂」用 forkScope 複製一份全局費率過來，
+ * 這裡負責反過來的「改回沿用全局」。
+ */
 function resetScopeToGlobal(user, sheetName, machineId) {
   requireRole(user, [ROLE_ADMIN]);
   assertMachineAccess(user, machineId);
-  if (sheetName !== 'QuickAmounts' && sheetName !== 'Prizes') throw new Error('不支援的設定類型');
+  if (!SCOPED_ID_FIELD[sheetName]) throw new Error('不支援的設定類型');
 
   return withLock(function () {
     const own = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id) === String(machineId); });
@@ -1449,9 +1598,7 @@ function getReport(user, params) {
   const stats = Object.keys(prizeStats).map(function (k) { return prizeStats[k]; });
   stats.sort(function (a, b) { return b.amount - a.amount; });
 
-  const sorted = rows.slice().sort(function (a, b) {
-    return String(b.created_at).localeCompare(String(a.created_at));
-  });
+  const sorted = rows.slice().sort(_byCreatedAtDesc);
 
   return {
     range: range,
@@ -1534,7 +1681,7 @@ function exportCsv(user, params) {
   dbReadAll('Users').forEach(function (u) { userNames[String(u.user_id)] = u.display_name || u.username; });
 
   const lines = [];
-  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '操作人', '備註'].join(','));
+  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '上班表', '下班表', '操作人', '備註'].join(','));
 
   rows.sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); });
   rows.forEach(function (r) {
@@ -1548,6 +1695,8 @@ function exportCsv(user, params) {
       _csvCell(r.prize_name || ''),
       _csvCell(r.unit_amount === '' ? '' : toNumber(r.unit_amount)),
       _csvCell(r.count === '' ? '' : toNumber(r.count)),
+      _csvCell(r.meter_start === '' ? '' : toNumber(r.meter_start)),
+      _csvCell(r.meter_end === '' ? '' : toNumber(r.meter_end)),
       _csvCell(userNames[String(r.user_id)] || ''),
       _csvCell(r.note || '')
     ].join(','));
@@ -1556,8 +1705,8 @@ function exportCsv(user, params) {
   const summary = emptySummary();
   rows.forEach(function (r) { _accumulate(summary, r); });
   lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', ''].map(_csvCell).join(','));
+  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, '', '', ''].map(_csvCell).join(','));
+  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {
@@ -1593,15 +1742,18 @@ const ACTION_ROLES = {
   exportCsv: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listPrizes: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  listMeterRate: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
 
   addRecord: [ROLE_ADMIN, ROLE_PATROL],
   addPrizeRecord: [ROLE_ADMIN, ROLE_PATROL],
+  addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
   saveQuickAmount: [ROLE_ADMIN],
   deleteQuickAmount: [ROLE_ADMIN],
   savePrize: [ROLE_ADMIN],
   deletePrize: [ROLE_ADMIN],
+  saveMeterRate: [ROLE_ADMIN],
   forkScope: [ROLE_ADMIN],
   resetScope: [ROLE_ADMIN],
 
@@ -1693,11 +1845,15 @@ function _dispatch(action, p, user) {
       return listQuickAmounts(user, p.machineId);
     case 'listPrizes':
       return listPrizes(user, p.machineId);
+    case 'listMeterRate':
+      return listMeterRate(user, p.machineId);
 
     case 'addRecord':
       return addRecord(user, p);
     case 'addPrizeRecord':
       return addPrizeRecord(user, p);
+    case 'addMeterRecord':
+      return addMeterRecord(user, p);
     case 'voidRecord':
       return voidRecord(user, p.recordId);
 
@@ -1709,6 +1865,8 @@ function _dispatch(action, p, user) {
       return savePrize(user, p);
     case 'deletePrize':
       return deletePrize(user, p.prizeId);
+    case 'saveMeterRate':
+      return saveMeterRate(user, p);
     case 'forkScope':
       return forkScopeToMachine(user, p.sheet, p.machineId);
     case 'resetScope':
@@ -1791,15 +1949,13 @@ function setup() {
   }
 
   if (!dbReadAll('QuickAmounts').length) {
+    // 入幣改用碼表讀數計算，不再需要快捷金額按鈕，只保留出幣的預設值。
     const seed = [];
-    [10, 50, 100, 500, 1000].forEach(function (a, i) {
-      seed.push({ qa_id: newId('qa'), machine_id: '', type: RECORD_IN, amount: a, label: '$' + a, sort_order: i + 1 });
-    });
     [10, 50, 100].forEach(function (a, i) {
       seed.push({ qa_id: newId('qa'), machine_id: '', type: RECORD_OUT, amount: a, label: '$' + a, sort_order: i + 1 });
     });
     dbInsertMany('QuickAmounts', seed);
-    out.push('已建立預設快捷金額（全局）');
+    out.push('已建立預設快捷金額（全局，僅出幣）');
   }
 
   if (!dbReadAll('Prizes').length) {
@@ -1809,6 +1965,11 @@ function setup() {
       { prize_id: newId('prz'), machine_id: '', name: '小娃', amount: 40, sort_order: 3, active: true }
     ]);
     out.push('已建立預設獎型（全局）');
+  }
+
+  if (!dbReadAll('MeterRates').length) {
+    dbInsert('MeterRates', { rate_id: newId('mr'), machine_id: '', rate: 100 });
+    out.push('已建立預設碼表費率（全局，每格 $100）');
   }
 
   const msg = out.join('\n');
@@ -1935,6 +2096,11 @@ function _selfTestBody(results) {
       _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS[name]), name + ' 分頁的表頭應該是中文');
     });
   });
+
+  // 手動塞這一列，模擬真實環境跑過 setup() 之後的狀態——這裡故意不直接呼叫
+  // 真正的 setup()，因為它在「目前沒有啟用中管理員」時會自動建一個，
+  // 會干擾後面依賴「當下只有一個管理員」的測試（見檔案最後方的說明）。
+  dbInsert('MeterRates', { rate_id: newId('mr'), machine_id: '', rate: 100 });
 
   const admin = _mkUser('t_admin', ROLE_ADMIN, 'admin123');
   const patrol = _mkUser('t_patrol', ROLE_PATROL, 'patrol123');
@@ -2180,6 +2346,109 @@ function _selfTestBody(results) {
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: prizeMachine }).total.prize, 230, '停用後歷史帳仍算得出來');
   });
 
+  // ── 入幣（碼表計算）──
+  const meterMachine = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表測試台', sortOrder: 15 }).machineId;
+
+  _t(results, '入幣：(下班表－上班表)×費率，預設費率 100', function () {
+    const res = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: meterMachine,
+      meterStart: 1000, meterEnd: 1050, clientToken: newId('ct')
+    });
+    _assertEq(res.records.length, 1, '應該只寫入一筆');
+    _assertEq(res.records[0].amount, 5000, '(1050-1000)×100 應該是 5000');
+    _assertEq(res.records[0].meterStart, 1000, '應保留上班表讀數');
+    _assertEq(res.records[0].meterEnd, 1050, '應保留下班表讀數');
+    _assertEq(res.records[0].type, 'in', '應該算成入幣');
+  });
+
+  _t(results, '入幣：金額與費率一律由後端算，前端塞假資料沒有用', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表偽造測試台', sortOrder: 16 }).machineId;
+    const res = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 0, meterEnd: 10, amount: 1, rate: 1, clientToken: newId('ct')
+    });
+    _assertEq(res.records[0].amount, 1000, '應該用伺服器的費率 100 計算，不理會前端傳來的 amount/rate');
+  });
+
+  _t(results, '入幣：下班表必須大於上班表', function () {
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 500, meterEnd: 500, clientToken: newId('ct') });
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 500, meterEnd: 400, clientToken: newId('ct') });
+  });
+
+  _t(results, '入幣：碼表讀數必須是非負整數', function () {
+    [-1, 1.5].forEach(function (bad) {
+      _fails({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: bad, meterEnd: 999999, clientToken: newId('ct') });
+    });
+  });
+
+  _t(results, '入幣：台主不能記帳，巡邏人員可以', function () {
+    _fails({ action: 'addMeterRecord', token: ownerTok, machineId: machineA, meterStart: 0, meterEnd: 10, clientToken: newId('ct') }, 'PERMISSION');
+    _ok({ action: 'addMeterRecord', token: patrolTok, machineId: meterMachine, meterStart: 1050, meterEnd: 1060, clientToken: newId('ct') });
+  });
+
+  _t(results, '入幣：同一個 clientToken 送兩次只會寫入一筆', function () {
+    const ct = newId('ct');
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 2000, meterEnd: 2010, clientToken: ct });
+    const second = _ok({ action: 'addMeterRecord', token: adminTok, machineId: meterMachine, meterStart: 2000, meterEnd: 2010, clientToken: ct });
+    _assertEq(second.duplicated, true, '第二次應被判定為重複');
+  });
+
+  _t(results, '入幣：detail 頁會帶出上次的下班表，給前端自動帶入下一次的上班表', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表接續測試台', sortOrder: 17 }).machineId;
+    let d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, null, '從沒記過帳的機台應該是 null');
+
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 100, meterEnd: 200, clientToken: newId('ct') });
+    d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, 200, '應該是最新一筆的下班表讀數');
+
+    _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 200, meterEnd: 350, clientToken: newId('ct') });
+    d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.lastMeterReading, 350, '再記一筆後應該更新成最新的下班表讀數');
+  });
+
+  _t(results, '入幣費率：全局預設 + 單台覆寫，改回沿用全局；費率變動不影響歷史紀錄', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率覆寫測試台', sortOrder: 18 }).machineId;
+
+    let rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'global', '一開始應沿用全局');
+    _assertEq(rate.rate, 100, '全局預設費率應該是 100');
+
+    const before = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 0, meterEnd: 10, clientToken: newId('ct')
+    });
+    _assertEq(before.records[0].amount, 1000, '用全局費率 100 算出來應該是 1000');
+
+    _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 300 });
+    rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'machine', '設定過後應該切成 machine');
+    _assertEq(rate.rate, 300, '應該是剛設定的單台費率');
+
+    const other = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率不受影響測試台', sortOrder: 19 }).machineId;
+    _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: other }).rate, 100, '改單台費率不該影響其他機台');
+
+    const historicalCheck = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    const oldRecord = historicalCheck.records.filter(function (r) { return r.recordId === before.records[0].recordId; })[0];
+    _assertEq(oldRecord.amount, 1000, '改費率不該動到已經記好的舊帳');
+
+    const after = _ok({
+      action: 'addMeterRecord', token: adminTok, machineId: mid,
+      meterStart: 10, meterEnd: 20, clientToken: newId('ct')
+    });
+    _assertEq(after.records[0].amount, 3000, '改費率後的新紀錄要用新費率 300 算');
+
+    _ok({ action: 'resetScope', token: adminTok, sheet: 'MeterRates', machineId: mid });
+    rate = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(rate.scope, 'global', '清掉單台費率後應該落回全局');
+    _assertEq(rate.rate, 100, '落回全局後應該是全局的 100');
+  });
+
+  _t(results, '入幣費率：只有管理員能設定', function () {
+    _fails({ action: 'saveMeterRate', token: patrolTok, machineId: '', rate: 999 }, 'PERMISSION');
+    _fails({ action: 'saveMeterRate', token: ownerTok, machineId: '', rate: 999 }, 'PERMISSION');
+  });
+
   // ── 全局預設 + 單台覆寫 ──
   _t(results, '快捷金額：單台設定覆寫全局，刪掉後落回全局', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '覆寫測試台', sortOrder: 13 }).machineId;
@@ -2209,6 +2478,22 @@ function _selfTestBody(results) {
     _assertEq(after.scope, 'machine', '複製後應切成 machine');
     _assertEq(after.prizes.length, before.prizes.length, '複製後獎型數量應相同');
     _assert(after.prizes[0].prizeId !== before.prizes[0].prizeId, '複製出來的應該是新的獎型 id');
+  });
+
+  _t(results, '入幣費率：forkScope 也支援 MeterRates（先複製全局值再各自調整）', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率 fork 測試台', sortOrder: 20 }).machineId;
+    const before = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(before.scope, 'global', '一開始沿用全局');
+    _assertEq(before.rate, 100, '全局費率是 100');
+
+    _ok({ action: 'forkScope', token: adminTok, sheet: 'MeterRates', machineId: mid });
+    const after = _ok({ action: 'listMeterRate', token: adminTok, machineId: mid });
+    _assertEq(after.scope, 'machine', '複製後應切成 machine');
+    _assertEq(after.rate, 100, '複製當下應該還是跟全局一樣的值，之後才各自調整');
+
+    _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 250 });
+    const untouched = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率 fork 對照台', sortOrder: 21 }).machineId;
+    _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: untouched }).rate, 100, '調整這台之後不該動到全局（另一台仍是全局的 100）');
   });
 
   // ── 報表 ──

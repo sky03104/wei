@@ -51,9 +51,9 @@ function seed() {
   const b = call({ action: 'adminSaveMachine', name: '二號機（娃娃）', location: '門口右側', color: '#E8574F', sortOrder: 2 }).data.machineId;
   call({ action: 'adminSaveMachine', name: '三號機（維修）', location: '角落', color: '#FBBF24', status: 'maintenance', sortOrder: 3 });
 
-  call({ action: 'addRecord', machineId: a, type: 'in', amount: 500, clientToken: 'seed1' });
+  call({ action: 'addMeterRecord', machineId: a, meterStart: 1000, meterEnd: 1005, clientToken: 'seed1' }); // $500（費率預設 100）
   call({ action: 'addRecord', machineId: a, type: 'out', amount: 50, clientToken: 'seed2' });
-  call({ action: 'addRecord', machineId: b, type: 'in', amount: 320, clientToken: 'seed3' });
+  call({ action: 'addMeterRecord', machineId: b, meterStart: 500, meterEnd: 503, clientToken: 'seed3' }); // $300
 
   call({ action: 'adminSaveUser', username: 'patrol1', displayName: '阿明（巡邏）', role: 'patrol', password: 'patrol123' });
   const owner = call({ action: 'adminSaveUser', username: 'owner1', displayName: '林老闆（台主）', role: 'owner', password: 'owner123' }).data.userId;

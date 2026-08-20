@@ -21,15 +21,18 @@ const ACTION_ROLES = {
   exportCsv: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listPrizes: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  listMeterRate: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
 
   addRecord: [ROLE_ADMIN, ROLE_PATROL],
   addPrizeRecord: [ROLE_ADMIN, ROLE_PATROL],
+  addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
   saveQuickAmount: [ROLE_ADMIN],
   deleteQuickAmount: [ROLE_ADMIN],
   savePrize: [ROLE_ADMIN],
   deletePrize: [ROLE_ADMIN],
+  saveMeterRate: [ROLE_ADMIN],
   forkScope: [ROLE_ADMIN],
   resetScope: [ROLE_ADMIN],
 
@@ -121,11 +124,15 @@ function _dispatch(action, p, user) {
       return listQuickAmounts(user, p.machineId);
     case 'listPrizes':
       return listPrizes(user, p.machineId);
+    case 'listMeterRate':
+      return listMeterRate(user, p.machineId);
 
     case 'addRecord':
       return addRecord(user, p);
     case 'addPrizeRecord':
       return addPrizeRecord(user, p);
+    case 'addMeterRecord':
+      return addMeterRecord(user, p);
     case 'voidRecord':
       return voidRecord(user, p.recordId);
 
@@ -137,6 +144,8 @@ function _dispatch(action, p, user) {
       return savePrize(user, p);
     case 'deletePrize':
       return deletePrize(user, p.prizeId);
+    case 'saveMeterRate':
+      return saveMeterRate(user, p);
     case 'forkScope':
       return forkScopeToMachine(user, p.sheet, p.machineId);
     case 'resetScope':
@@ -219,15 +228,13 @@ function setup() {
   }
 
   if (!dbReadAll('QuickAmounts').length) {
+    // 入幣改用碼表讀數計算，不再需要快捷金額按鈕，只保留出幣的預設值。
     const seed = [];
-    [10, 50, 100, 500, 1000].forEach(function (a, i) {
-      seed.push({ qa_id: newId('qa'), machine_id: '', type: RECORD_IN, amount: a, label: '$' + a, sort_order: i + 1 });
-    });
     [10, 50, 100].forEach(function (a, i) {
       seed.push({ qa_id: newId('qa'), machine_id: '', type: RECORD_OUT, amount: a, label: '$' + a, sort_order: i + 1 });
     });
     dbInsertMany('QuickAmounts', seed);
-    out.push('已建立預設快捷金額（全局）');
+    out.push('已建立預設快捷金額（全局，僅出幣）');
   }
 
   if (!dbReadAll('Prizes').length) {
@@ -237,6 +244,11 @@ function setup() {
       { prize_id: newId('prz'), machine_id: '', name: '小娃', amount: 40, sort_order: 3, active: true }
     ]);
     out.push('已建立預設獎型（全局）');
+  }
+
+  if (!dbReadAll('MeterRates').length) {
+    dbInsert('MeterRates', { rate_id: newId('mr'), machine_id: '', rate: 100 });
+    out.push('已建立預設碼表費率（全局，每格 $100）');
   }
 
   const msg = out.join('\n');

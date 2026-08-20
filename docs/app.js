@@ -545,10 +545,12 @@ function togglePanel(kind) {
 }
 
 function renderPanel(d) {
-  return state.panel === 'prize' ? prizePanel(d) : quickPanel(d, state.panel);
+  if (state.panel === 'prize') return prizePanel(d);
+  if (state.panel === 'in') return meterPanel(d);
+  return quickPanel(d, state.panel); // 只剩 'out' 會走到這裡
 }
 
-// ── 面板：入幣 / 出幣快捷金額 ───────────────────────────
+// ── 面板：出幣快捷金額 ──────────────────────────────────
 
 function quickPanel(d, type) {
   const list = d.quickAmounts[type] || [];
@@ -677,6 +679,113 @@ function submitAmount(machineId, type, amount) {
     else toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success');
     await loadDetail(machineId);
   });
+}
+
+// ── 面板：入幣（碼表登錄）───────────────────────────────
+
+/**
+ * 入幣不再直接輸入金額，改成登記上班表／下班表兩個碼表讀數，
+ * 金額 = (下班表 − 上班表) × 每格金額，由後端算好才是準的
+ * （前端這裡的即時試算只是給操作人看，送出時不會把算出來的金額帶過去）。
+ */
+function meterPanel(d) {
+  const rateInfo = d.meterRate;
+
+  const startInput = h('input', {
+    type: 'number', inputmode: 'numeric', min: '0', step: '1',
+    value: d.lastMeterReading === null ? '' : String(d.lastMeterReading)
+  });
+  const endInput = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1' });
+  const previewEl = h('span', { class: 'amount num', text: money(0) });
+  const submitBtn = h('button', { class: 'btn btn-in', disabled: true }, '送出');
+  const hintEl = h('p', { class: 'small muted', style: 'margin-top:6px' }, '');
+
+  function recalc() {
+    const start = Number(startInput.value);
+    const end = Number(endInput.value);
+    const filled = startInput.value !== '' && endInput.value !== '';
+    const validNumbers = Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end >= 0;
+    const increasing = end > start;
+
+    let hint = '';
+    if (filled && validNumbers && !increasing) hint = '下班表必須大於上班表';
+    hintEl.textContent = hint;
+
+    const ok = filled && validNumbers && increasing;
+    previewEl.textContent = money(ok ? (end - start) * rateInfo.rate : 0);
+    submitBtn.disabled = !ok;
+  }
+  startInput.addEventListener('input', recalc);
+  endInput.addEventListener('input', recalc);
+  submitBtn.addEventListener('click', () => submitMeterRecord(d.machine.machineId, startInput, endInput));
+  recalc();
+
+  return h('div', { class: 'panel' }, [
+    h('div', { class: 'panel-head' }, [
+      h('h3', { text: '入幣（碼表登錄）' }),
+      isAdmin()
+        ? h('button', {
+          class: 'btn btn-sm btn-ghost',
+          onclick: () => { state.editMode = !state.editMode; render(); }
+        }, state.editMode ? '完成' : '✎ 編輯')
+        : null
+    ]),
+    h('p', { class: 'small muted', style: 'margin-bottom:12px' },
+      '目前費率：每格 ' + money(rateInfo.rate) + (rateInfo.scope === 'machine' ? '（本台自訂）' : '（全局）')),
+    dialogField('上班表', startInput),
+    dialogField('下班表', endInput),
+    hintEl,
+    h('div', { class: 'panel-total' }, [
+      h('span', { class: 'muted' }, '本次入幣'),
+      h('div', { class: 'row' }, [previewEl, submitBtn])
+    ]),
+    isAdmin() && state.editMode ? meterRateEditor(d) : null
+  ]);
+}
+
+function submitMeterRecord(machineId, startInput, endInput) {
+  const meterStart = Number(startInput.value);
+  const meterEnd = Number(endInput.value);
+  run(async () => {
+    const res = await api('addMeterRecord', {
+      machineId: machineId,
+      meterStart: meterStart,
+      meterEnd: meterEnd,
+      clientToken: uuid()
+    });
+    if (res.duplicated) toast('這筆已經記過了', 'success');
+    else toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success');
+    await loadDetail(machineId);
+  });
+}
+
+/**
+ * 費率編輯：還在全局範圍時，直接改這裡改的就是全局值（跟快捷金額/獎型
+ * 在還沒 fork 之前編輯就是在改全局，是同一套邏輯）；已經 fork 成本台
+ * 專屬之後，改這裡只影響這一台。「改成本台自訂／改回沿用全局」共用
+ * scopeNote()，跟快捷金額/獎型長一樣、操作起來也一樣。
+ */
+function meterRateEditor(d) {
+  const rateInfo = d.meterRate;
+  const input = h('input', { type: 'number', inputmode: 'decimal', min: '1', value: rateInfo.rate });
+
+  return h('div', { class: 'panel meter-rate-panel', style: 'margin-top:10px' }, [
+    h('div', { class: 'panel-head' }, [h('h3', { text: '每格金額（碼表費率）' })]),
+    h('div', { class: 'custom-amount' }, [
+      input,
+      h('button', {
+        class: 'btn btn-primary',
+        onclick: () => run(async () => {
+          await api('saveMeterRate', {
+            machineId: rateInfo.scope === 'machine' ? d.machine.machineId : '',
+            rate: Number(input.value)
+          });
+          await loadDetail(d.machine.machineId);
+        }, { success: '已儲存' })
+      }, '儲存')
+    ]),
+    scopeNote(d.machine.machineId, 'MeterRates', rateInfo.scope)
+  ]);
 }
 
 // ── 面板：開獎 ──────────────────────────────────────────
@@ -832,10 +941,17 @@ function renderRecords(d) {
 
 function recordItem(r) {
   const sign = r.type === 'in' ? '+' : '−';
+  const hasMeter = r.type === 'in' && r.meterStart !== null && r.meterEnd !== null;
+  const title = r.type === 'prize'
+    ? (r.prizeName + ' ×' + r.count)
+    : hasMeter
+      ? ('上班表 ' + r.meterStart.toLocaleString('zh-TW') + ' → 下班表 ' + r.meterEnd.toLocaleString('zh-TW'))
+      : TYPE_LABELS[r.type];
+
   return h('div', { class: 'record-item' }, [
     h('span', { class: 'badge badge-' + r.type, text: TYPE_LABELS[r.type] }),
     h('div', { class: 'rec-main' }, [
-      h('div', { class: 'rec-title', text: r.type === 'prize' ? (r.prizeName + ' ×' + r.count) : TYPE_LABELS[r.type] }),
+      h('div', { class: 'rec-title', text: title }),
       h('div', { class: 'rec-meta', text: formatTime(r.createdAt) + ' · ' + (r.userName || '—') })
     ]),
     h('div', { class: 'rec-amount ' + r.type, text: sign + money(r.amount) }),

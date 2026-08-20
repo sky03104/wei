@@ -109,9 +109,7 @@ function getReport(user, params) {
   const stats = Object.keys(prizeStats).map(function (k) { return prizeStats[k]; });
   stats.sort(function (a, b) { return b.amount - a.amount; });
 
-  const sorted = rows.slice().sort(function (a, b) {
-    return String(b.created_at).localeCompare(String(a.created_at));
-  });
+  const sorted = rows.slice().sort(_byCreatedAtDesc);
 
   return {
     range: range,
@@ -194,7 +192,7 @@ function exportCsv(user, params) {
   dbReadAll('Users').forEach(function (u) { userNames[String(u.user_id)] = u.display_name || u.username; });
 
   const lines = [];
-  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '操作人', '備註'].join(','));
+  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '上班表', '下班表', '操作人', '備註'].join(','));
 
   rows.sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); });
   rows.forEach(function (r) {
@@ -208,6 +206,8 @@ function exportCsv(user, params) {
       _csvCell(r.prize_name || ''),
       _csvCell(r.unit_amount === '' ? '' : toNumber(r.unit_amount)),
       _csvCell(r.count === '' ? '' : toNumber(r.count)),
+      _csvCell(r.meter_start === '' ? '' : toNumber(r.meter_start)),
+      _csvCell(r.meter_end === '' ? '' : toNumber(r.meter_end)),
       _csvCell(userNames[String(r.user_id)] || ''),
       _csvCell(r.note || '')
     ].join(','));
@@ -216,8 +216,8 @@ function exportCsv(user, params) {
   const summary = emptySummary();
   rows.forEach(function (r) { _accumulate(summary, r); });
   lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', ''].map(_csvCell).join(','));
+  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, '', '', ''].map(_csvCell).join(','));
+  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {

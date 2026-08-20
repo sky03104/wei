@@ -50,6 +50,24 @@ function activeRecords() {
   return dbReadAll('Records').filter(function (r) { return !toBool(r.voided); });
 }
 
+/**
+ * 「最新在前」排序，含毫秒同框時的決勝點。
+ *
+ * created_at 是 new Date().toISOString()，只有毫秒精度——連續兩個動作
+ * （例如同一次請求連續呼叫、或很快點兩下）完全可能落在同一毫秒，字串比較
+ * 就分不出先後了。這時候用 _row（試算表列號，dbReadAll 附上的，永遠隨
+ * 插入順序遞增）當決勝點：列號大代表比較晚寫入。
+ *
+ * 不只是排序好不好看的問題——machineDetail 用「最新一筆」的下班表
+ * 自動帶入下一次的上班表，兩筆入幣紀錄同一毫秒寫入時，這裡如果分不出
+ * 先後，自動帶入就可能帶到錯的（比較舊的）那一筆。
+ */
+function _byCreatedAtDesc(a, b) {
+  const byTime = String(b.created_at).localeCompare(String(a.created_at));
+  if (byTime !== 0) return byTime;
+  return (b._row || 0) - (a._row || 0);
+}
+
 // ── 首頁 ────────────────────────────────────────────────
 
 function getDashboard(user) {
@@ -119,8 +137,18 @@ function getMachineDetail(user, machineId, recordLimit) {
     mine.push(r);
   });
 
-  mine.sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); });
+  mine.sort(_byCreatedAtDesc);
   const limit = recordLimit || 50;
+
+  // 上次入幣紀錄的下班表讀數，前端拿來自動帶入這次的上班表——
+  // 操作人不用每次憑記憶手打一長串碼表數字，接續前一次就好。
+  let lastMeterReading = null;
+  for (let i = 0; i < mine.length; i++) {
+    if (mine[i].type === RECORD_IN && mine[i].meter_end !== '' && mine[i].meter_end !== undefined) {
+      lastMeterReading = toNumber(mine[i].meter_end);
+      break;
+    }
+  }
 
   return {
     machine: {
@@ -136,7 +164,9 @@ function getMachineDetail(user, machineId, recordLimit) {
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
     quickAmounts: _resolveQuickAmounts(machineId),
-    prizes: _resolvePrizes(machineId)
+    prizes: _resolvePrizes(machineId),
+    meterRate: _resolveMeterRate(machineId),
+    lastMeterReading: lastMeterReading
   };
 }
 
@@ -154,6 +184,8 @@ function _publicRecord(r) {
     prizeName: r.prize_name || '',
     unitAmount: r.unit_amount === '' ? null : toNumber(r.unit_amount),
     count: r.count === '' ? null : toNumber(r.count),
+    meterStart: r.meter_start === '' || r.meter_start === undefined ? null : toNumber(r.meter_start),
+    meterEnd: r.meter_end === '' || r.meter_end === undefined ? null : toNumber(r.meter_end),
     userName: name,
     createdAt: r.created_at,
     note: r.note || ''
@@ -184,6 +216,8 @@ function addRecord(user, payload) {
       prize_name: '',
       unit_amount: '',
       count: '',
+      meter_start: '',
+      meter_end: '',
       user_id: user.userId,
       created_at: nowIso(),
       note: String(payload.note || '').substring(0, 200),
@@ -195,6 +229,61 @@ function addRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+}
+
+/**
+ * 入幣改用碼表讀數計算：金額 = (下班表 − 上班表) × 每格金額。
+ * 費率一律從 MeterRates 表查（_resolveMeterRate），前端完全不會、
+ * 也不需要傳費率過來——跟開獎金額只信伺服器算出來的、不信前端傳來的
+ * 同一個道理。
+ */
+function addMeterRecord(user, payload) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
+  assertMachineAccess(user, payload.machineId);
+
+  const meterStart = _validMeterReading(payload.meterStart);
+  const meterEnd = _validMeterReading(payload.meterEnd);
+  if (meterEnd <= meterStart) throw new Error('下班表必須大於上班表');
+
+  const rate = _resolveMeterRate(payload.machineId).rate;
+  const amount = _validAmount((meterEnd - meterStart) * rate);
+
+  return withLock(function () {
+    const dup = _findByClientToken(payload.clientToken);
+    if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
+
+    const rec = {
+      record_id: newId('rec'),
+      machine_id: String(payload.machineId),
+      type: RECORD_IN,
+      amount: amount,
+      prize_id: '',
+      prize_name: '',
+      unit_amount: '',
+      count: '',
+      meter_start: meterStart,
+      meter_end: meterEnd,
+      user_id: user.userId,
+      created_at: nowIso(),
+      note: String(payload.note || '').substring(0, 200),
+      voided: false,
+      voided_by: '',
+      voided_at: '',
+      client_token: String(payload.clientToken || '')
+    };
+    dbInsert('Records', rec);
+    return { duplicated: false, records: [_publicRecord(rec)] };
+  });
+}
+
+/** 碼表讀數只接受非負整數（機械式計數器不會有小數，也不會是負的）。 */
+function _validMeterReading(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) throw new Error('碼表讀數必須是數字');
+  if (n < 0) throw new Error('碼表讀數不能是負數');
+  if (Math.floor(n) !== n) throw new Error('碼表讀數必須是整數');
+  if (n > 99999999) throw new Error('碼表讀數超出上限');
+  return n;
 }
 
 function _validAmount(raw) {
@@ -362,6 +451,49 @@ function listPrizes(user, machineId) {
   return { scope: _scopedRows('Prizes', machineId).scope, prizes: _resolvePrizes(machineId) };
 }
 
+/**
+ * 入幣用的碼表費率（每格代表多少錢）。跟快捷金額／獎型同一套
+ * 「全局預設 + 單台可覆寫」規則，只是這裡的設定只有一個數字，不是一份清單。
+ * 找不到任何列（理論上 setup() 一定會建好全局那一列）時退回 100 保底。
+ */
+function _resolveMeterRate(machineId) {
+  const res = _scopedRows('MeterRates', machineId);
+  const row = res.rows[0];
+  return { scope: res.scope, rate: row ? toNumber(row.rate) : 100 };
+}
+
+function listMeterRate(user, machineId) {
+  assertMachineAccess(user, machineId);
+  return _resolveMeterRate(machineId);
+}
+
+/**
+ * 設定碼表費率。跟快捷金額/獎型不同的是這裡永遠只有一列（單一數字，
+ * 不是清單），所以不需要先「複製全局成單台」再編輯——直接依 machineId
+ * 找出這個範圍現有的列就更新，沒有就新增一列，一步到位。
+ * machineId 空字串＝改全局預設；有值＝改（或建立）該機台的專屬費率。
+ * 「改回沿用全局」則沿用既有的 resetScope action（見 Code.gs）。
+ */
+function saveMeterRate(user, payload) {
+  requireRole(user, [ROLE_ADMIN]);
+  const scopeMachine = String(payload.machineId || '');
+  if (scopeMachine) assertMachineAccess(user, scopeMachine);
+  const rate = _validAmount(payload.rate);
+
+  return withLock(function () {
+    const existing = dbReadAll('MeterRates').filter(function (r) {
+      return String(r.machine_id || '') === scopeMachine;
+    });
+    if (existing.length) {
+      dbUpdate('MeterRates', existing[0]._row, { rate: rate });
+      return { rateId: String(existing[0].rate_id), rate: rate };
+    }
+    const row = { rate_id: newId('mr'), machine_id: scopeMachine, rate: rate };
+    dbInsert('MeterRates', row);
+    return { rateId: row.rate_id, rate: rate };
+  });
+}
+
 function saveQuickAmount(user, payload) {
   requireRole(user, [ROLE_ADMIN]);
   const scopeMachine = String(payload.machineId || '');
@@ -406,20 +538,31 @@ function deleteQuickAmount(user, qaId) {
 }
 
 /** 把全局設定複製一份成這台機台的專屬設定，之後改這台不影響其他台。 */
+/** 每張可覆寫設定表新增一列時，主鍵欄位名稱與 id 前綴。 */
+const SCOPED_ID_FIELD = {
+  QuickAmounts: { field: 'qa_id', prefix: 'qa' },
+  Prizes: { field: 'prize_id', prefix: 'prz' },
+  MeterRates: { field: 'rate_id', prefix: 'mr' }
+};
+
 function forkScopeToMachine(user, sheetName, machineId) {
   requireRole(user, [ROLE_ADMIN]);
   assertMachineAccess(user, machineId);
-  if (sheetName !== 'QuickAmounts' && sheetName !== 'Prizes') throw new Error('不支援的設定類型');
+  const idField = SCOPED_ID_FIELD[sheetName];
+  if (!idField) throw new Error('不支援的設定類型');
 
   return withLock(function () {
     const own = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id) === String(machineId); });
     if (own.length) return { scope: 'machine', created: 0 };
 
     const globals = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id || '') === ''; });
+    // 全局本身是空的就沒東西可複製——不要靜默回報「已複製成單台」，
+    // 那樣 created:0 卻宣稱 scope:'machine' 會誤導呼叫端。
+    if (!globals.length) throw new Error('全局設定是空的，沒有東西可以複製');
     const copies = globals.map(function (r) {
       const copy = {};
       SCHEMA[sheetName].forEach(function (col) { copy[col] = r[col]; });
-      copy[sheetName === 'Prizes' ? 'prize_id' : 'qa_id'] = newId(sheetName === 'Prizes' ? 'prz' : 'qa');
+      copy[idField.field] = newId(idField.prefix);
       copy.machine_id = String(machineId);
       return copy;
     });
@@ -428,11 +571,15 @@ function forkScopeToMachine(user, sheetName, machineId) {
   });
 }
 
-/** 刪掉這台的專屬設定，回頭沿用全局。 */
+/**
+ * 刪掉這台的專屬設定，回頭沿用全局。
+ * MeterRates 也走這條：「改成本台自訂」用 forkScope 複製一份全局費率過來，
+ * 這裡負責反過來的「改回沿用全局」。
+ */
 function resetScopeToGlobal(user, sheetName, machineId) {
   requireRole(user, [ROLE_ADMIN]);
   assertMachineAccess(user, machineId);
-  if (sheetName !== 'QuickAmounts' && sheetName !== 'Prizes') throw new Error('不支援的設定類型');
+  if (!SCOPED_ID_FIELD[sheetName]) throw new Error('不支援的設定類型');
 
   return withLock(function () {
     const own = dbReadAll(sheetName).filter(function (r) { return String(r.machine_id) === String(machineId); });
