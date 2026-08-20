@@ -561,9 +561,22 @@ async function main() {
 
     const totalBefore = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
 
+    // 今天還沒設定過的話，週轉金要預先帶入常用的固定金額（省掉每次都要
+    // 手動刪掉「0」再重打），其他四項則留白（不是「0」），這樣手動輸入時
+    // 不用先清掉預設值。
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     let inputs = page.locator('.dialog input');
+    assert(await inputs.nth(0).inputValue() === '416000', '今天還沒設定過時，週轉金應該預帶 416000');
+    for (let i = 1; i < 5; i++) {
+      assert(await inputs.nth(i).inputValue() === '', '今天還沒設定過時，第 ' + (i + 1) + ' 個輸入框應該留白，不是 0');
+    }
+    await page.click('.dialog button:has-text("取消")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+
+    await page.click('button:has-text("✎ 設定今日數字")');
+    await page.waitForSelector('.dialog');
+    inputs = page.locator('.dialog input');
     await inputs.nth(0).fill('100');
     await inputs.nth(1).fill('-40');
     await inputs.nth(2).fill('20');
@@ -581,6 +594,17 @@ async function main() {
     assert(totalAfter - totalBefore === 70,
       '儲存 100－40＋20－15＋5＝70 之後，總結餘應該增加 70，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
     await shot('17-home-total-ledger');
+
+    // 今天已經設定過了，再打開應該顯示剛剛存的真實值，不能被預設值蓋掉。
+    await page.click('button:has-text("✎ 設定今日數字")');
+    await page.waitForSelector('.dialog');
+    const savedInputs = page.locator('.dialog input');
+    const savedValues = [];
+    for (let i = 0; i < 5; i++) savedValues.push(await savedInputs.nth(i).inputValue());
+    assert(JSON.stringify(savedValues) === JSON.stringify(['100', '-40', '20', '-15', '5']),
+      '今天已經設定過時，重新打開應該顯示剛存的實際值，不是預設值，實際 ' + JSON.stringify(savedValues));
+    await page.click('.dialog button:has-text("取消")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
     // 同一個營業日重複儲存應該是覆蓋，不是疊加——五項都改回 0，總結餘應該回到最初的值。
     await page.click('button:has-text("✎ 設定今日數字")');
@@ -768,6 +792,94 @@ async function main() {
 
     const after = await page.evaluate(() => document.querySelector('.machine-switcher').scrollLeft);
     assert(Math.abs(after - before) < 5, '背景重繪不該把手動捲動的位置改掉，捲動前 ' + before + '、之後 ' + after);
+  });
+
+  await check('桌機版：切換籤自動換行不影響水平捲動，但整頁的垂直捲動位置也不該被背景重繪彈掉', async () => {
+    // 上一項測試只驗了切換籤自己的水平捲軸（手機版）。桌機版切換籤是自動
+    // 換行、不會水平捲動，那個修法完全顧不到——但整個頁面本身的「垂直」
+    // 捲動位置是另一回事，換行內容高度一變，一樣可能把使用者往下滑看
+    // 到一半的畫面彈回去，這是原本那個修法沒蓋到的地方。
+    const desktop = await context.newPage();
+    await desktop.setViewportSize({ width: 1280, height: 900 });
+    await desktop.goto(BASE, { waitUntil: 'networkidle' });
+    await desktop.waitForSelector('.machine-card', { timeout: 8000 });
+    await desktop.locator('.machine-card').first().click();
+    await desktop.waitForSelector('.detail-hero');
+
+    await desktop.evaluate(() => window.scrollTo(0, 400));
+    await desktop.waitForTimeout(50);
+    const before = await desktop.evaluate(() => window.scrollY);
+    assert(before > 0, '桌機版應該真的能往下捲動才對，實際 ' + before);
+
+    await desktop.click('.action-buttons button:has-text("出幣")');
+    await desktop.waitForSelector('.custom-amount input');
+    await desktop.fill('.custom-amount input', '30');
+    await desktop.click('.custom-amount button:has-text("送出")');
+    await desktop.waitForSelector('.record-item', { timeout: 8000 });
+    await desktop.waitForTimeout(300);
+
+    const after = await desktop.evaluate(() => window.scrollY);
+    assert(Math.abs(after - before) < 5, '桌機版背景重繪不該把整頁的垂直捲動位置改掉，捲動前 ' + before + '、之後 ' + after);
+    await desktop.close();
+  });
+
+  await check('電子機台頁面（內容比骰台頁面短）背景重繪也不該把整頁捲動位置彈回去', async () => {
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.click('.home-sticky .seg button:has-text("電子")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+
+    // 電子機台頁面內容本來就比骰台頁面短（少一顆按鈕、沒有碼表相關內容），
+    // 先灌幾筆紀錄把清單撐長，確保手機視窗高度下真的滑得動，不然這個測試
+    // 本身就測不出東西。
+    const token = await page.evaluate(() =>
+      localStorage.getItem('claw_token') || sessionStorage.getItem('claw_token'));
+    const elecMachineId = await page.evaluate(() => state.machineId);
+    for (let i = 0; i < 8; i++) {
+      const res = await page.request.post(BASE + '/api', {
+        form: {
+          payload: JSON.stringify({
+            action: 'addRecord', token: token, machineId: elecMachineId,
+            type: i % 2 === 0 ? 'chip_in' : 'chip_out', amount: 100 + i, clientToken: 'pad-elec-' + i
+          })
+        }
+      });
+      assert((await res.json()).ok, '灌測試紀錄失敗');
+    }
+    // 這幾筆是繞過前端直接打 API 加的，state.cache 裡這台機台的快取還是
+    // 舊的（而且才剛進來過，還在 CACHE_FRESH_MS 新鮮期內，單純「離開再
+    // 進來」不會觸發背景重新整理）。整頁 reload 才會讓 state.cache 重新
+    // 歸零，逼前端真的重抓一次，灌進去的紀錄才會顯示出來。
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('.machine-card', { timeout: 8000 });
+    await page.click('.home-sticky .seg button:has-text("電子")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    await page.waitForFunction(() => document.querySelectorAll('.record-item').length >= 8, null, { timeout: 8000 });
+
+    await page.evaluate(() => window.scrollTo(0, 200));
+    await page.waitForTimeout(50);
+    const before = await page.evaluate(() => window.scrollY);
+    assert(before > 0, '電子機台頁面應該真的能往下捲動才對，實際 ' + before);
+
+    await page.click('.action-buttons button:has-text("開分")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '10');
+    await page.click('.custom-amount button:has-text("送出")');
+    await page.waitForSelector('.record-item', { timeout: 8000 });
+    await page.waitForTimeout(300);
+
+    const after = await page.evaluate(() => window.scrollY);
+    assert(Math.abs(after - before) < 5, '電子機台背景重繪不該把整頁的捲動位置改掉，捲動前 ' + before + '、之後 ' + after);
+
+    // 收尾切回骰台分頁，維持後面測試預期的預設分頁狀態。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.click('.home-sticky .seg button:has-text("骰台")');
+    await page.waitForSelector('.machine-card');
   });
 
   // ── PWA 本體 ──

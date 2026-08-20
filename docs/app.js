@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -570,13 +570,24 @@ function ledgerCard(data) {
 }
 
 /** 設定今天（進行中營業日）的週轉金／運拿／台主給／台主領／還內場，每天只存一組，重新儲存會覆蓋。 */
+/**
+ * 週轉金幾乎每天都是同一筆固定的浮動金額，今天還沒設定過的話直接帶入這個
+ * 預設值，不用每次都手動刪掉「0」再重打一次；其他四項每天金額都不一樣，
+ * 還沒設定過的話留白，比留著「0」等使用者自己刪更順手（空白跟 0 存檔時
+ * 效果相同，saveDailyLedger 送出時 Number('') || 0 本來就會存成 0）。
+ * 今天已經設定過的話，一律照實際存的值顯示（包含存過的 0），不會覆蓋掉
+ * 使用者剛存的東西。
+ */
+const DEFAULT_TURNOVER = 416000;
+
 function editDailyLedger(data) {
   const l = data.ledger;
-  const turnover = h('input', { type: 'number', inputmode: 'decimal', value: l.turnover });
-  const transport = h('input', { type: 'number', inputmode: 'decimal', value: l.transport });
-  const givenToOwner = h('input', { type: 'number', inputmode: 'decimal', value: l.givenToOwner });
-  const takenByOwner = h('input', { type: 'number', inputmode: 'decimal', value: l.takenByOwner });
-  const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: l.returnedToHouse });
+  const setToday = !!l.updatedAt;
+  const turnover = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.turnover : DEFAULT_TURNOVER });
+  const transport = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.transport : '' });
+  const givenToOwner = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.givenToOwner : '' });
+  const takenByOwner = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.takenByOwner : '' });
+  const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.returnedToHouse : '' });
 
   openDialog('設定今日數字', [
     h('p', { class: 'small muted', style: 'margin-bottom:12px' },
@@ -1816,7 +1827,7 @@ function adminPerms(data) {
  * 活動、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
  * 的函式、不經過這裡的新鮮度判斷，一定會拿到最新的。
  */
-const CACHE_FRESH_MS = 30000;
+const CACHE_FRESH_MS = 60000;
 
 function cacheWrite(key, data) {
   state.cache[key] = { data: data, at: Date.now() };
@@ -1968,6 +1979,22 @@ function doLogout() {
 
 // ── 繪製 ────────────────────────────────────────────────
 
+/**
+ * 記住上一次 render() 是畫「哪一頁」，分辨這次重繪是「真的換頁／換機台」
+ * 還是「同一頁的背景重新整理」（記帳後刷新、20 秒輪詢…）。
+ *
+ * machineSwitcher() 自己有一套 _switcherLastMachineId 邏輯，但那個只顧得到
+ * 切換籤自己那條「水平」捲軸；整個頁面的「垂直」捲動位置是另一回事，
+ * 沒有任何地方在保護它——app.replaceChildren() 整個換掉內容時，桌機版
+ * 機台切換籤是自動換行（不像手機版是水平捲動、關在自己的框裡），內容
+ * 高度一變，瀏覽器就可能把頁面往上彈；電子機台頁面本來就比骰台頁面短
+ * （少一顆按鈕、沒有碼表相關內容），同樣的重繪高度變化在較短的頁面上
+ * 彈動的比例更明顯，兩邊使用者都會感覺「切著切著自己彈回去」。
+ * 這裡在頁面層級也做一次跟切換籤同樣邏輯的事：同一頁重繪就把捲動位置
+ * 還原回去，真的換頁／換機台才捲回最上面（符合一般換頁的預期）。
+ */
+let _lastRenderKey = null;
+
 function render() {
   const app = document.getElementById('app');
   let node;
@@ -1980,7 +2007,15 @@ function render() {
   else if (state.view === 'admin') node = viewAdmin();
   else node = h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' }), h('p', {}, '載入中…')]);
 
+  const renderKey = state.view + ':' + (state.machineId || '') + ':' + (state.homeTab || '');
+  const isNavigation = renderKey !== _lastRenderKey;
+  const prevScrollY = window.scrollY;
+  _lastRenderKey = renderKey;
+
   app.replaceChildren(node);
+
+  if (isNavigation) window.scrollTo(0, 0);
+  else if (prevScrollY > 0) window.scrollTo(0, prevScrollY);
 }
 
 function viewSetupNotice() {

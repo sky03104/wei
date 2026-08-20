@@ -11,7 +11,7 @@
  * app.js 的 APP_VERSION（登入頁顯示用）要跟著一起加，兩邊保持同一個數字。
  */
 
-const CACHE_VERSION = 'v16';
+const CACHE_VERSION = 'v17';
 const CACHE_NAME = 'claw-shell-' + CACHE_VERSION;
 
 const SHELL = [
