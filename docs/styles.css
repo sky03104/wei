@@ -225,13 +225,27 @@ input[type="date"] { min-width: 0; }
 /* ── 首頁機台卡片 ───────────────────────────────────── */
 
 .summary-strip {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+  /* 手機先排 2x2，四欄擠在窄螢幕會塞不下較大的金額（尤其是負數，「-」後面
+     是合法的斷行點，數字一長就會斷成「-」自己一行、後面接 $29,300）。
+     跟 .report-stats 用同一套「手機 2 欄、桌機才展開成 4 欄」的做法。 */
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
   margin-bottom: 16px;
 }
 .summary-strip .stat { padding: 10px 8px; text-align: center; }
-.stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.stat {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  /* Grid 項目預設不會縮到比內容還窄；配上 .stat-value 的 white-space:nowrap，
+     數字一長就會把整欄撐開、逼整個頁面橫向捲動。設成 0 讓它情願被裁掉，
+     也不要撐爆版面。 */
+  min-width: 0;
+}
 .stat .stat-label { font-size: 12px; color: var(--muted); }
-.stat .stat-value { font-size: 17px; font-weight: 700; }
+.stat .stat-value {
+  font-size: 17px; font-weight: 700;
+  /* 就算欄位還是不夠寬，也不要在「-」跟數字中間斷行——
+     寧可讓它照樣一行擠出去，也不要把負號拆到自己單獨一行看起來像錯誤。 */
+  white-space: nowrap;
+}
 
 .machine-list { display: grid; gap: var(--gap); }
 
@@ -443,6 +457,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 @media (min-width: 760px) {
   .app { padding-left: 24px; padding-right: 24px; }
+  .summary-strip { grid-template-columns: repeat(4, 1fr); }
   .report-stats { grid-template-columns: repeat(4, 1fr); }
   .filter-row { grid-template-columns: repeat(4, 1fr); }
   .dialog-backdrop { align-items: center; }

@@ -107,6 +107,38 @@ async function main() {
     assert(before !== after, '淨收益應該有變化');
   });
 
+  await check('首頁大額負淨收益不會被拆成兩行，也不會把頁面撐到橫向捲動', async () => {
+    // 「-」是合法的斷行點，數字一長、欄位一窄，瀏覽器就會把負號自己斷成一行，
+    // 上面孤零零一個「-」、下面接著 $30,230，看起來像壞掉。這裡記一筆很大的
+    // 出幣重現這個情境，確認淨收益數字仍是單行、且沒有撐爆整個頁面版面。
+    //
+    // 收尾要回到機台詳細頁：後面的測試（開獎面板等）都預期還停在這一頁。
+    await page.click('.action-buttons button:has-text("出幣")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '31000');
+    await page.click('.custom-amount button:has-text("送出")');
+    await page.waitForSelector('.record-item', { timeout: 8000 });
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.summary-strip');
+
+    await page.waitForFunction(() => {
+      const stats = document.querySelectorAll('.summary-strip .stat');
+      const el = stats[3] && stats[3].querySelector('.stat-value');
+      return !!el && el.textContent.indexOf('$') >= 0;
+    }, null, { timeout: 8000 });
+
+    const netBox = page.locator('.summary-strip .stat').nth(3).locator('.stat-value');
+    const height = (await netBox.boundingBox()).height;
+    assert(height <= 26, '淨收益數字的高度看起來像被拆成兩行了：' + height + 'px');
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert(overflow <= 2, '頁面被數字撐出橫向捲動了，溢出 ' + overflow + 'px');
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+  });
+
   // 開發伺服器是長駐的，資料會一直累積，所以一律驗「差額」而不是絕對值
   const num = (s) => Number(String(s).replace(/[^0-9.-]/g, ''));
   const statValue = async (label) => {
