@@ -443,6 +443,51 @@ function _selfTestBody(results) {
     _assertEq(d.lastMeterReading, 350, '再記一筆後應該更新成最新的下班表讀數');
   });
 
+  _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '欄位錯位測試台', sortOrder: 90 }).machineId;
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const startRow = sh.getLastRow() + 1;
+
+    // 模擬「改版前」的舊格式：15 個實體欄位，沒有 meter_start/meter_end，
+    // user_id 好端端在第 9 欄、created_at 在第 10 欄、voided 在第 12 欄。
+    const oldFormatRow = [
+      'rec_legacy001', mid, 'out', 500, '', '', '', '',
+      admin.user_id, '2026-01-01T00:00:00.000Z', '備註A', false, '', '', 'ct_legacy001'
+    ];
+
+    // 模擬「改版當下、還沒修好之前」寫入的錯位格式：meter_start/meter_end
+    // 插在第 9、10 欄，後面的 user_id/created_at/... 全部往後推兩欄。
+    const brokenFormatRow = [
+      'rec_broken001', mid, 'in', 8000, '', '', '', '',
+      1000, 1080, admin.user_id, '2026-01-02T00:00:00.000Z', '', false, '', '', 'ct_broken001'
+    ];
+
+    sh.getRange(startRow, 1, 1, oldFormatRow.length).setValues([oldFormatRow]);
+    sh.getRange(startRow + 1, 1, 1, brokenFormatRow.length).setValues([brokenFormatRow]);
+    delete _sheetCache.Records;
+
+    const fixedCount = _migrateRecordsMeterColumns();
+    _assert(fixedCount >= 1, '應該至少修好剛剛塞的那筆錯位紀錄');
+    delete _sheetCache.Records;
+
+    const legacy = dbFind('Records', 'record_id', 'rec_legacy001');
+    _assertEq(legacy.user_id, admin.user_id, '舊格式紀錄的操作人本來就對，不該被migration動到');
+    _assertEq(legacy.created_at, '2026-01-01T00:00:00.000Z', '舊格式紀錄的建立時間本來就對');
+    _assertEq(legacy.meter_start, '', '舊格式紀錄本來就沒有碼表資料，應該是空的');
+    _assertEq(legacy.meter_end, '', '舊格式紀錄本來就沒有碼表資料，應該是空的');
+
+    const broken = dbFind('Records', 'record_id', 'rec_broken001');
+    _assertEq(broken.user_id, admin.user_id, '錯位紀錄的操作人應該被搬回正確位置');
+    _assertEq(broken.created_at, '2026-01-02T00:00:00.000Z', '錯位紀錄的建立時間應該被搬回正確位置');
+    _assertEq(toNumber(broken.meter_start), 1000, '錯位紀錄的上班表讀數應該被搬到最後面的正確欄位');
+    _assertEq(toNumber(broken.meter_end), 1080, '錯位紀錄的下班表讀數應該被搬到最後面的正確欄位');
+    _assertEq(toBool(broken.voided), false, '錯位紀錄的作廢狀態應該被搬回正確位置');
+    _assertEq(broken.client_token, 'ct_broken001', '錯位紀錄的防重複權杖應該被搬回正確位置');
+
+    const secondRun = _migrateRecordsMeterColumns();
+    _assertEq(secondRun, 0, '修好之後再跑一次應該天生冪等，不會再搬動任何一筆');
+  });
+
   _t(results, '入幣費率：全局預設 + 單台覆寫，改回沿用全局；費率變動不影響歷史紀錄', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '費率覆寫測試台', sortOrder: 18 }).machineId;
 

@@ -9,7 +9,7 @@
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
   Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at'],
-  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'meter_start', 'meter_end', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token'],
+  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
   MeterRates: ['rate_id', 'machine_id', 'rate'],
@@ -35,7 +35,7 @@ const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
   Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
-    '上班表', '下班表', '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖'],
+    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
   QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
   MeterRates: ['設定編號', '機台編號', '每格金額'],
@@ -142,6 +142,58 @@ function applyHeaderLabels(name) {
   if (!cols) throw new Error('未知的分頁：' + name);
   const sh = _sheet(name);
   _writeHeaderRow(sh, name, cols);
+}
+
+/**
+ * 修正入幣改成碼表登錄那次改版留下的欄位錯位。
+ *
+ * 當時把 meter_start／meter_end 插進 Records 欄位「中間」（count 之後、
+ * user_id 之前），而不是加在最後面。試算表的資料是照實體欄位位置存放的，
+ * 插在中間會讓改版之前就存在的舊紀錄，從那一欄開始全部被讀到錯的欄位名稱——
+ * 操作人被讀成碼表讀數、建立時間被讀成備註，一路錯位到最後一欄。
+ * 現在已經把 SCHEMA 改成把這兩欄加在最後面（只增不插），舊紀錄的實體欄位
+ * 本來就跟新版排法對得起來，不用動；但改版當下、修正之前那段時間寫入的
+ * 紀錄（欄位還是插在中間那種舊排法），需要把它們的欄位實際搬回正確位置。
+ *
+ * 判斷方式：user_id 一律是 newId('usr') 產生、'usr_' 開頭。
+ *   - 第 9 欄本身就是 usr_ 開頭 → 欄位本來就對，不用動。
+ *   - 第 9 欄不是、但第 11 欄是 usr_ 開頭 → 改版當下寫入的錯位格式，
+ *     把第 9~17 欄搬回：9~15 欄＝原本的 11~17 欄，16~17 欄（碼表讀數）
+ *     ＝原本的 9~10 欄。
+ *   - 兩邊都不是（整列空白、或無法辨識）→ 保守不動。
+ *
+ * 天生冪等：搬正確之後再跑一次，這些列的第 9 欄就會是 usr_ 開頭，
+ * 直接判定不用動，重複執行不會搬第二次。
+ */
+function _migrateRecordsMeterColumns() {
+  const width = SCHEMA.Records.length;
+  const sh = _sheet('Records');
+  const lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const range = sh.getRange(2, 1, lastRow - 1, width);
+  const values = range.getValues();
+  let fixed = 0;
+
+  function looksLikeUserId(v) { return typeof v === 'string' && v.indexOf('usr_') === 0; }
+
+  const out = values.map(function (row) {
+    if (looksLikeUserId(row[8])) return row; // 第 9 欄已經是 user_id，格式正確
+    if (!looksLikeUserId(row[10])) return row; // 兩邊都不是，無法辨識，不動
+
+    fixed++;
+    return [
+      row[0], row[1], row[2], row[3], row[4], row[5], row[6], row[7],
+      row[10], row[11], row[12], row[13], row[14], row[15], row[16],
+      row[8], row[9]
+    ];
+  });
+
+  if (fixed > 0) {
+    range.setValues(out);
+    delete _sheetCache.Records;
+  }
+  return fixed;
 }
 
 /**
