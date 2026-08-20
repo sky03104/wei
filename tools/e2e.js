@@ -448,6 +448,50 @@ async function main() {
     await desktop.close();
   });
 
+  await check('機台切換籤機台一多不會把整頁撐出橫向捲動：手機版捲動、桌機版換行', async () => {
+    // grid 子項目預設 min-width:auto 是這排籤第一次上線時真的踩過的坑——
+    // 子項目會被內容撐開，橫向捲動看起來像失效、甚至把整頁撐寬。
+    // 這裡直接灌 20 台機台重現，比較不會因為機台數不夠而測不出來。
+    const token = await page.evaluate(() =>
+      localStorage.getItem('claw_token') || sessionStorage.getItem('claw_token'));
+    for (let i = 4; i <= 20; i++) {
+      const res = await page.request.post(BASE + '/api', {
+        form: { payload: JSON.stringify({ action: 'adminSaveMachine', token: token, name: '機台' + String(i).padStart(2, '0'), sortOrder: i }) }
+      });
+      assert((await res.json()).ok, '建立測試機台失敗');
+    }
+
+    const mobile = await context.newPage();
+    await mobile.setViewportSize({ width: 393, height: 852 });
+    await mobile.goto(BASE, { waitUntil: 'networkidle' });
+    await mobile.waitForSelector('.machine-card', { timeout: 8000 });
+    await mobile.locator('.machine-card').first().click();
+    await mobile.waitForSelector('.machine-switcher');
+    const mobileInfo = await mobile.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      scrollable: document.querySelector('.machine-switcher').scrollWidth > document.querySelector('.machine-switcher').clientWidth
+    }));
+    assert(mobileInfo.overflow <= 2, '手機版不該把整頁撐出橫向捲動，實際多出 ' + mobileInfo.overflow + 'px');
+    assert(mobileInfo.scrollable, '手機版機台切換籤應該可以在自己框裡橫向捲動');
+    await mobile.close();
+
+    const desktop = await context.newPage();
+    await desktop.setViewportSize({ width: 1280, height: 900 });
+    await desktop.goto(BASE, { waitUntil: 'networkidle' });
+    await desktop.waitForSelector('.machine-card', { timeout: 8000 });
+    await desktop.locator('.machine-card').first().click();
+    await desktop.waitForSelector('.machine-switcher');
+    const desktopInfo = await desktop.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      rows: Array.from(document.querySelectorAll('.machine-chip'))
+        .map((c) => c.getBoundingClientRect().top)
+        .filter((v, i, a) => a.indexOf(v) === i).length
+    }));
+    assert(desktopInfo.overflow <= 2, '桌機版不該把整頁撐出橫向捲動，實際多出 ' + desktopInfo.overflow + 'px');
+    assert(desktopInfo.rows > 1, '機台這麼多，桌機版應該自動換行成多列，實際只有 ' + desktopInfo.rows + ' 列');
+    await desktop.close();
+  });
+
   // ── PWA 本體 ──
   await check('manifest 設定正確（standalone、圖示齊全）', async () => {
     const res = await page.request.get(BASE + '/manifest.webmanifest');

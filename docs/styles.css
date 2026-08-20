@@ -299,6 +299,11 @@ input[type="date"] { min-width: 0; }
 /* ── 機台詳細頁 ─────────────────────────────────────── */
 
 .detail-grid { display: grid; gap: var(--gap); grid-template-columns: 1fr; }
+/* detail-grid 本身就是 grid，detail-top 是它的子項目——同一個
+   min-width:auto 撐開問題會在這一層先發生，不只是桌機版 detail-top
+   自己再往下分三欄時才會遇到。這裡沒補的話，手機版就會被機台
+   切換籤那排未受限制的內容整個撐寬，橫向捲動整頁而不是只捲動籤列。 */
+.detail-top { min-width: 0; }
 .detail-hero { display: flex; align-items: center; gap: 14px; }
 .detail-hero .title { min-width: 0; }
 .detail-hero .title h2 { font-size: 19px; }
@@ -529,6 +534,10 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .detail-top .action-buttons .btn { min-height: 58px; }
   /* 只用 grid-column 不指定 row：第一列已經被上面三個佔滿，
      這排會自動落到第二列，且沒有機台切換列時（只有一台機台）
-     不會留下多餘的空列。 */
-  .detail-top .machine-switcher { grid-column: 1 / -1; }
+     不會留下多餘的空列。
+     桌機版機台一多（例如 20 台）改成自動換行，不要橫向捲動——
+     桌機畫面夠寬，一次看到全部機台籤、換行找比左右滑更快。
+     手機版維持橫向捲動（見 .machine-switcher 基本定義），螢幕窄，
+     換行會佔太多垂直高度。 */
+  .detail-top .machine-switcher { grid-column: 1 / -1; flex-wrap: wrap; overflow-x: visible; }
 }
