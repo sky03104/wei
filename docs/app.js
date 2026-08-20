@@ -1066,7 +1066,11 @@ function viewAdmin() {
     [['users', '帳號'], ['machines', '機台'], ['prizes', '獎型'], ['perms', '台主授權']].map(([key, label]) =>
       h('button', {
         class: state.adminTab === key ? 'active' : '',
-        onclick: () => { state.adminTab = key; loadAdmin(); }
+        // 純粹切換要看哪個分頁，資料已經在 goAdmin() 進頁面時一次抓齊了
+        // （放在 state.admin 裡），不用每點一次分頁就重新打 4 個 API。
+        // 任何一個分頁的新增/編輯/刪除動作都會自己呼叫 loadAdmin() 刷新，
+        // 所以這裡拿到的一定是當下最新的資料。
+        onclick: () => { state.adminTab = key; render(); }
       }, label)));
 
   if (!data) return h('div', {}, [nav, tabs, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);

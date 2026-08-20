@@ -180,6 +180,26 @@ async function main() {
     await shot('10-admin-perms');
   });
 
+  await check('系統管理頁切換分頁不會重打 API（純前端切換，秒開）', async () => {
+    // goAdmin() 進頁面時已經一次把四個分頁的資料都抓回來放在 state.admin，
+    // 切分頁只是換一下要渲染哪一段，不該再發任何網路請求。
+    let apiCalls = 0;
+    const onRequest = (req) => { if (req.url().includes('/api')) apiCalls++; };
+    page.on('request', onRequest);
+
+    await page.click('.tabs button:has-text("帳號")');
+    await page.waitForSelector('.admin-item');
+    await page.click('.tabs button:has-text("機台")');
+    await page.waitForSelector('.admin-item');
+    await page.click('.tabs button:has-text("獎型")');
+    await page.waitForSelector('.admin-item');
+    await page.click('.tabs button:has-text("台主授權")');
+    await page.waitForSelector('.perm-note');
+
+    page.off('request', onRequest);
+    assert(apiCalls === 0, '切換系統管理分頁不該打任何 API，實際打了 ' + apiCalls + ' 次');
+  });
+
   // ── 巡邏人員 ──
   await check('巡邏人員：看得到全部機台、能記帳、但沒有管理功能', async () => {
     await page.click('button:has-text("← 返回主畫面")');
