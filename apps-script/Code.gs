@@ -14,6 +14,7 @@ const ACTION_ROLES = {
   login: 'public',
 
   me: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  homeBootstrap: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   logout: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   dashboard: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   machineDetail: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -114,6 +115,8 @@ function _dispatch(action, p, user) {
 
     case 'dashboard':
       return getDashboard(user);
+    case 'homeBootstrap':
+      return homeBootstrap(user);
     case 'machineDetail':
       return getMachineDetail(user, p.machineId, p.recordLimit);
     case 'report':

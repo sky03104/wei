@@ -202,11 +202,16 @@ function login(username, password, remember) {
   const sess = _createSession(user.user_id, !!remember);
   dbUpdate('Users', user._row, { last_login_at: nowIso() });
 
+  const publicUser = _publicUser(user);
   return {
     token: sess.token,
     expiresAt: sess.expiresAt,
     remember: !!remember,
-    user: _publicUser(user)
+    user: publicUser,
+    // 登入完一定接著要進首頁，順便把首頁資料一起帶回去，
+    // 前端就不用登入成功後再多打一次 dashboard——跟 homeBootstrap 同一個道理，
+    // 省下登入當下那一整趟 GAS 來回。
+    dashboard: getDashboard(publicUser)
   };
 }
 

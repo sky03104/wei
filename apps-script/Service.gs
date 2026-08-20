@@ -118,6 +118,22 @@ function getDashboard(user) {
   return { machines: list, todayTotal: grand, today: today };
 }
 
+/**
+ * App 開啟時要驗登入（me）又要拿首頁資料（dashboard），合併成一次呼叫。
+ *
+ * 跟 adminBootstrap 同一個道理：每支 GAS Web App 呼叫都要付一次 /exec
+ * 轉址＋腳本執行的固定成本，這筆成本在網路較慢時感受特別明顯。
+ * 開頭這兩支 API 本來就是「驗完登入一定接著要拿首頁資料」，沒有理由
+ * 分兩次跑，合併後每次開啟 App 省下一整趟來回。
+ */
+function homeBootstrap(user) {
+  return {
+    user: user,
+    machineCount: visibleMachineIds(user).length,
+    dashboard: getDashboard(user)
+  };
+}
+
 // ── 機台詳細頁 ──────────────────────────────────────────
 
 function getMachineDetail(user, machineId, recordLimit) {

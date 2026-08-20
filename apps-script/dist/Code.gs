@@ -561,11 +561,16 @@ function login(username, password, remember) {
   const sess = _createSession(user.user_id, !!remember);
   dbUpdate('Users', user._row, { last_login_at: nowIso() });
 
+  const publicUser = _publicUser(user);
   return {
     token: sess.token,
     expiresAt: sess.expiresAt,
     remember: !!remember,
-    user: _publicUser(user)
+    user: publicUser,
+    // 登入完一定接著要進首頁，順便把首頁資料一起帶回去，
+    // 前端就不用登入成功後再多打一次 dashboard——跟 homeBootstrap 同一個道理，
+    // 省下登入當下那一整趟 GAS 來回。
+    dashboard: getDashboard(publicUser)
   };
 }
 
@@ -775,6 +780,22 @@ function getDashboard(user) {
   grand.net = grand.in - grand.out - grand.prize;
 
   return { machines: list, todayTotal: grand, today: today };
+}
+
+/**
+ * App 開啟時要驗登入（me）又要拿首頁資料（dashboard），合併成一次呼叫。
+ *
+ * 跟 adminBootstrap 同一個道理：每支 GAS Web App 呼叫都要付一次 /exec
+ * 轉址＋腳本執行的固定成本，這筆成本在網路較慢時感受特別明顯。
+ * 開頭這兩支 API 本來就是「驗完登入一定接著要拿首頁資料」，沒有理由
+ * 分兩次跑，合併後每次開啟 App 省下一整趟來回。
+ */
+function homeBootstrap(user) {
+  return {
+    user: user,
+    machineCount: visibleMachineIds(user).length,
+    dashboard: getDashboard(user)
+  };
 }
 
 // ── 機台詳細頁 ──────────────────────────────────────────
@@ -1825,6 +1846,7 @@ const ACTION_ROLES = {
   login: 'public',
 
   me: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  homeBootstrap: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   logout: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   dashboard: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   machineDetail: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -1925,6 +1947,8 @@ function _dispatch(action, p, user) {
 
     case 'dashboard':
       return getDashboard(user);
+    case 'homeBootstrap':
+      return homeBootstrap(user);
     case 'machineDetail':
       return getMachineDetail(user, p.machineId, p.recordLimit);
     case 'report':
@@ -2234,6 +2258,14 @@ function _selfTestBody(results) {
     _assert(_token('t_admin', 'admin123'), '沒拿到 token');
   });
 
+  _t(results, '登入回應會一併帶回首頁資料，不用另外再打一次 dashboard', function () {
+    CacheService.getScriptCache().remove(_failKey('t_admin'));
+    const res = _ok({ action: 'login', username: 't_admin', password: 'admin123' });
+    _assert(res.dashboard, '登入回應應該要有 dashboard 欄位');
+    const dashboard = _ok({ action: 'dashboard', token: res.token });
+    _assertEq(res.dashboard.machines.length, dashboard.machines.length, '登入帶回的 dashboard 應該跟分開打的一致');
+  });
+
   _t(results, '錯誤密碼被拒', function () {
     _fails({ action: 'login', username: 't_admin', password: 'wrong' });
     CacheService.getScriptCache().remove(_failKey('t_admin'));
@@ -2369,6 +2401,19 @@ function _selfTestBody(results) {
     _assertEq(combined.machines.length, machines.length, 'machines 筆數應一致');
     _assertEq(combined.prizes.global.length, prizes.global.length, 'prizes.global 筆數應一致');
     _assertEq(combined.perms.owners.length, perms.owners.length, 'perms.owners 筆數應一致');
+  });
+
+  _t(results, 'homeBootstrap 合併回傳的內容跟分開打 me + dashboard 一致，三種角色都能用', function () {
+    [adminTok, patrolTok, ownerTok].forEach(function (tok) {
+      const combined = _ok({ action: 'homeBootstrap', token: tok });
+      const me = _ok({ action: 'me', token: tok });
+      const dashboard = _ok({ action: 'dashboard', token: tok });
+
+      _assertEq(combined.user.userId, me.user.userId, 'user 應該跟 me 回傳的一致');
+      _assertEq(combined.machineCount, me.machineCount, 'machineCount 應該跟 me 回傳的一致');
+      _assertEq(combined.dashboard.machines.length, dashboard.machines.length, 'dashboard.machines 筆數應一致');
+      _assertEq(JSON.stringify(combined.dashboard.todayTotal), JSON.stringify(dashboard.todayTotal), 'dashboard.todayTotal 應一致');
+    });
   });
 
   // ── 收益計算 ──

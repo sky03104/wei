@@ -401,7 +401,10 @@ function viewLogin() {
       saveSession(data.token, data.remember);
       state.user = data.user;
       password.value = '';
-      goHome();
+      // login 已經把首頁資料一起帶回來了（見 Auth.gs），不用再多打一次 dashboard。
+      state.home = data.dashboard;
+      _resetToHomeNav();
+      render();
     }
   }, [
     dialogField('帳號', username),
@@ -1539,11 +1542,16 @@ async function loadAdmin() {
 // goX() 系列進畫面時，先看 state.cache 有沒有這個畫面上次的資料：
 // 有就直接秒開（同時背景照樣打 API 拿最新的來覆蓋），完全沒有才顯示轉圈圈。
 
-function goHome() {
+/** 重設成首頁該有的導覽狀態，不動 state.home——留給呼叫端決定要不要一起換資料。 */
+function _resetToHomeNav() {
   state.view = 'home';
   state.panel = null;
   state.editMode = false;
   state.machineId = null;
+}
+
+function goHome() {
+  _resetToHomeNav();
   render();
   loadHome();
 }
@@ -1699,9 +1707,15 @@ async function boot() {
   if (!state.token) { state.view = 'login'; render(); return; }
 
   try {
-    const me = await api('me');
-    state.user = me.user;
-    goHome();
+    // 開起 App 時「驗登入」跟「拿首頁資料」合併成一次呼叫（homeBootstrap），
+    // 不要分開打 me 再打 dashboard——每支 GAS API 呼叫都要付一次 /exec 轉址
+    // 加上腳本執行的固定成本，開頭這兩支本來就是驗完登入一定接著要拿首頁資料，
+    // 合併後每次開啟 App 就少等一整趟來回。
+    const data = await api('homeBootstrap');
+    state.user = data.user;
+    state.home = data.dashboard;
+    _resetToHomeNav();
+    render();
   } catch (err) {
     if (err.code !== 'AUTH') {
       state.view = 'login';

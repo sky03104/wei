@@ -157,6 +157,14 @@ function _selfTestBody(results) {
     _assert(_token('t_admin', 'admin123'), '沒拿到 token');
   });
 
+  _t(results, '登入回應會一併帶回首頁資料，不用另外再打一次 dashboard', function () {
+    CacheService.getScriptCache().remove(_failKey('t_admin'));
+    const res = _ok({ action: 'login', username: 't_admin', password: 'admin123' });
+    _assert(res.dashboard, '登入回應應該要有 dashboard 欄位');
+    const dashboard = _ok({ action: 'dashboard', token: res.token });
+    _assertEq(res.dashboard.machines.length, dashboard.machines.length, '登入帶回的 dashboard 應該跟分開打的一致');
+  });
+
   _t(results, '錯誤密碼被拒', function () {
     _fails({ action: 'login', username: 't_admin', password: 'wrong' });
     CacheService.getScriptCache().remove(_failKey('t_admin'));
@@ -292,6 +300,19 @@ function _selfTestBody(results) {
     _assertEq(combined.machines.length, machines.length, 'machines 筆數應一致');
     _assertEq(combined.prizes.global.length, prizes.global.length, 'prizes.global 筆數應一致');
     _assertEq(combined.perms.owners.length, perms.owners.length, 'perms.owners 筆數應一致');
+  });
+
+  _t(results, 'homeBootstrap 合併回傳的內容跟分開打 me + dashboard 一致，三種角色都能用', function () {
+    [adminTok, patrolTok, ownerTok].forEach(function (tok) {
+      const combined = _ok({ action: 'homeBootstrap', token: tok });
+      const me = _ok({ action: 'me', token: tok });
+      const dashboard = _ok({ action: 'dashboard', token: tok });
+
+      _assertEq(combined.user.userId, me.user.userId, 'user 應該跟 me 回傳的一致');
+      _assertEq(combined.machineCount, me.machineCount, 'machineCount 應該跟 me 回傳的一致');
+      _assertEq(combined.dashboard.machines.length, dashboard.machines.length, 'dashboard.machines 筆數應一致');
+      _assertEq(JSON.stringify(combined.dashboard.todayTotal), JSON.stringify(dashboard.todayTotal), 'dashboard.todayTotal 應一致');
+    });
   });
 
   // ── 收益計算 ──
