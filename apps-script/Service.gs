@@ -750,3 +750,20 @@ function adminSetPermission(user, payload) {
     return { userId: String(payload.userId), machineId: String(payload.machineId), granted: !!payload.granted };
   });
 }
+
+/**
+ * 系統管理頁一次進頁面／切分頁需要的四組資料，合併成一次呼叫。
+ *
+ * adminListUsers / adminListMachines / adminListPrizes / adminListPermissions
+ * 各自獨立存在主要是給自我測試分開驗證用；前端一次要全部資料時改叫這支，
+ * 省掉分開打 4 次 API 各自要付的固定成本（GAS 執行 + 每次 /exec 的一次轉址）。
+ */
+function adminBootstrap(user) {
+  requireRole(user, [ROLE_ADMIN]);
+  return {
+    users: adminListUsers(user),
+    machines: adminListMachines(user),
+    prizes: adminListPrizes(user),
+    perms: adminListPermissions(user)
+  };
+}

@@ -40,7 +40,8 @@ const ACTION_ROLES = {
   adminListMachines: [ROLE_ADMIN],
   adminSaveMachine: [ROLE_ADMIN],
   adminListPermissions: [ROLE_ADMIN],
-  adminSetPermission: [ROLE_ADMIN]
+  adminSetPermission: [ROLE_ADMIN],
+  adminBootstrap: [ROLE_ADMIN]
 };
 
 // ── HTTP 進入點 ─────────────────────────────────────────
@@ -157,6 +158,8 @@ function _dispatch(action, p, user) {
       return adminListPermissions(user);
     case 'adminSetPermission':
       return adminSetPermission(user, p);
+    case 'adminBootstrap':
+      return adminBootstrap(user);
 
     default:
       throw new Error('不支援的操作：' + action);

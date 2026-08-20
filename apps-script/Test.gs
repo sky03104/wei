@@ -255,6 +255,22 @@ function _selfTestBody(results) {
     _fails({ action: 'adminSetPermission', token: patrolTok, userId: owner.user_id, machineId: machineA, granted: true }, 'PERMISSION');
   });
 
+  _t(results, 'adminBootstrap 合併回傳的內容跟分開打 4 支 API 一致，且僅限管理員', function () {
+    _fails({ action: 'adminBootstrap', token: patrolTok }, 'PERMISSION');
+    _fails({ action: 'adminBootstrap', token: ownerTok }, 'PERMISSION');
+
+    const combined = _ok({ action: 'adminBootstrap', token: adminTok });
+    const users = _ok({ action: 'adminListUsers', token: adminTok });
+    const machines = _ok({ action: 'adminListMachines', token: adminTok });
+    const prizes = _ok({ action: 'adminListPrizes', token: adminTok });
+    const perms = _ok({ action: 'adminListPermissions', token: adminTok });
+
+    _assertEq(combined.users.length, users.length, 'users 筆數應一致');
+    _assertEq(combined.machines.length, machines.length, 'machines 筆數應一致');
+    _assertEq(combined.prizes.global.length, prizes.global.length, 'prizes.global 筆數應一致');
+    _assertEq(combined.perms.owners.length, perms.owners.length, 'perms.owners 筆數應一致');
+  });
+
   // ── 收益計算 ──
   _t(results, '入幣 100、出幣 30 → 淨收益 70；作廢出幣後 → 100', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '計算測試台', sortOrder: 9 }).machineId;

@@ -1318,6 +1318,23 @@ function adminSetPermission(user, payload) {
   });
 }
 
+/**
+ * 系統管理頁一次進頁面／切分頁需要的四組資料，合併成一次呼叫。
+ *
+ * adminListUsers / adminListMachines / adminListPrizes / adminListPermissions
+ * 各自獨立存在主要是給自我測試分開驗證用；前端一次要全部資料時改叫這支，
+ * 省掉分開打 4 次 API 各自要付的固定成本（GAS 執行 + 每次 /exec 的一次轉址）。
+ */
+function adminBootstrap(user) {
+  requireRole(user, [ROLE_ADMIN]);
+  return {
+    users: adminListUsers(user),
+    machines: adminListMachines(user),
+    prizes: adminListPrizes(user),
+    perms: adminListPermissions(user)
+  };
+}
+
 // ────────────────────────────────────────────────────────────
 // Reports.gs
 // ────────────────────────────────────────────────────────────
@@ -1595,7 +1612,8 @@ const ACTION_ROLES = {
   adminListMachines: [ROLE_ADMIN],
   adminSaveMachine: [ROLE_ADMIN],
   adminListPermissions: [ROLE_ADMIN],
-  adminSetPermission: [ROLE_ADMIN]
+  adminSetPermission: [ROLE_ADMIN],
+  adminBootstrap: [ROLE_ADMIN]
 };
 
 // ── HTTP 進入點 ─────────────────────────────────────────
@@ -1712,6 +1730,8 @@ function _dispatch(action, p, user) {
       return adminListPermissions(user);
     case 'adminSetPermission':
       return adminSetPermission(user, p);
+    case 'adminBootstrap':
+      return adminBootstrap(user);
 
     default:
       throw new Error('不支援的操作：' + action);
@@ -2054,6 +2074,22 @@ function _selfTestBody(results) {
     _fails({ action: 'saveQuickAmount', token: patrolTok, type: 'in', amount: 1 }, 'PERMISSION');
     _fails({ action: 'adminListUsers', token: patrolTok }, 'PERMISSION');
     _fails({ action: 'adminSetPermission', token: patrolTok, userId: owner.user_id, machineId: machineA, granted: true }, 'PERMISSION');
+  });
+
+  _t(results, 'adminBootstrap 合併回傳的內容跟分開打 4 支 API 一致，且僅限管理員', function () {
+    _fails({ action: 'adminBootstrap', token: patrolTok }, 'PERMISSION');
+    _fails({ action: 'adminBootstrap', token: ownerTok }, 'PERMISSION');
+
+    const combined = _ok({ action: 'adminBootstrap', token: adminTok });
+    const users = _ok({ action: 'adminListUsers', token: adminTok });
+    const machines = _ok({ action: 'adminListMachines', token: adminTok });
+    const prizes = _ok({ action: 'adminListPrizes', token: adminTok });
+    const perms = _ok({ action: 'adminListPermissions', token: adminTok });
+
+    _assertEq(combined.users.length, users.length, 'users 筆數應一致');
+    _assertEq(combined.machines.length, machines.length, 'machines 筆數應一致');
+    _assertEq(combined.prizes.global.length, prizes.global.length, 'prizes.global 筆數應一致');
+    _assertEq(combined.perms.owners.length, perms.owners.length, 'perms.owners 筆數應一致');
   });
 
   // ── 收益計算 ──

@@ -162,15 +162,47 @@ async function main() {
     await shot('08-report-custom');
   });
 
-  await check('系統管理頁四個分頁都打得開', async () => {
+  await check('回訪同一台機台會先用快取秒開，第一次進不同機台仍會先看到轉圈圈', async () => {
     await page.click('button:has-text("← 返回")');
     await page.waitForSelector('.detail-hero');
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
-    await page.click('button:has-text("⚙ 系統管理")');
-    await page.waitForSelector('.tabs');
 
+    const cards = page.locator('.machine-card');
+    const firstName = await cards.nth(0).locator('.name').textContent();
+    const secondName = await cards.nth(1).locator('.name').textContent();
+
+    // 第一次進第 2 台機台：前面測試都只碰過第 1 台，這台還沒有快取，
+    // 點下去的當下應該先看到轉圈圈，資料回來後才換成內容。
+    await cards.nth(1).click();
+    assert((await page.locator('.boot').count()) > 0, '第一次進這台機台應該先顯示轉圈圈（還沒有快取）');
+    await page.waitForSelector('.detail-hero');
+    assert((await page.locator('.detail-hero h2').textContent()) === secondName, '應該顯示第 2 台機台的資料');
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+
+    // 回訪第 1 台機台（前面 03~06 的測試已經進去看過）：
+    // click() 一回來 DOM 就該已經是 .detail-hero，中間不會再閃過轉圈圈。
+    await cards.nth(0).click();
+    assert((await page.locator('.detail-hero').count()) > 0, '回訪已經看過的機台應該直接秒開，不該再看到轉圈圈');
+    assert((await page.locator('.detail-hero h2').textContent()) === firstName, '秒開當下顯示的就該是正確的機台名稱');
+  });
+
+  await check('系統管理頁四個分頁都打得開，且第一次進頁面只打 1 次 API', async () => {
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+
+    // goAdmin() 第一次進頁面：改成呼叫合併過的 adminBootstrap，
+    // 應該只送出 1 個 /api 請求，不是原本分開的 4 個。
+    let apiCalls = 0;
+    const onRequest = (req) => { if (req.url().includes('/api')) apiCalls++; };
+    page.on('request', onRequest);
+    await page.click('button:has-text("⚙ 系統管理")');
     await page.waitForSelector('.admin-item');
+    page.off('request', onRequest);
+    assert(apiCalls === 1, '第一次進系統管理頁應該只打 1 次 API（adminBootstrap），實際打了 ' + apiCalls + ' 次');
+
     await shot('09-admin-users');
 
     for (const [tab, marker] of [['機台', '.admin-item'], ['獎型', '.admin-item'], ['台主授權', '.perm-note']]) {

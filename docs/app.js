@@ -56,7 +56,13 @@ const state = {
   prizeCounts: {},
   reportParams: { machineId: '', preset: 'day', from: '', to: '', type: '', userId: '' },
   adminTab: 'users',
-  busy: false
+  busy: false,
+  // 導覽用的「先秒開、背景再刷新」快取（stale-while-revalidate）。
+  // 純記憶體、關頁就沒了，而且每次進畫面一定會立刻再打一次 API 確認最新資料，
+  // 只是不讓使用者對著空白畫面等那一趟網路來回——跟 sw.js 刻意不快取 API
+  // 回應的規則不衝突：那條規則防的是「回應被存起來、之後可能完全不再連網
+  // 就一直拿舊資料」，這裡永遠都會再打一次，只是不擋畫面先出來。
+  cache: {}
 };
 
 let pollTimer = null;
@@ -315,6 +321,16 @@ function clearSession() {
   state.token = null;
   state.user = null;
   state.remember = false;
+
+  // 把上一位使用者看到的畫面資料也一併清掉。
+  // 不同角色看得到的機台不一樣（台主只看自己的），如果同一台裝置換人登入
+  // 卻沒清掉，新使用者在下一輪 API 回來之前，會先閃過上一位使用者的舊畫面。
+  state.home = null;
+  state.detail = null;
+  state.report = null;
+  state.admin = null;
+  state.cache = {};
+
   try {
     localStorage.removeItem(STORAGE_TOKEN);
     localStorage.removeItem(STORAGE_REMEMBER);
@@ -1363,32 +1379,39 @@ async function loadHome(opts) {
 
 async function loadDetail(machineId, opts) {
   const data = await run(() => api('machineDetail', { machineId: machineId }), opts);
-  if (data) { state.detail = data; render(); }
+  if (data) {
+    state.cache['detail:' + machineId] = data;
+    state.detail = data;
+    render();
+  }
 }
 
 async function loadReport() {
-  state.report = null;
+  const key = 'report:' + JSON.stringify(state.reportParams);
+  state.report = state.cache[key] || null;
   render();
   const data = await run(() => api('report', state.reportParams));
-  if (data) { state.report = data; render(); }
+  if (data) {
+    state.cache[key] = data;
+    state.report = data;
+    render();
+  }
 }
 
 async function loadAdmin() {
-  const data = await run(async () => {
-    const [users, machines, prizes, perms] = await Promise.all([
-      api('adminListUsers'),
-      api('adminListMachines'),
-      api('adminListPrizes'),
-      api('adminListPermissions')
-    ]);
-    return { users: users, machines: machines, prizes: prizes, perms: perms };
-  });
+  // 四組資料合併成一次 API 呼叫（後端 adminBootstrap），
+  // 而不是分開打 4 支——省下 3 次「/exec 轉址 + GAS 執行」的固定成本。
+  const data = await run(() => api('adminBootstrap'));
   if (!data) return;
+  state.cache.admin = data;
   state.admin = data;
   render();
 }
 
 // ── 導覽 ────────────────────────────────────────────────
+//
+// goX() 系列進畫面時，先看 state.cache 有沒有這個畫面上次的資料：
+// 有就直接秒開（同時背景照樣打 API 拿最新的來覆蓋），完全沒有才顯示轉圈圈。
 
 function goHome() {
   state.view = 'home';
@@ -1402,10 +1425,10 @@ function goHome() {
 function goMachine(machineId) {
   state.view = 'machine';
   state.machineId = machineId;
-  state.detail = null;
   state.panel = null;
   state.editMode = false;
   state.prizeCounts = {};
+  state.detail = state.cache['detail:' + machineId] || null;
   render();
   loadDetail(machineId);
 }
@@ -1416,14 +1439,15 @@ function goReport(machineId) {
     machineId: machineId || '',
     preset: 'day', from: '', to: '', type: '', userId: ''
   };
+  state.report = state.cache['report:' + JSON.stringify(state.reportParams)] || null;
   render();
   loadReport();
 }
 
 function goAdmin() {
   state.view = 'admin';
-  state.admin = null;
   state.adminTab = 'users';
+  state.admin = state.cache.admin || null;
   render();
   loadAdmin();
 }
