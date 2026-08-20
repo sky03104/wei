@@ -521,6 +521,8 @@ function viewMachine() {
     ])
   ]);
 
+  const switcher = machineSwitcher(m.machineId);
+
   const figures = h('div', { class: 'figures-panel' }, [
     h('div', { class: 'stat net-stat center' }, [
       h('div', { class: 'stat-label', text: '今日淨收益（已扣開獎）' }),
@@ -540,7 +542,7 @@ function viewMachine() {
     ])
     : null;
 
-  const top = h('div', { class: 'detail-top' }, [hero, figures, actions]);
+  const top = h('div', { class: 'detail-top' }, [hero, switcher, figures, actions]);
 
   return h('div', { class: 'detail-grid' }, [
     nav,
@@ -548,6 +550,38 @@ function viewMachine() {
     state.panel ? renderPanel(d) : null,
     renderRecords(d)
   ]);
+}
+
+/**
+ * 一排可以橫向捲動的機台小按鈕，讓巡機時可以直接跳下一台，
+ * 不用先按「返回主畫面」再從列表點一次。資料直接沿用 state.home
+ * （首頁載入時就有了，不用為了這排按鈕多打一次 API）；
+ * 只有一台機台或首頁資料還沒載入過時就不顯示，沒有意義。
+ */
+function machineSwitcher(currentMachineId) {
+  const machines = state.home && state.home.machines;
+  if (!machines || machines.length < 2) return null;
+
+  const chips = machines.map(function (m) {
+    const active = m.machineId === currentMachineId;
+    return h('button', {
+      class: 'machine-chip' + (active ? ' active' : ''),
+      type: 'button',
+      'aria-current': active ? 'true' : null,
+      onclick: () => { if (!active) goMachine(m.machineId); }
+    }, [
+      h('span', { class: 'chip-dot', style: 'background:' + (STATUS_COLORS[m.status] || STATUS_COLORS.running) }),
+      m.name
+    ]);
+  });
+
+  const el = h('div', { class: 'machine-switcher' }, chips);
+  // 捲到看得到目前這台，機台一多、目前這台剛好在畫面外時不用自己找
+  requestAnimationFrame(() => {
+    const activeChip = el.querySelector('.machine-chip.active');
+    if (activeChip) activeChip.scrollIntoView({ inline: 'center', block: 'nearest' });
+  });
+  return el;
 }
 
 function togglePanel(kind) {

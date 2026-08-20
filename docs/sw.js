@@ -10,7 +10,7 @@
  * 使用者的 App 會偵測到新版並跳出「有新版本」提示。
  */
 
-const CACHE_VERSION = 'v3';
+const CACHE_VERSION = 'v4';
 const CACHE_NAME = 'claw-shell-' + CACHE_VERSION;
 
 const SHELL = [

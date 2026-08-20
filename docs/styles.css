@@ -303,6 +303,26 @@ input[type="date"] { min-width: 0; }
 .detail-hero .title { min-width: 0; }
 .detail-hero .title h2 { font-size: 19px; }
 
+/* 巡機依序切換用，橫向捲動、不佔太多高度；隱藏捲軸讓它看起來像一排籤，
+   不是一個要注意的捲動區塊。 */
+.machine-switcher {
+  display: flex; gap: 8px; overflow-x: auto;
+  padding: 2px 2px 4px; margin: -2px -2px 2px;
+  scrollbar-width: none;
+}
+.machine-switcher::-webkit-scrollbar { display: none; }
+.machine-chip {
+  flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  color: var(--muted); font-size: 13px; white-space: nowrap;
+  cursor: pointer;
+}
+.machine-chip.active {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600;
+}
+.chip-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+
 .figures-panel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .figures-panel .stat { padding: 10px 6px; text-align: center; }
 .figures-panel .net-stat { grid-column: 1 / -1; padding: 14px; }
@@ -491,13 +511,21 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 
 @media (min-width: 900px) {
-  /* 桌機還原成計畫裡的「左圖 / 中面板 / 右按鈕」三欄 */
+  /* 桌機還原成計畫裡的「左圖 / 中面板 / 右按鈕」三欄。
+     machine-switcher 明確指定放第二列、橫跨三欄——不然它會被隱式格線
+     塞進中間那欄，把 figures-panel／action-buttons 全部擠歪一欄。 */
   .detail-top {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) 210px;
     gap: 16px;
     align-items: start;
   }
-  .detail-top .action-buttons { grid-template-columns: 1fr; }
+  .detail-top .detail-hero { grid-column: 1; grid-row: 1; }
+  .detail-top .figures-panel { grid-column: 2; grid-row: 1; }
+  .detail-top .action-buttons { grid-column: 3; grid-row: 1; grid-template-columns: 1fr; }
   .detail-top .action-buttons .btn { min-height: 58px; }
+  /* 只用 grid-column 不指定 row：第一列已經被上面三個佔滿，
+     這排會自動落到第二列，且沒有機台切換列時（只有一台機台）
+     不會留下多餘的空列。 */
+  .detail-top .machine-switcher { grid-column: 1 / -1; }
 }
