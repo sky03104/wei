@@ -215,6 +215,8 @@ input[type="date"] { min-width: 0; }
 .badge-in { background: rgba(74, 222, 128, 0.16); color: var(--in); }
 .badge-out { background: rgba(251, 146, 60, 0.16); color: var(--out); }
 .badge-prize { background: rgba(192, 132, 252, 0.16); color: var(--prize); }
+.badge-chip_in { background: rgba(74, 222, 128, 0.16); color: var(--in); }
+.badge-chip_out { background: rgba(251, 146, 60, 0.16); color: var(--out); }
 
 .empty { padding: 28px 14px; text-align: center; color: var(--muted); }
 
@@ -428,6 +430,8 @@ input[type="date"] { min-width: 0; }
 .rec-amount.in { color: var(--in); }
 .rec-amount.out { color: var(--out); }
 .rec-amount.prize { color: var(--prize); }
+.rec-amount.chip_in { color: var(--in); }
+.rec-amount.chip_out { color: var(--out); }
 
 /* ── 報表 ───────────────────────────────────────────── */
 

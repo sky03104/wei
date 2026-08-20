@@ -23,7 +23,7 @@
 /** 每個分頁的欄位順序。setup() 會照這個建表頭。 */
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
-  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at'],
+  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category'],
   Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
@@ -55,7 +55,7 @@ const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 
  */
 const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
-  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
     '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
@@ -680,7 +680,15 @@ function assertMachineAccess(user, machineId) {
 
 const RECORD_IN = 'in';
 const RECORD_OUT = 'out';
-const RECORD_PRIZE = 'prize';
+const RECORD_PRIZE = 'prize'; // 前端顯示叫「活動」，內部型別值維持不變（歷史資料、程式邏輯都不用跟著改）
+const RECORD_CHIP_IN = 'chip_in';   // 電子機台的「開分」
+const RECORD_CHIP_OUT = 'chip_out'; // 電子機台的「洗分」
+
+const MACHINE_CATEGORY_DICE = 'dice';
+const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
+
+/** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
+const TRACKED_PRIZE_NAME = '432';
 
 const MAX_AMOUNT = 10000000;
 const MAX_PRIZE_COUNT = 9999;
@@ -820,10 +828,22 @@ function endBusinessDay(user) {
   });
 }
 
+/** 機台分類，沒設過（舊資料，欄位是空字串）一律當骰台——這個功能上線前建立的機台全部是骰台。 */
+function _machineCategory(machineId) {
+  const m = dbFind('Machines', 'machine_id', machineId);
+  return (m && m.category) || MACHINE_CATEGORY_DICE;
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
+/**
+ * 骰台（in/out/prize）跟電子（chip_in/chip_out）兩種機台的欄位都放在
+ * 同一個 summary 物件裡，骰台紀錄不會動到 chipIn/chipOut，電子紀錄
+ * 也不會動到 in/out/prize——兩種機台混在同一批紀錄裡累加也不會互相污染，
+ * 首頁「加總」分頁要同時看兩種淨額時不用分開兩套彙總邏輯。
+ */
 function emptySummary() {
-  return { in: 0, out: 0, prize: 0, net: 0 };
+  return { in: 0, out: 0, prize: 0, net: 0, chipIn: 0, chipOut: 0, chipNet: 0 };
 }
 
 function _accumulate(sum, rec) {
@@ -831,7 +851,10 @@ function _accumulate(sum, rec) {
   if (rec.type === RECORD_IN) sum.in += amt;
   else if (rec.type === RECORD_OUT) sum.out += amt;
   else if (rec.type === RECORD_PRIZE) sum.prize += amt;
+  else if (rec.type === RECORD_CHIP_IN) sum.chipIn += amt;
+  else if (rec.type === RECORD_CHIP_OUT) sum.chipOut += amt;
   sum.net = sum.in - sum.out - sum.prize;
+  sum.chipNet = sum.chipIn - sum.chipOut;
   return sum;
 }
 
@@ -871,11 +894,18 @@ function getDashboard(user) {
   const todays = {};
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
 
+  let today432Count = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    if (_recordBusinessDate(r) === today) _accumulate(todays[mid], r);
+    const isToday = _recordBusinessDate(r) === today;
+    if (isToday) {
+      _accumulate(todays[mid], r);
+      if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
+        today432Count += toNumber(r.count);
+      }
+    }
   });
 
   const list = machines.map(function (m) {
@@ -887,6 +917,7 @@ function getDashboard(user) {
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
       sortOrder: toNumber(m.sort_order),
+      category: m.category || MACHINE_CATEGORY_DICE,
       today: todays[id],
       total: totals[id]
     };
@@ -897,15 +928,39 @@ function getDashboard(user) {
     return String(a.name).localeCompare(String(b.name));
   });
 
-  const grand = emptySummary();
+  // 骰台跟電子機台的今日淨額分開算——首頁「加總」分頁要同時顯示
+  // 骰台淨收益、電子淨收益、兩者相加的總淨收益三張卡片。
+  const diceTotal = emptySummary();
+  const electronicTotal = emptySummary();
   list.forEach(function (m) {
-    grand.in += m.today.in;
-    grand.out += m.today.out;
-    grand.prize += m.today.prize;
+    const target = m.category === MACHINE_CATEGORY_ELECTRONIC ? electronicTotal : diceTotal;
+    target.in += m.today.in;
+    target.out += m.today.out;
+    target.prize += m.today.prize;
+    target.chipIn += m.today.chipIn;
+    target.chipOut += m.today.chipOut;
   });
-  grand.net = grand.in - grand.out - grand.prize;
+  diceTotal.net = diceTotal.in - diceTotal.out - diceTotal.prize;
+  electronicTotal.chipNet = electronicTotal.chipIn - electronicTotal.chipOut;
 
-  return { machines: list, todayTotal: grand, today: today, businessDay: businessDayStatus(user) };
+  const grand = emptySummary();
+  grand.in = diceTotal.in;
+  grand.out = diceTotal.out;
+  grand.prize = diceTotal.prize;
+  grand.net = diceTotal.net;
+  grand.chipIn = electronicTotal.chipIn;
+  grand.chipOut = electronicTotal.chipOut;
+  grand.chipNet = electronicTotal.chipNet;
+
+  return {
+    machines: list,
+    todayTotal: grand,
+    diceTotal: diceTotal,
+    electronicTotal: electronicTotal,
+    today432Count: today432Count,
+    today: today,
+    businessDay: businessDayStatus(user)
+  };
 }
 
 /**
@@ -935,11 +990,18 @@ function getMachineDetail(user, machineId, recordLimit) {
   const total = emptySummary();
   const todaySum = emptySummary();
   const mine = [];
+  let today432Count = 0;
 
   activeRecords().forEach(function (r) {
     if (String(r.machine_id) !== String(machineId)) return;
     _accumulate(total, r);
-    if (_recordBusinessDate(r) === today) _accumulate(todaySum, r);
+    const isToday = _recordBusinessDate(r) === today;
+    if (isToday) {
+      _accumulate(todaySum, r);
+      if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
+        today432Count += toNumber(r.count);
+      }
+    }
     mine.push(r);
   });
 
@@ -963,9 +1025,11 @@ function getMachineDetail(user, machineId, recordLimit) {
       location: m.location || '',
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
-      note: m.note || ''
+      note: m.note || '',
+      category: m.category || MACHINE_CATEGORY_DICE
     },
     today: todaySum,
+    today432Count: today432Count,
     total: total,
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
@@ -1006,7 +1070,17 @@ function addRecord(user, payload) {
   assertMachineAccess(user, payload.machineId);
 
   const type = payload.type;
-  if (type !== RECORD_IN && type !== RECORD_OUT) throw new Error('紀錄類型只能是入幣或出幣');
+  const isDiceType = (type === RECORD_IN || type === RECORD_OUT);
+  const isChipType = (type === RECORD_CHIP_IN || type === RECORD_CHIP_OUT);
+  if (!isDiceType && !isChipType) throw new Error('紀錄類型不正確');
+
+  const category = _machineCategory(payload.machineId);
+  if (category === MACHINE_CATEGORY_ELECTRONIC && !isChipType) {
+    throw new Error('電子機台只能記錄開分或洗分');
+  }
+  if (category !== MACHINE_CATEGORY_ELECTRONIC && !isDiceType) {
+    throw new Error('骰台機台不能記錄開分或洗分');
+  }
 
   const amount = _validAmount(payload.amount);
 
@@ -1048,6 +1122,9 @@ function addRecord(user, payload) {
 function addMeterRecord(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
   assertMachineAccess(user, payload.machineId);
+  if (_machineCategory(payload.machineId) === MACHINE_CATEGORY_ELECTRONIC) {
+    throw new Error('電子機台不能用碼表入幣，請用開分/洗分');
+  }
 
   const meterStart = _validMeterReading(payload.meterStart);
   const meterEnd = _validMeterReading(payload.meterEnd);
@@ -1119,6 +1196,9 @@ function _findByClientToken(token) {
 function addPrizeRecord(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
   assertMachineAccess(user, payload.machineId);
+  if (_machineCategory(payload.machineId) === MACHINE_CATEGORY_ELECTRONIC) {
+    throw new Error('電子機台沒有活動登錄');
+  }
 
   const items = payload.items || [];
   if (!items.length) throw new Error('請至少輸入一個獎型的次數');
@@ -1503,11 +1583,18 @@ function adminListMachines(user) {
         status: m.status || 'running',
         color: m.color || '#4F7BE8',
         sortOrder: toNumber(m.sort_order),
-        note: m.note || ''
+        note: m.note || '',
+        category: m.category || MACHINE_CATEGORY_DICE
       };
     });
 }
 
+/**
+ * 機台分類（骰台／電子）只在「新增機台」當下決定，走哪顆新增按鈕就是哪個分類，
+ * 之後編輯不能再改——換分類代表這台機台過去的紀錄類型（in/out/prize 或
+ * chip_in/chip_out）全部對不上新分類，貿然允許改分類等於讓歷史帳目失真。
+ * 所以這裡只有新增分支會寫 category，更新分支完全不動這一欄。
+ */
 function adminSaveMachine(user, payload) {
   requireRole(user, [ROLE_ADMIN]);
   const name = String(payload.name || '').trim();
@@ -1534,6 +1621,7 @@ function adminSaveMachine(user, payload) {
       });
       return { machineId: String(payload.machineId) };
     }
+    const category = payload.category === MACHINE_CATEGORY_ELECTRONIC ? MACHINE_CATEGORY_ELECTRONIC : MACHINE_CATEGORY_DICE;
     const m = {
       machine_id: newId('mch'),
       name: name,
@@ -1542,7 +1630,8 @@ function adminSaveMachine(user, payload) {
       color: color,
       sort_order: toNumber(payload.sortOrder),
       note: String(payload.note || '').substring(0, 200),
-      created_at: nowIso()
+      created_at: nowIso(),
+      category: category
     };
     dbInsert('Machines', m);
     return { machineId: m.machine_id };
@@ -1911,7 +2000,7 @@ function _csvCell(v) {
   return s;
 }
 
-const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '開獎' };
+const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
 
 /**
  * 匯出整個區間的紀錄（不受畫面 500 筆上限影響）。
@@ -1952,8 +2041,9 @@ function exportCsv(user, params) {
   const summary = emptySummary();
   rows.forEach(function (r) { _accumulate(summary, r); });
   lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, '', '', ''].map(_csvCell).join(','));
+  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '活動', summary.prize, '', '', ''].map(_csvCell).join(','));
   lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
+  lines.push(['', '', '', '開分', summary.chipIn, '洗分', summary.chipOut, '電子淨額', summary.chipNet, '', '', ''].map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {
@@ -2646,6 +2736,67 @@ function _selfTestBody(results) {
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: prizeMachine }).total.prize, 230, '停用後歷史帳仍算得出來');
   });
 
+  // ── 機台分類（骰台／電子）──
+  _t(results, '新增機台沒帶 category 時預設是骰台', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '沒填分類台', sortOrder: 30 }).machineId;
+    const list = _ok({ action: 'adminListMachines', token: adminTok });
+    const found = list.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.category, 'dice', '未指定分類應預設骰台');
+    _assertEq(_ok({ action: 'dashboard', token: adminTok }).machines.filter(function (m) { return m.machineId === mid; })[0].category, 'dice', 'dashboard 也應該帶 category');
+  });
+
+  const electronicMachine = _ok({
+    action: 'adminSaveMachine', token: adminTok, name: '電子測試台', sortOrder: 31, category: 'electronic'
+  }).machineId;
+
+  _t(results, '新增機台可指定 category 為 electronic', function () {
+    const list = _ok({ action: 'adminListMachines', token: adminTok });
+    const found = list.filter(function (m) { return m.machineId === electronicMachine; })[0];
+    _assertEq(found.category, 'electronic', '應該存成電子分類');
+  });
+
+  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分', function () {
+    _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_in', amount: 500, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_out', amount: 200, clientToken: newId('ct') });
+    const d = _ok({ action: 'machineDetail', token: adminTok, machineId: electronicMachine });
+    _assertEq(d.total.chipIn, 500, '開分總額');
+    _assertEq(d.total.chipOut, 200, '洗分總額');
+    _assertEq(d.total.chipNet, 300, '盈虧＝開分－洗分');
+  });
+
+  _t(results, '電子機台不能記錄入幣/出幣/活動', function () {
+    _fails({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'in', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'out', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: electronicMachine, meterStart: 0, meterEnd: 10, clientToken: newId('ct') });
+    _fails({
+      action: 'addPrizeRecord', token: adminTok, machineId: electronicMachine,
+      items: [{ prizeId: bigPrize, count: 1 }], clientToken: newId('ct')
+    });
+  });
+
+  _t(results, '骰台機台不能記錄開分/洗分', function () {
+    _fails({ action: 'addRecord', token: adminTok, machineId: prizeMachine, type: 'chip_in', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addRecord', token: adminTok, machineId: prizeMachine, type: 'chip_out', amount: 100, clientToken: newId('ct') });
+  });
+
+  _t(results, '首頁與機台詳細頁的今日432數量：只算今天、只算獎型名稱為432的次數', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '432測試台', sortOrder: 32 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 50, sortOrder: 1 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他獎型', amount: 30, sortOrder: 2 }).prizeId;
+
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 3 }, { prizeId: otherPrize, count: 5 }],
+      clientToken: newId('ct')
+    });
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.today432Count, 3, '機台詳細頁今日432數量只算432獎型的次數');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assert(dash.today432Count >= 3, '首頁今日432數量至少包含這台剛登錄的 3 次');
+  });
+
   // ── 入幣（碼表計算）──
   const meterMachine = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表測試台', sortOrder: 15 }).machineId;
 
@@ -2970,7 +3121,7 @@ function _selfTestBody(results) {
   _t(results, 'CSV：含表頭、逐筆資料與合計', function () {
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: prizeMachine, preset: 'day' });
     _assert(csv.content.indexOf('日期,時間,機台,類型,金額') === 0, 'CSV 應以表頭開始');
-    _assert(csv.content.indexOf('開獎') > 0, 'CSV 應含開獎列');
+    _assert(csv.content.indexOf('活動') > 0, 'CSV 應含活動（原開獎）列');
     _assert(csv.content.indexOf('淨收益') > 0, 'CSV 應含淨收益合計');
     _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
   });

@@ -403,6 +403,67 @@ function _selfTestBody(results) {
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: prizeMachine }).total.prize, 230, '停用後歷史帳仍算得出來');
   });
 
+  // ── 機台分類（骰台／電子）──
+  _t(results, '新增機台沒帶 category 時預設是骰台', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '沒填分類台', sortOrder: 30 }).machineId;
+    const list = _ok({ action: 'adminListMachines', token: adminTok });
+    const found = list.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.category, 'dice', '未指定分類應預設骰台');
+    _assertEq(_ok({ action: 'dashboard', token: adminTok }).machines.filter(function (m) { return m.machineId === mid; })[0].category, 'dice', 'dashboard 也應該帶 category');
+  });
+
+  const electronicMachine = _ok({
+    action: 'adminSaveMachine', token: adminTok, name: '電子測試台', sortOrder: 31, category: 'electronic'
+  }).machineId;
+
+  _t(results, '新增機台可指定 category 為 electronic', function () {
+    const list = _ok({ action: 'adminListMachines', token: adminTok });
+    const found = list.filter(function (m) { return m.machineId === electronicMachine; })[0];
+    _assertEq(found.category, 'electronic', '應該存成電子分類');
+  });
+
+  _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分', function () {
+    _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_in', amount: 500, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_out', amount: 200, clientToken: newId('ct') });
+    const d = _ok({ action: 'machineDetail', token: adminTok, machineId: electronicMachine });
+    _assertEq(d.total.chipIn, 500, '開分總額');
+    _assertEq(d.total.chipOut, 200, '洗分總額');
+    _assertEq(d.total.chipNet, 300, '盈虧＝開分－洗分');
+  });
+
+  _t(results, '電子機台不能記錄入幣/出幣/活動', function () {
+    _fails({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'in', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'out', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addMeterRecord', token: adminTok, machineId: electronicMachine, meterStart: 0, meterEnd: 10, clientToken: newId('ct') });
+    _fails({
+      action: 'addPrizeRecord', token: adminTok, machineId: electronicMachine,
+      items: [{ prizeId: bigPrize, count: 1 }], clientToken: newId('ct')
+    });
+  });
+
+  _t(results, '骰台機台不能記錄開分/洗分', function () {
+    _fails({ action: 'addRecord', token: adminTok, machineId: prizeMachine, type: 'chip_in', amount: 100, clientToken: newId('ct') });
+    _fails({ action: 'addRecord', token: adminTok, machineId: prizeMachine, type: 'chip_out', amount: 100, clientToken: newId('ct') });
+  });
+
+  _t(results, '首頁與機台詳細頁的今日432數量：只算今天、只算獎型名稱為432的次數', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '432測試台', sortOrder: 32 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 50, sortOrder: 1 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他獎型', amount: 30, sortOrder: 2 }).prizeId;
+
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 3 }, { prizeId: otherPrize, count: 5 }],
+      clientToken: newId('ct')
+    });
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.today432Count, 3, '機台詳細頁今日432數量只算432獎型的次數');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assert(dash.today432Count >= 3, '首頁今日432數量至少包含這台剛登錄的 3 次');
+  });
+
   // ── 入幣（碼表計算）──
   const meterMachine = _ok({ action: 'adminSaveMachine', token: adminTok, name: '碼表測試台', sortOrder: 15 }).machineId;
 
@@ -727,7 +788,7 @@ function _selfTestBody(results) {
   _t(results, 'CSV：含表頭、逐筆資料與合計', function () {
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: prizeMachine, preset: 'day' });
     _assert(csv.content.indexOf('日期,時間,機台,類型,金額') === 0, 'CSV 應以表頭開始');
-    _assert(csv.content.indexOf('開獎') > 0, 'CSV 應含開獎列');
+    _assert(csv.content.indexOf('活動') > 0, 'CSV 應含活動（原開獎）列');
     _assert(csv.content.indexOf('淨收益') > 0, 'CSV 應含淨收益合計');
     _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
   });

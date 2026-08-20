@@ -113,7 +113,7 @@ async function main() {
   await check('進入機台詳細頁，三顆記帳按鈕都在', async () => {
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
-    for (const label of ['入幣', '出幣', '🎁 開獎']) {
+    for (const label of ['入幣', '出幣', '🎁 活動']) {
       assert(await page.locator('.action-buttons button:has-text("' + label + '")').count() === 1, '缺少按鈕：' + label);
     }
     await shot('03-machine-detail');
@@ -230,7 +230,7 @@ async function main() {
     // 上面孤零零一個「-」、下面接著 $30,230，看起來像壞掉。這裡記一筆很大的
     // 出幣重現這個情境，確認淨收益數字仍是單行、且沒有撐爆整個頁面版面。
     //
-    // 收尾要回到機台詳細頁：後面的測試（開獎面板等）都預期還停在這一頁。
+    // 收尾要回到機台詳細頁：後面的測試（活動面板等）都預期還停在這一頁。
     await page.click('.action-buttons button:has-text("出幣")');
     await page.waitForSelector('.custom-amount input');
     await page.fill('.custom-amount input', '31000');
@@ -313,11 +313,14 @@ async function main() {
     const all = await page.locator('.figures-panel .stat').allTextContents();
     return num(all.find((t) => t.indexOf(label) >= 0));
   };
-  let prizeBefore = 0;
+  // 「今日開獎」卡片已經改成「今日432數量」（次數而非金額，只認獎型名稱剛好是
+  // 「432」的紀錄），這裡的預設獎型（大娃／小娃）都不叫這個名字，所以不會再增加，
+  // 改成直接比對淨收益的變化量，一樣能驗到「活動成本確實從淨收益扣掉」。
+  let netBeforePrize = 0;
 
-  await check('開獎面板可以一次登錄多個獎型，合計正確', async () => {
-    prizeBefore = await statValue('今日開獎');
-    await page.click('.action-buttons button:has-text("開獎")');
+  await check('活動面板可以一次登錄多個獎型，合計正確', async () => {
+    netBeforePrize = num(await page.locator('.net-stat .stat-value').textContent());
+    await page.click('.action-buttons button:has-text("活動")');
     await page.waitForSelector('.prize-row');
     const rows = await page.locator('.prize-row').count();
     assert(rows === 3, '應有 3 個預設獎型，實際 ' + rows);
@@ -336,16 +339,10 @@ async function main() {
     await shot('06-after-prize');
   });
 
-  await check('開獎確實被當成本扣掉淨收益', async () => {
-    const prizeAfter = await statValue('今日開獎');
-    assert(prizeAfter - prizeBefore === 230,
-      '今日開獎應增加 230，實際從 ' + prizeBefore + ' 變成 ' + prizeAfter);
-
-    const net = num(await page.locator('.net-stat .stat-value').textContent());
-    const inAmt = await statValue('今日入幣');
-    const outAmt = await statValue('今日出幣');
-    assert(net === inAmt - outAmt - prizeAfter,
-      '淨收益應等於 入−出−開獎：' + net + ' vs ' + inAmt + '−' + outAmt + '−' + prizeAfter);
+  await check('活動確實被當成本扣掉淨收益', async () => {
+    const netAfter = num(await page.locator('.net-stat .stat-value').textContent());
+    assert(netBeforePrize - netAfter === 230,
+      '活動成本應讓淨收益減少 230，實際從 ' + netBeforePrize + ' 變成 ' + netAfter);
   });
 
   await check('報表頁可以切換區間並顯示獎型統計', async () => {
@@ -474,6 +471,79 @@ async function main() {
     assert(apiCalls === 0, '切換系統管理分頁不該打任何 API，實際打了 ' + apiCalls + ' 次');
   });
 
+  await check('首頁分頁籤（骰台／電子／加總）＋新增電子機台並記錄開分/洗分', async () => {
+    await page.click('.tabs button:has-text("機台")');
+    await page.waitForSelector('.admin-item');
+
+    await page.click('button:has-text("＋ 新增電子機台")');
+    await page.waitForSelector('.dialog');
+    await page.fill('.dialog input[maxlength="30"]', '電子測試機');
+    await page.click('.dialog button:has-text("儲存")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+
+    const badge = await page.locator('.admin-item:has-text("電子測試機") .badge').textContent();
+    assert(badge.trim() === '電子', '新增的機台應該標示「電子」分類，實際「' + badge + '」');
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    assert(await page.locator('.home-sticky .seg button:has-text("骰台")').count() === 1, '首頁應該有骰台分頁籤');
+    assert(await page.locator('.machine-card').count() === 3, '骰台分頁籤預設不該顯示電子機台');
+    const diceLabels = await page.locator('.summary-strip .stat-label').allTextContents();
+    assert(diceLabels.some((t) => t.indexOf('432數量') >= 0), '骰台分頁籤應該顯示今日432數量卡片，取代原本的今日開獎');
+
+    await page.click('.home-sticky .seg button:has-text("電子")');
+    await page.waitForSelector('.machine-card');
+    assert(await page.locator('.machine-card').count() === 1, '電子分頁籤應該只顯示剛新增的那一台');
+    await shot('14-home-electronic-tab');
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+
+    const actionLabels = await page.locator('.action-buttons button').allTextContents();
+    assert(actionLabels.length === 2, '電子機台應該只有開分/洗分兩顆按鈕，實際 ' + actionLabels.length);
+    assert(actionLabels.some((t) => t.indexOf('開分') >= 0), '應該有開分按鈕');
+    assert(actionLabels.some((t) => t.indexOf('洗分') >= 0), '應該有洗分按鈕');
+    assert(!actionLabels.some((t) => t.indexOf('活動') >= 0 || t === '入幣' || t === '出幣'),
+      '電子機台不該出現入幣/出幣/活動按鈕');
+
+    await page.click('.action-buttons button:has-text("開分")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '500');
+    await page.click('.custom-amount button:has-text("送出")');
+    await page.waitForSelector('.record-item', { timeout: 8000 });
+
+    await page.click('.action-buttons button:has-text("洗分")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '200');
+    await page.click('.custom-amount button:has-text("送出")');
+    await page.waitForFunction(() => document.querySelectorAll('.record-item').length >= 2, null, { timeout: 8000 });
+
+    const stats = await page.locator('.figures-panel .stat').allTextContents();
+    const netText = stats.find((t) => t.indexOf('盈虧金額') >= 0);
+    assert(netText && num(netText) === 300, '盈虧金額應該是開分500－洗分200＝300，實際「' + netText + '」');
+    await shot('15-electronic-machine-detail');
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.click('.home-sticky .seg button:has-text("加總")');
+    await page.waitForSelector('.summary-strip');
+    const totalLabels = await page.locator('.summary-strip .stat-label').allTextContents();
+    assert(totalLabels.some((t) => t.indexOf('骰台淨收益') >= 0), '加總分頁應該有骰台淨收益卡片');
+    assert(totalLabels.some((t) => t.indexOf('電子淨收益') >= 0), '加總分頁應該有電子淨收益卡片');
+    assert(totalLabels.some((t) => t.indexOf('總淨收益') >= 0), '加總分頁應該有總淨收益卡片');
+    assert(await page.locator('.machine-list').count() === 0, '加總分頁目前（第一階段）不該顯示機台清單');
+    await shot('16-home-total-tab');
+
+    // 收尾切回骰台分頁、進一台骰台機台，後面的測試（巡邏人員角色）預期
+    // 停在一個有「← 返回主畫面」可以按的頁面，且首頁分頁籤要留在預設值。
+    await page.click('.home-sticky .seg button:has-text("骰台")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    const diceStatLabels = await page.locator('.figures-panel .stat-label').allTextContents();
+    assert(diceStatLabels.some((t) => t.indexOf('432數量') >= 0), '骰台機台詳細頁也應該顯示今日432數量卡片');
+  });
+
   // ── 巡邏人員 ──
   await check('巡邏人員：看得到全部機台、能記帳、但沒有管理功能', async () => {
     await page.click('button:has-text("← 返回主畫面")');
@@ -493,7 +563,7 @@ async function main() {
     await page.waitForSelector('.panel');
     assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到入幣的費率編輯');
 
-    await page.click('.action-buttons button:has-text("開獎")');
+    await page.click('.action-buttons button:has-text("活動")');
     await page.waitForSelector('.prize-row');
     assert(await page.locator('button:has-text("✎ 編輯")').count() === 0, '巡邏人員不該看到編輯獎型');
     assert(await page.locator('.record-item button:has-text("✕")').count() === 0, '巡邏人員不該看到作廢按鈕');

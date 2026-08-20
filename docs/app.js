@@ -32,7 +32,7 @@ const PIXEL_MACHINE = [
 
 const STATUS_COLORS = { running: '#4ADE80', maintenance: '#FBBF24', offline: '#6B7488' };
 const STATUS_LABELS = { running: '營運中', maintenance: '維修中', offline: '停機' };
-const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '開獎' };
+const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
 const MACHINE_COLORS = ['#4F7BE8', '#E8574F', '#4ADE80', '#FBBF24', '#C084FC', '#22D3EE', '#F472B6', '#94A3B8'];
 
 const STORAGE_TOKEN = 'claw_token';
@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -55,7 +55,8 @@ const state = {
   detail: null,
   report: null,
   admin: null,
-  panel: null,        // 'in' | 'out' | 'prize' | null
+  panel: null,        // 'in' | 'out' | 'prize' | 'chip_in' | 'chip_out' | null
+  homeTab: 'dice',    // 首頁分頁籤：'dice' 骰台（預設）| 'electronic' 電子 | 'total' 加總
   editMode: false,
   prizeCounts: {},
   reportParams: { machineId: '', preset: 'day', from: '', to: '', type: '', userId: '' },
@@ -344,6 +345,7 @@ function clearSession() {
   state.report = null;
   state.admin = null;
   state.cache = {};
+  state.homeTab = 'dice';
 
   try {
     localStorage.removeItem(STORAGE_TOKEN);
@@ -446,8 +448,6 @@ function viewHome() {
   const data = state.home;
   if (!data) return h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })]);
 
-  const t = data.todayTotal;
-
   const header = h('div', { class: 'topbar' }, [
     h('div', {}, [
       h('h1', { text: '機台總覽' }),
@@ -462,23 +462,62 @@ function viewHome() {
     ])
   ]);
 
-  const summary = h('div', { class: 'summary-strip' }, [
-    statBox('今日入幣', money(t.in), 'net pos'),
-    statBox('今日出幣', money(t.out), ''),
-    statBox('今日開獎', money(t.prize), ''),
-    statBox('今日淨收益', money(t.net), 'net ' + netClass(t.net))
-  ]);
+  let summary;
+  let list;
 
-  const list = data.machines.length
-    ? h('div', { class: 'machine-list' }, data.machines.map(machineCard))
-    : h('div', { class: 'card empty' }, isAdmin()
-      ? '還沒有任何機台。到「⚙ 系統管理 → 機台」新增第一台。'
-      : '目前沒有開放給你的機台，請聯絡管理員。');
+  if (state.homeTab === 'electronic') {
+    const t = data.electronicTotal;
+    summary = h('div', { class: 'summary-strip' }, [
+      statBox('今日開分', money(t.chipIn), 'net pos'),
+      statBox('今日洗分', money(t.chipOut), ''),
+      statBox('今日盈虧', money(t.chipNet), 'net ' + netClass(t.chipNet))
+    ]);
+    const machines = data.machines.filter((m) => m.category === 'electronic');
+    list = machines.length
+      ? h('div', { class: 'machine-list' }, machines.map(machineCard))
+      : h('div', { class: 'card empty' }, isAdmin()
+        ? '還沒有電子機台。到「⚙ 系統管理 → 機台」新增一台。'
+        : '目前沒有開放給你的電子機台。');
+  } else if (state.homeTab === 'total') {
+    const dice = data.diceTotal;
+    const electronic = data.electronicTotal;
+    const grandNet = dice.net + electronic.chipNet;
+    summary = h('div', { class: 'summary-strip' }, [
+      statBox('今日骰台淨收益', money(dice.net), 'net ' + netClass(dice.net)),
+      statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
+      statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
+    ]);
+    list = null;
+  } else {
+    const t = data.diceTotal;
+    summary = h('div', { class: 'summary-strip' }, [
+      statBox('今日入幣', money(t.in), 'net pos'),
+      statBox('今日出幣', money(t.out), ''),
+      statBox('今日432數量', String(data.today432Count || 0), ''),
+      statBox('今日淨收益', money(t.net), 'net ' + netClass(t.net))
+    ]);
+    const machines = data.machines.filter((m) => m.category !== 'electronic');
+    list = machines.length
+      ? h('div', { class: 'machine-list' }, machines.map(machineCard))
+      : h('div', { class: 'card empty' }, isAdmin()
+        ? '還沒有任何機台。到「⚙ 系統管理 → 機台」新增第一台。'
+        : '目前沒有開放給你的機台，請聯絡管理員。');
+  }
 
   return h('div', {}, [
-    h('div', { class: 'home-sticky' }, [header, summary, businessDayBar(data.businessDay)]),
+    h('div', { class: 'home-sticky' }, [header, summary, businessDayBar(data.businessDay), homeTabBar()]),
     list
-  ]);
+  ].filter((n) => n !== null));
+}
+
+/** 首頁分頁籤：骰台（預設）／電子／加總。放在「今日營業開始／結單」下面。 */
+function homeTabBar() {
+  const tabs = [['dice', '骰台'], ['electronic', '電子'], ['total', '加總']];
+  return h('div', { class: 'seg', style: 'margin-top:10px' }, tabs.map(([key, label]) =>
+    h('button', {
+      class: state.homeTab === key ? 'active' : '',
+      onclick: () => { state.homeTab = key; render(); }
+    }, label)));
 }
 
 /**
@@ -523,6 +562,12 @@ function doEndBusinessDay() {
 }
 
 function machineCard(m) {
+  const isElectronic = m.category === 'electronic';
+  const net = isElectronic ? m.today.chipNet : m.today.net;
+  const breakdown = isElectronic
+    ? ('開 ' + money(m.today.chipIn) + ' · 洗 ' + money(m.today.chipOut))
+    : ('入 ' + money(m.today.in) + ' · 出 ' + money(m.today.out) + ' · 動 ' + money(m.today.prize));
+
   return h('button', {
     class: 'machine-card',
     type: 'button',
@@ -539,9 +584,8 @@ function machineCard(m) {
       ])
     ]),
     h('div', { class: 'figures' }, [
-      h('div', { class: 'net num ' + netClass(m.today.net), text: money(m.today.net) }),
-      h('div', { class: 'breakdown num' },
-        '入 ' + money(m.today.in) + ' · 出 ' + money(m.today.out) + ' · 獎 ' + money(m.today.prize))
+      h('div', { class: 'net num ' + netClass(net), text: money(net) }),
+      h('div', { class: 'breakdown num' }, breakdown)
     ])
   ]);
 }
@@ -573,22 +617,49 @@ function viewMachine() {
 
   const switcher = machineSwitcher(m.machineId);
 
+  if (m.category === 'electronic') return viewElectronicMachine(d, nav, hero, switcher);
+
   const figures = h('div', { class: 'figures-panel' }, [
     h('div', { class: 'stat net-stat center' }, [
-      h('div', { class: 'stat-label', text: '今日淨收益（已扣開獎）' }),
+      h('div', { class: 'stat-label', text: '今日淨收益（已扣活動成本）' }),
       h('div', { class: 'stat-value num net ' + netClass(d.today.net), text: money(d.today.net) }),
       h('div', { class: 'small muted num', text: '累計淨收益 ' + money(d.total.net) })
     ]),
     statBox('今日入幣', money(d.today.in)),
     statBox('今日出幣', money(d.today.out)),
-    statBox('今日開獎', money(d.today.prize))
+    statBox('今日432數量', String(d.today432Count || 0))
   ]);
 
   const actions = canRecord()
     ? h('div', { class: 'action-buttons' }, [
       h('button', { class: 'btn btn-in' + (state.panel === 'in' ? ' active' : ''), onclick: () => togglePanel('in') }, '入幣'),
       h('button', { class: 'btn btn-out' + (state.panel === 'out' ? ' active' : ''), onclick: () => togglePanel('out') }, '出幣'),
-      h('button', { class: 'btn btn-prize' + (state.panel === 'prize' ? ' active' : ''), onclick: () => togglePanel('prize') }, '🎁 開獎')
+      h('button', { class: 'btn btn-prize' + (state.panel === 'prize' ? ' active' : ''), onclick: () => togglePanel('prize') }, '🎁 活動')
+    ])
+    : null;
+
+  const top = h('div', { class: 'detail-top' }, [hero, switcher, figures, actions]);
+
+  return h('div', { class: 'detail-grid' }, [
+    nav,
+    top,
+    state.panel ? renderPanel(d) : null,
+    renderRecords(d)
+  ]);
+}
+
+/** 電子機台的詳細頁：只有開分／洗分兩顆按鈕，沒有入幣/出幣/活動。 */
+function viewElectronicMachine(d, nav, hero, switcher) {
+  const figures = h('div', { class: 'figures-panel' }, [
+    statBox('開分金額', money(d.today.chipIn), 'net pos'),
+    statBox('洗分金額', money(d.today.chipOut), ''),
+    statBox('盈虧金額', money(d.today.chipNet), 'net ' + netClass(d.today.chipNet))
+  ]);
+
+  const actions = canRecord()
+    ? h('div', { class: 'action-buttons' }, [
+      h('button', { class: 'btn btn-in' + (state.panel === 'chip_in' ? ' active' : ''), onclick: () => togglePanel('chip_in') }, '開分'),
+      h('button', { class: 'btn btn-out' + (state.panel === 'chip_out' ? ' active' : ''), onclick: () => togglePanel('chip_out') }, '洗分')
     ])
     : null;
 
@@ -666,7 +737,30 @@ function togglePanel(kind) {
 function renderPanel(d) {
   if (state.panel === 'prize') return prizePanel(d);
   if (state.panel === 'in') return meterPanel(d);
+  if (state.panel === 'chip_in' || state.panel === 'chip_out') return chipPanel(d, state.panel);
   return quickPanel(d, state.panel); // 只剩 'out' 會走到這裡
+}
+
+// ── 面板：電子機台開分／洗分（永遠手動輸入，沒有快捷金額）───
+
+function chipPanel(d, type) {
+  const custom = h('input', { type: 'number', inputmode: 'decimal', min: '1', placeholder: '輸入金額', autofocus: true });
+
+  const submit = () => {
+    const v = Number(custom.value);
+    if (!v || v <= 0) { toast('請輸入大於 0 的金額', 'error'); return; }
+    custom.value = '';
+    submitAmount(d.machine.machineId, type, v);
+  };
+  custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+
+  return h('div', { class: 'panel' }, [
+    h('div', { class: 'panel-head' }, [h('h3', { text: TYPE_LABELS[type] })]),
+    h('div', { class: 'custom-amount' }, [
+      custom,
+      h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out'), onclick: submit }, '送出')
+    ])
+  ]);
 }
 
 // ── 面板：出幣快捷金額 ──────────────────────────────────
@@ -907,7 +1001,7 @@ function meterRateEditor(d) {
   ]);
 }
 
-// ── 面板：開獎 ──────────────────────────────────────────
+// ── 面板：活動（原「開獎」）──────────────────────────────────────────
 
 function prizePanel(d) {
   const prizes = d.prizes || [];
@@ -964,7 +1058,7 @@ function prizePanel(d) {
 
   return h('div', { class: 'panel' }, [
     h('div', { class: 'panel-head' }, [
-      h('h3', { text: '開獎登錄' }),
+      h('h3', { text: '活動登錄' }),
       isAdmin()
         ? h('button', {
           class: 'btn btn-sm btn-ghost',
@@ -1000,7 +1094,7 @@ function submitPrizes(machineId, prizes) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else toast('開獎 ' + money(res.total) + ' 已登錄', 'success');
+    else toast('活動 ' + money(res.total) + ' 已登錄', 'success');
     state.prizeCounts = {};
     await loadDetail(machineId);
   });
@@ -1059,7 +1153,7 @@ function renderRecords(d) {
 }
 
 function recordItem(r) {
-  const sign = r.type === 'in' ? '+' : '−';
+  const sign = (r.type === 'in' || r.type === 'chip_in') ? '+' : '−';
   const hasMeter = r.type === 'in' && r.meterStart !== null && r.meterEnd !== null;
   const title = r.type === 'prize'
     ? (r.prizeName + ' ×' + r.count)
@@ -1139,7 +1233,7 @@ function viewReport() {
   const stats = h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
     statBox('入幣', money(s.in), 'net pos'),
     statBox('出幣', money(s.out)),
-    statBox('開獎成本', money(s.prize)),
+    statBox('活動成本', money(s.prize)),
     statBox('淨收益', money(s.net), 'net ' + netClass(s.net))
   ]);
 
@@ -1247,7 +1341,7 @@ function recordsTableCard(rep) {
 
   const typeSel = h('select', {
     onchange: (e) => { p.type = e.target.value; loadReport(); }
-  }, [['', '全部類型'], ['in', '入幣'], ['out', '出幣'], ['prize', '開獎']].map(([v, l]) =>
+  }, [['', '全部類型'], ['in', '入幣'], ['out', '出幣'], ['prize', '活動'], ['chip_in', '開分'], ['chip_out', '洗分']].map(([v, l]) =>
     h('option', { value: v, selected: p.type === v }, l)));
 
   const userSel = h('select', {
@@ -1429,28 +1523,42 @@ function showPasswordOnce(username, password) {
   ]);
 }
 
+const MACHINE_CATEGORY_LABELS = { dice: '骰台', electronic: '電子' };
+
 function adminMachines(data) {
   const items = data.machines.map((m) => h('div', { class: 'admin-item' }, [
     machineSvg(40, m.color, m.status),
     h('div', { class: 'admin-main' }, [
-      h('div', { class: 'admin-name', text: m.name }),
+      h('div', { class: 'admin-name' }, [
+        m.name,
+        h('span', { class: 'badge badge-owner', style: 'margin-left:6px', text: MACHINE_CATEGORY_LABELS[m.category] || '骰台' })
+      ]),
       h('div', { class: 'admin-sub', text: (m.location || '—') + ' · ' + STATUS_LABELS[m.status] })
     ]),
     h('button', { class: 'btn btn-sm', onclick: () => editMachine(m) }, '編輯')
   ]));
 
   return h('div', {}, [
-    h('button', { class: 'btn btn-primary btn-block', style: 'margin-bottom:14px', onclick: () => editMachine(null) }, '＋ 新增機台'),
+    h('div', { class: 'row', style: 'gap:10px;margin-bottom:14px' }, [
+      h('button', { class: 'btn btn-primary', style: 'flex:1', onclick: () => editMachine(null, 'dice') }, '＋ 新增骰台機台'),
+      h('button', { class: 'btn btn-primary', style: 'flex:1', onclick: () => editMachine(null, 'electronic') }, '＋ 新增電子機台')
+    ]),
     h('div', { class: 'admin-list' }, items)
   ]);
 }
 
-function editMachine(m) {
+/**
+ * 分類（骰台／電子）只在新增當下決定——按哪顆新增按鈕就是哪個分類，
+ * 之後編輯不能再改，所以這裡只有新增（沒有 m）時才顯示分類、才會把
+ * category 帶進 adminSaveMachine 的 payload；編輯既有機台完全不碰這一欄。
+ */
+function editMachine(m, presetCategory) {
   const name = h('input', { type: 'text', maxlength: '30', value: m ? m.name : '' });
   const location = h('input', { type: 'text', maxlength: '50', value: m ? m.location : '' });
   const status = h('select', {}, [['running', '營運中'], ['maintenance', '維修中'], ['offline', '停機']]
     .map(([v, l]) => h('option', { value: v, selected: (m ? m.status : 'running') === v }, l)));
   const order = h('input', { type: 'number', value: m ? m.sortOrder : (state.admin.machines.length + 1) });
+  const category = m ? (m.category || 'dice') : (presetCategory || 'dice');
 
   let color = m ? m.color : MACHINE_COLORS[0];
   const swatches = h('div', { class: 'color-swatches' }, MACHINE_COLORS.map((c) => {
@@ -1471,14 +1579,17 @@ function editMachine(m) {
   const preview = h('div', { class: 'center', style: 'margin-bottom:14px' }, machineSvg(72, color, m ? m.status : 'running'));
   status.addEventListener('change', () => preview.replaceChildren(machineSvg(72, color, status.value)));
 
-  openDialog(m ? '編輯機台' : '新增機台', [
+  const fields = [
     preview,
+    dialogField('分類', h('p', { class: 'small muted', text: MACHINE_CATEGORY_LABELS[category] + (m ? '（建立後不可修改）' : '') })),
     dialogField('機台名稱', name),
     dialogField('位置', location),
     dialogField('狀態', status),
     dialogField('機身顏色', swatches),
     dialogField('排序', order)
-  ], [
+  ];
+
+  openDialog(m ? '編輯機台' : '新增' + MACHINE_CATEGORY_LABELS[category] + '機台', fields, [
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
@@ -1489,7 +1600,8 @@ function editMachine(m) {
           location: location.value.trim(),
           status: status.value,
           color: color,
-          sortOrder: Number(order.value) || 0
+          sortOrder: Number(order.value) || 0,
+          category: category
         });
         closeDialog();
         await loadAdmin();
@@ -1511,7 +1623,7 @@ function adminPrizes(data) {
   return h('div', {}, [
     h('div', { class: 'perm-note' },
       '這裡設定的是「全局獎型」，所有機台預設都用這一組。'
-      + '某台需要不一樣時，到那台的詳細頁按「🎁 開獎 → ✎ 編輯 → 改成本台自訂」。'),
+      + '某台需要不一樣時，到那台的詳細頁按「🎁 活動 → ✎ 編輯 → 改成本台自訂」。'),
     h('button', { class: 'btn btn-primary btn-block', style: 'margin-bottom:14px', onclick: () => editGlobalPrize(null) }, '＋ 新增獎型'),
     items.length ? h('div', { class: 'admin-list' }, items) : h('div', { class: 'card empty' }, '還沒有獎型'),
     data.prizes.overrides.length
@@ -1616,7 +1728,7 @@ function adminPerms(data) {
  * 都立刻背景重打一次」，好處是資料一定準，代價是每次進頁面都會看到
  * 數字先出現、過一下又跳一次——尤其是背景預取剛抓完沒多久就點進去，
  * 那個「跳」完全是白跑一趟，資料根本沒變。真的動到帳（送出入幣/出幣/
- * 開獎、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
+ * 活動、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
  * 的函式、不經過這裡的新鮮度判斷，一定會拿到最新的。
  */
 const CACHE_FRESH_MS = 30000;

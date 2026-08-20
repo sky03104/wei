@@ -180,7 +180,7 @@ function _csvCell(v) {
   return s;
 }
 
-const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '開獎' };
+const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
 
 /**
  * 匯出整個區間的紀錄（不受畫面 500 筆上限影響）。
@@ -221,8 +221,9 @@ function exportCsv(user, params) {
   const summary = emptySummary();
   rows.forEach(function (r) { _accumulate(summary, r); });
   lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '開獎', summary.prize, '', '', ''].map(_csvCell).join(','));
+  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '活動', summary.prize, '', '', ''].map(_csvCell).join(','));
   lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
+  lines.push(['', '', '', '開分', summary.chipIn, '洗分', summary.chipOut, '電子淨額', summary.chipNet, '', '', ''].map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {

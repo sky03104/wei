@@ -7,7 +7,15 @@
 
 const RECORD_IN = 'in';
 const RECORD_OUT = 'out';
-const RECORD_PRIZE = 'prize';
+const RECORD_PRIZE = 'prize'; // 前端顯示叫「活動」，內部型別值維持不變（歷史資料、程式邏輯都不用跟著改）
+const RECORD_CHIP_IN = 'chip_in';   // 電子機台的「開分」
+const RECORD_CHIP_OUT = 'chip_out'; // 電子機台的「洗分」
+
+const MACHINE_CATEGORY_DICE = 'dice';
+const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
+
+/** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
+const TRACKED_PRIZE_NAME = '432';
 
 const MAX_AMOUNT = 10000000;
 const MAX_PRIZE_COUNT = 9999;
@@ -147,10 +155,22 @@ function endBusinessDay(user) {
   });
 }
 
+/** 機台分類，沒設過（舊資料，欄位是空字串）一律當骰台——這個功能上線前建立的機台全部是骰台。 */
+function _machineCategory(machineId) {
+  const m = dbFind('Machines', 'machine_id', machineId);
+  return (m && m.category) || MACHINE_CATEGORY_DICE;
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
+/**
+ * 骰台（in/out/prize）跟電子（chip_in/chip_out）兩種機台的欄位都放在
+ * 同一個 summary 物件裡，骰台紀錄不會動到 chipIn/chipOut，電子紀錄
+ * 也不會動到 in/out/prize——兩種機台混在同一批紀錄裡累加也不會互相污染，
+ * 首頁「加總」分頁要同時看兩種淨額時不用分開兩套彙總邏輯。
+ */
 function emptySummary() {
-  return { in: 0, out: 0, prize: 0, net: 0 };
+  return { in: 0, out: 0, prize: 0, net: 0, chipIn: 0, chipOut: 0, chipNet: 0 };
 }
 
 function _accumulate(sum, rec) {
@@ -158,7 +178,10 @@ function _accumulate(sum, rec) {
   if (rec.type === RECORD_IN) sum.in += amt;
   else if (rec.type === RECORD_OUT) sum.out += amt;
   else if (rec.type === RECORD_PRIZE) sum.prize += amt;
+  else if (rec.type === RECORD_CHIP_IN) sum.chipIn += amt;
+  else if (rec.type === RECORD_CHIP_OUT) sum.chipOut += amt;
   sum.net = sum.in - sum.out - sum.prize;
+  sum.chipNet = sum.chipIn - sum.chipOut;
   return sum;
 }
 
@@ -198,11 +221,18 @@ function getDashboard(user) {
   const todays = {};
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
 
+  let today432Count = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    if (_recordBusinessDate(r) === today) _accumulate(todays[mid], r);
+    const isToday = _recordBusinessDate(r) === today;
+    if (isToday) {
+      _accumulate(todays[mid], r);
+      if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
+        today432Count += toNumber(r.count);
+      }
+    }
   });
 
   const list = machines.map(function (m) {
@@ -214,6 +244,7 @@ function getDashboard(user) {
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
       sortOrder: toNumber(m.sort_order),
+      category: m.category || MACHINE_CATEGORY_DICE,
       today: todays[id],
       total: totals[id]
     };
@@ -224,15 +255,39 @@ function getDashboard(user) {
     return String(a.name).localeCompare(String(b.name));
   });
 
-  const grand = emptySummary();
+  // 骰台跟電子機台的今日淨額分開算——首頁「加總」分頁要同時顯示
+  // 骰台淨收益、電子淨收益、兩者相加的總淨收益三張卡片。
+  const diceTotal = emptySummary();
+  const electronicTotal = emptySummary();
   list.forEach(function (m) {
-    grand.in += m.today.in;
-    grand.out += m.today.out;
-    grand.prize += m.today.prize;
+    const target = m.category === MACHINE_CATEGORY_ELECTRONIC ? electronicTotal : diceTotal;
+    target.in += m.today.in;
+    target.out += m.today.out;
+    target.prize += m.today.prize;
+    target.chipIn += m.today.chipIn;
+    target.chipOut += m.today.chipOut;
   });
-  grand.net = grand.in - grand.out - grand.prize;
+  diceTotal.net = diceTotal.in - diceTotal.out - diceTotal.prize;
+  electronicTotal.chipNet = electronicTotal.chipIn - electronicTotal.chipOut;
 
-  return { machines: list, todayTotal: grand, today: today, businessDay: businessDayStatus(user) };
+  const grand = emptySummary();
+  grand.in = diceTotal.in;
+  grand.out = diceTotal.out;
+  grand.prize = diceTotal.prize;
+  grand.net = diceTotal.net;
+  grand.chipIn = electronicTotal.chipIn;
+  grand.chipOut = electronicTotal.chipOut;
+  grand.chipNet = electronicTotal.chipNet;
+
+  return {
+    machines: list,
+    todayTotal: grand,
+    diceTotal: diceTotal,
+    electronicTotal: electronicTotal,
+    today432Count: today432Count,
+    today: today,
+    businessDay: businessDayStatus(user)
+  };
 }
 
 /**
@@ -262,11 +317,18 @@ function getMachineDetail(user, machineId, recordLimit) {
   const total = emptySummary();
   const todaySum = emptySummary();
   const mine = [];
+  let today432Count = 0;
 
   activeRecords().forEach(function (r) {
     if (String(r.machine_id) !== String(machineId)) return;
     _accumulate(total, r);
-    if (_recordBusinessDate(r) === today) _accumulate(todaySum, r);
+    const isToday = _recordBusinessDate(r) === today;
+    if (isToday) {
+      _accumulate(todaySum, r);
+      if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
+        today432Count += toNumber(r.count);
+      }
+    }
     mine.push(r);
   });
 
@@ -290,9 +352,11 @@ function getMachineDetail(user, machineId, recordLimit) {
       location: m.location || '',
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
-      note: m.note || ''
+      note: m.note || '',
+      category: m.category || MACHINE_CATEGORY_DICE
     },
     today: todaySum,
+    today432Count: today432Count,
     total: total,
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
@@ -333,7 +397,17 @@ function addRecord(user, payload) {
   assertMachineAccess(user, payload.machineId);
 
   const type = payload.type;
-  if (type !== RECORD_IN && type !== RECORD_OUT) throw new Error('紀錄類型只能是入幣或出幣');
+  const isDiceType = (type === RECORD_IN || type === RECORD_OUT);
+  const isChipType = (type === RECORD_CHIP_IN || type === RECORD_CHIP_OUT);
+  if (!isDiceType && !isChipType) throw new Error('紀錄類型不正確');
+
+  const category = _machineCategory(payload.machineId);
+  if (category === MACHINE_CATEGORY_ELECTRONIC && !isChipType) {
+    throw new Error('電子機台只能記錄開分或洗分');
+  }
+  if (category !== MACHINE_CATEGORY_ELECTRONIC && !isDiceType) {
+    throw new Error('骰台機台不能記錄開分或洗分');
+  }
 
   const amount = _validAmount(payload.amount);
 
@@ -375,6 +449,9 @@ function addRecord(user, payload) {
 function addMeterRecord(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
   assertMachineAccess(user, payload.machineId);
+  if (_machineCategory(payload.machineId) === MACHINE_CATEGORY_ELECTRONIC) {
+    throw new Error('電子機台不能用碼表入幣，請用開分/洗分');
+  }
 
   const meterStart = _validMeterReading(payload.meterStart);
   const meterEnd = _validMeterReading(payload.meterEnd);
@@ -446,6 +523,9 @@ function _findByClientToken(token) {
 function addPrizeRecord(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有記帳權限');
   assertMachineAccess(user, payload.machineId);
+  if (_machineCategory(payload.machineId) === MACHINE_CATEGORY_ELECTRONIC) {
+    throw new Error('電子機台沒有活動登錄');
+  }
 
   const items = payload.items || [];
   if (!items.length) throw new Error('請至少輸入一個獎型的次數');
@@ -830,11 +910,18 @@ function adminListMachines(user) {
         status: m.status || 'running',
         color: m.color || '#4F7BE8',
         sortOrder: toNumber(m.sort_order),
-        note: m.note || ''
+        note: m.note || '',
+        category: m.category || MACHINE_CATEGORY_DICE
       };
     });
 }
 
+/**
+ * 機台分類（骰台／電子）只在「新增機台」當下決定，走哪顆新增按鈕就是哪個分類，
+ * 之後編輯不能再改——換分類代表這台機台過去的紀錄類型（in/out/prize 或
+ * chip_in/chip_out）全部對不上新分類，貿然允許改分類等於讓歷史帳目失真。
+ * 所以這裡只有新增分支會寫 category，更新分支完全不動這一欄。
+ */
 function adminSaveMachine(user, payload) {
   requireRole(user, [ROLE_ADMIN]);
   const name = String(payload.name || '').trim();
@@ -861,6 +948,7 @@ function adminSaveMachine(user, payload) {
       });
       return { machineId: String(payload.machineId) };
     }
+    const category = payload.category === MACHINE_CATEGORY_ELECTRONIC ? MACHINE_CATEGORY_ELECTRONIC : MACHINE_CATEGORY_DICE;
     const m = {
       machine_id: newId('mch'),
       name: name,
@@ -869,7 +957,8 @@ function adminSaveMachine(user, payload) {
       color: color,
       sort_order: toNumber(payload.sortOrder),
       note: String(payload.note || '').substring(0, 200),
-      created_at: nowIso()
+      created_at: nowIso(),
+      category: category
     };
     dbInsert('Machines', m);
     return { machineId: m.machine_id };
