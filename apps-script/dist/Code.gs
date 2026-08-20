@@ -938,10 +938,12 @@ function _machineCategory(machineId) {
 // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
 //
 // 這五項是整間店當天的現金調度，不屬於任何一台機台，每天只設定一個數字
-// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）：操作人直接輸入當天
-// 實際的正負數（例如運拿、台主領本來就是現金流出，直接輸入負數），
-// 系統原封不動存起來、加總時也不額外套正負號。同一個營業日重複儲存
-// 是覆蓋，不是疊加——DailyLedger 每個 business_date 最多一列。
+// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、台主領本來就是
+// 現金流出，操作人直接輸入平常認知的正數金額即可，系統加總時自動幫這
+// 兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓使用者輸入
+// 正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場則直接
+// 加回總結餘。同一個營業日重複儲存是覆蓋，不是疊加——DailyLedger 每個
+// business_date 最多一列。
 
 /** 某個營業日的手動帳目原始列，沒設定過就是 null。 */
 function _dailyLedgerRow(businessDate) {
@@ -961,11 +963,20 @@ function _publicDailyLedger(row) {
   };
 }
 
-/** 跟 _validAmount 不同：這五項本來就可能是負數（現金流出），只限制數字的大小，不限正負。 */
+/** 跟 _validAmount 不同：允許輸入負數（用於偶爾需要沖正的修正），只限制數字的大小。 */
 function _validSignedAmount(raw) {
   const n = Number(raw);
   if (!isFinite(n)) throw new Error('金額必須是數字');
   if (Math.abs(n) > MAX_AMOUNT) throw new Error('金額超出上限');
+  return Math.round(n * 100) / 100;
+}
+
+/** 運拿／台主領這兩項一律是現金流出，輸入平常認知的正數金額就好，加總時系統自動扣除。 */
+function _validOutflowAmount(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) throw new Error('金額必須是數字');
+  if (n < 0) throw new Error('這項請輸入正數金額，系統會自動從總結餘扣除');
+  if (n > MAX_AMOUNT) throw new Error('金額超出上限');
   return Math.round(n * 100) / 100;
 }
 
@@ -974,9 +985,9 @@ function saveDailyLedger(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
 
   const turnover = _validSignedAmount(payload.turnover);
-  const transport = _validSignedAmount(payload.transport);
+  const transport = _validOutflowAmount(payload.transport);
   const givenToOwner = _validSignedAmount(payload.givenToOwner);
-  const takenByOwner = _validSignedAmount(payload.takenByOwner);
+  const takenByOwner = _validOutflowAmount(payload.takenByOwner);
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
 
   return withLock(function () {
@@ -1127,13 +1138,11 @@ function getDashboard(user) {
 
   // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（暫代「開銷+432獎」，
   // 目前還沒有其他雜項開銷可以記）＋電子淨贏＋週轉金/運拿/台主給/台主領/
-  // 還內場這五個每天手動輸入的數字。這五個數字操作人可以直接輸入負數
-  // （例如運拿、台主領本來就是現金流出），所以這裡不用另外套正負號，
-  // 直接原始加總即可——跟前端「加總」分頁要顯示的九行明細用同一份數字，
-  // 不用另外算一次，兩邊才不會兜不起來。
+  // 還內場這五個每天手動輸入的數字。運拿、台主領存的是使用者輸入的正數
+  // 現金流出金額，這裡要扣掉；週轉金、台主給、還內場是加回去。
   const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount
-    + ledger.turnover + ledger.transport + ledger.givenToOwner
-    + electronicTotal.chipNet + ledger.takenByOwner + ledger.returnedToHouse;
+    + ledger.turnover - ledger.transport + ledger.givenToOwner
+    + electronicTotal.chipNet - ledger.takenByOwner + ledger.returnedToHouse;
 
   return {
     machines: list,
@@ -3184,18 +3193,29 @@ function _selfTestBody(results) {
     }, 'PERMISSION');
   });
 
-  _t(results, '每日手動帳目：可以輸入負數（現金流出），儲存後 dashboard 會反映最新值', function () {
+  _t(results, '每日手動帳目：運拿／台主領輸入負數會被擋（這兩項一律當正數的現金流出，系統自動扣除）', function () {
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, transport: -1, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, transport: 0, givenToOwner: 0, takenByOwner: -1, returnedToHouse: 0
+    });
+  });
+
+  _t(results, '每日手動帳目：輸入正數金額，儲存後 dashboard 會反映最新值', function () {
     const saved = _ok({
       action: 'saveDailyLedger', token: patrolTok,
-      turnover: 416000, transport: -250000, givenToOwner: 60200, takenByOwner: -172600, returnedToHouse: 13000
+      turnover: 416000, transport: 250000, givenToOwner: 60200, takenByOwner: 172600, returnedToHouse: 13000
     });
-    _assertEq(saved.transport, -250000, '應該原封不動存負數，不做正負號轉換');
+    _assertEq(saved.transport, 250000, '應該原封不動存正數，不做正負號轉換');
 
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(dash.ledger.turnover, 416000, '週轉金應該是剛存的值');
-    _assertEq(dash.ledger.transport, -250000, '運拿應該是剛存的負數');
+    _assertEq(dash.ledger.transport, 250000, '運拿應該是剛存的正數');
     _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的值');
-    _assertEq(dash.ledger.takenByOwner, -172600, '台主領應該是剛存的負數');
+    _assertEq(dash.ledger.takenByOwner, 172600, '台主領應該是剛存的正數');
     _assertEq(dash.ledger.returnedToHouse, 13000, '還內場應該是剛存的值');
   });
 
@@ -3223,7 +3243,7 @@ function _selfTestBody(results) {
     _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
   });
 
-  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金＋運拿＋台主給＋電子淨贏＋台主領＋還內場', function () {
+  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({
       action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
@@ -3236,14 +3256,14 @@ function _selfTestBody(results) {
 
     _ok({
       action: 'saveDailyLedger', token: adminTok,
-      turnover: 10, transport: -20, givenToOwner: 30, takenByOwner: -40, returnedToHouse: 5
+      turnover: 10, transport: 20, givenToOwner: 30, takenByOwner: 40, returnedToHouse: 5
     });
 
     const after = _ok({ action: 'dashboard', token: adminTok });
     const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
-      + after.ledger.turnover + after.ledger.transport + after.ledger.givenToOwner
-      + after.electronicTotal.chipNet + after.ledger.takenByOwner + after.ledger.returnedToHouse;
-    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
+      + after.ledger.turnover - after.ledger.transport + after.ledger.givenToOwner
+      + after.electronicTotal.chipNet - after.ledger.takenByOwner + after.ledger.returnedToHouse;
+    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領扣除、其餘七項加總後的結果');
   });
 
   // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──

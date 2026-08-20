@@ -647,18 +647,29 @@ function _selfTestBody(results) {
     }, 'PERMISSION');
   });
 
-  _t(results, '每日手動帳目：可以輸入負數（現金流出），儲存後 dashboard 會反映最新值', function () {
+  _t(results, '每日手動帳目：運拿／台主領輸入負數會被擋（這兩項一律當正數的現金流出，系統自動扣除）', function () {
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, transport: -1, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, transport: 0, givenToOwner: 0, takenByOwner: -1, returnedToHouse: 0
+    });
+  });
+
+  _t(results, '每日手動帳目：輸入正數金額，儲存後 dashboard 會反映最新值', function () {
     const saved = _ok({
       action: 'saveDailyLedger', token: patrolTok,
-      turnover: 416000, transport: -250000, givenToOwner: 60200, takenByOwner: -172600, returnedToHouse: 13000
+      turnover: 416000, transport: 250000, givenToOwner: 60200, takenByOwner: 172600, returnedToHouse: 13000
     });
-    _assertEq(saved.transport, -250000, '應該原封不動存負數，不做正負號轉換');
+    _assertEq(saved.transport, 250000, '應該原封不動存正數，不做正負號轉換');
 
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(dash.ledger.turnover, 416000, '週轉金應該是剛存的值');
-    _assertEq(dash.ledger.transport, -250000, '運拿應該是剛存的負數');
+    _assertEq(dash.ledger.transport, 250000, '運拿應該是剛存的正數');
     _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的值');
-    _assertEq(dash.ledger.takenByOwner, -172600, '台主領應該是剛存的負數');
+    _assertEq(dash.ledger.takenByOwner, 172600, '台主領應該是剛存的正數');
     _assertEq(dash.ledger.returnedToHouse, 13000, '還內場應該是剛存的值');
   });
 
@@ -686,7 +697,7 @@ function _selfTestBody(results) {
     _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
   });
 
-  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金＋運拿＋台主給＋電子淨贏＋台主領＋還內場', function () {
+  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({
       action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
@@ -699,14 +710,14 @@ function _selfTestBody(results) {
 
     _ok({
       action: 'saveDailyLedger', token: adminTok,
-      turnover: 10, transport: -20, givenToOwner: 30, takenByOwner: -40, returnedToHouse: 5
+      turnover: 10, transport: 20, givenToOwner: 30, takenByOwner: 40, returnedToHouse: 5
     });
 
     const after = _ok({ action: 'dashboard', token: adminTok });
     const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
-      + after.ledger.turnover + after.ledger.transport + after.ledger.givenToOwner
-      + after.electronicTotal.chipNet + after.ledger.takenByOwner + after.ledger.returnedToHouse;
-    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
+      + after.ledger.turnover - after.ledger.transport + after.ledger.givenToOwner
+      + after.electronicTotal.chipNet - after.ledger.takenByOwner + after.ledger.returnedToHouse;
+    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領扣除、其餘七項加總後的結果');
   });
 
   // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──

@@ -578,9 +578,9 @@ async function main() {
     await page.waitForSelector('.dialog');
     inputs = page.locator('.dialog input');
     await inputs.nth(0).fill('100');
-    await inputs.nth(1).fill('-40');
+    await inputs.nth(1).fill('40'); // 運拿：輸入正數，系統會自動扣除
     await inputs.nth(2).fill('20');
-    await inputs.nth(3).fill('-15');
+    await inputs.nth(3).fill('15'); // 台主領：輸入正數，系統會自動扣除
     await inputs.nth(4).fill('5');
     await page.click('.dialog button:has-text("儲存")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
@@ -592,7 +592,7 @@ async function main() {
 
     const totalAfter = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
     assert(totalAfter - totalBefore === 70,
-      '儲存 100－40＋20－15＋5＝70 之後，總結餘應該增加 70，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
+      '儲存週轉金100－運拿40＋台主給20－台主領15＋還內場5＝70 之後，總結餘應該增加 70，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
     await shot('17-home-total-ledger');
 
     // 今天已經設定過了，再打開應該顯示剛剛存的真實值，不能被預設值蓋掉。
@@ -601,7 +601,7 @@ async function main() {
     const savedInputs = page.locator('.dialog input');
     const savedValues = [];
     for (let i = 0; i < 5; i++) savedValues.push(await savedInputs.nth(i).inputValue());
-    assert(JSON.stringify(savedValues) === JSON.stringify(['100', '-40', '20', '-15', '5']),
+    assert(JSON.stringify(savedValues) === JSON.stringify(['100', '40', '20', '15', '5']),
       '今天已經設定過時，重新打開應該顯示剛存的實際值，不是預設值，實際 ' + JSON.stringify(savedValues));
     await page.click('.dialog button:has-text("取消")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });

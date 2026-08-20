@@ -539,10 +539,10 @@ function ledgerCard(data) {
     ['入幣', data.diceTotal.in],
     ['出幣', -data.diceTotal.out],
     ['週轉金', l.turnover],
-    ['運拿', l.transport],
+    ['運拿', -l.transport],
     ['台主給', l.givenToOwner],
     ['電子贏', data.electronicTotal.chipNet],
-    ['台主領', l.takenByOwner],
+    ['台主領', -l.takenByOwner],
     ['還內場', l.returnedToHouse]
   ];
 
@@ -584,18 +584,18 @@ function editDailyLedger(data) {
   const l = data.ledger;
   const setToday = !!l.updatedAt;
   const turnover = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.turnover : DEFAULT_TURNOVER });
-  const transport = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.transport : '' });
+  const transport = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? l.transport : '' });
   const givenToOwner = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.givenToOwner : '' });
-  const takenByOwner = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.takenByOwner : '' });
+  const takenByOwner = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? l.takenByOwner : '' });
   const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.returnedToHouse : '' });
 
   openDialog('設定今日數字', [
     h('p', { class: 'small muted', style: 'margin-bottom:12px' },
-      '這五項是整間店當天的現金調度，跟哪一台機台無關；可以直接輸入負數代表現金流出（例如運拿、台主領）。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
+      '這五項是整間店當天的現金調度，跟哪一台機台無關。運拿、台主領請直接輸入正數金額，系統會自動從總結餘扣除；週轉金、台主給、還內場則是加回總結餘。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
     dialogField('週轉金', turnover),
-    dialogField('運拿', transport),
+    dialogField('運拿（會自動扣除）', transport),
     dialogField('台主給', givenToOwner),
-    dialogField('台主領', takenByOwner),
+    dialogField('台主領（會自動扣除）', takenByOwner),
     dialogField('還內場', returnedToHouse)
   ], [
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
