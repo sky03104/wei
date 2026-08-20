@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1578,7 +1578,7 @@ function adminPerms(data) {
  * 開獎、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
  * 的函式、不經過這裡的新鮮度判斷，一定會拿到最新的。
  */
-const CACHE_FRESH_MS = 10000;
+const CACHE_FRESH_MS = 30000;
 
 function cacheWrite(key, data) {
   state.cache[key] = { data: data, at: Date.now() };
