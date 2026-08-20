@@ -44,6 +44,25 @@ const HEADER_LABELS = {
   Config: ['設定鍵', '設定值']
 };
 
+/**
+ * 分頁在試算表下方看到的中文頁籤名稱。
+ *
+ * 跟 SCHEMA 的鍵值（英文，程式碼內部到處用來當 dbReadAll('Users') 這種參數）
+ * 是兩件事——內部一律用英文鍵值查找，只有實際在試算表建立/尋找分頁時
+ * 才轉換成這裡的中文頁籤名稱。
+ */
+const SHEET_TAB_NAMES = {
+  Users: '帳號',
+  Machines: '機台',
+  Records: '紀錄',
+  Prizes: '獎型',
+  QuickAmounts: '快捷金額',
+  MeterRates: '入幣費率',
+  Permissions: '台主授權',
+  Sessions: '登入狀態',
+  Config: '系統設定'
+};
+
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
 let _sheetCache = {};
 
@@ -63,15 +82,34 @@ function _spreadsheet() {
   throw new Error('找不到試算表：請在「專案設定 → 指令碼屬性」新增 SPREADSHEET_ID');
 }
 
-/** 取得分頁，不存在就依 SCHEMA 建立（含表頭與欄位格式）。 */
+/**
+ * 取得分頁，不存在就依 SCHEMA 建立（含表頭與欄位格式）。
+ *
+ * 頁籤一律用 SHEET_TAB_NAMES 裡的中文名稱。舊版程式碼是用英文鍵值（例如 'Users'）
+ * 直接當頁籤名稱建立的，所以找不到中文頁籤時，會退回去找同名的英文頁籤——
+ * 找到的話直接把它改名成中文（setName 不會動到任何資料），
+ * 而不是誤判成「還沒建立」而新開一張空的，導致舊資料變成孤兒分頁。
+ * 兩邊都找不到才真的是全新分頁。
+ */
 function _sheet(name) {
   const cols = SCHEMA[name];
   if (!cols) throw new Error('未知的分頁：' + name);
+  const tabName = SHEET_TAB_NAMES[name] || name;
 
   const ss = _spreadsheet();
-  let sh = ss.getSheetByName(name);
+  let sh = ss.getSheetByName(tabName);
+  let isNew = false;
   if (!sh) {
-    sh = ss.insertSheet(name);
+    const legacy = ss.getSheetByName(name);
+    if (legacy) {
+      legacy.setName(tabName);
+      sh = legacy;
+    } else {
+      sh = ss.insertSheet(tabName);
+      isNew = true;
+    }
+  }
+  if (isNew) {
     _writeHeaderRow(sh, name, cols);
     cols.forEach(function (col, i) {
       if (TEXT_COLUMNS.indexOf(col) >= 0) {

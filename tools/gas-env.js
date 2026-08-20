@@ -58,9 +58,19 @@ class FakeRange {
 }
 
 class FakeSheet {
-  constructor(name) {
+  constructor(name, ss) {
     this.name = name;
+    this.ss = ss;
     this.data = []; // data[row-1][col-1]
+  }
+  getName() { return this.name; }
+  setName(newName) {
+    if (this.ss) {
+      this.ss.sheets.delete(this.name);
+      this.ss.sheets.set(newName, this);
+    }
+    this.name = newName;
+    return this;
   }
   _get(row, col) {
     const r = this.data[row - 1];
@@ -99,7 +109,7 @@ class FakeSpreadsheet {
   getName() { return this.name; }
   getSheetByName(name) { return this.sheets.get(name) || null; }
   insertSheet(name) {
-    const sh = new FakeSheet(name);
+    const sh = new FakeSheet(name, this);
     this.sheets.set(name, sh);
     return sh;
   }

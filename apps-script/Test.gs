@@ -107,12 +107,30 @@ function _selfTestBody(results) {
   // ── 佈置：3 個帳號、2 台機台，台主只授權機台 A ──
   Object.keys(SCHEMA).forEach(function (n) { dbReadAll(n); });
 
-  _t(results, '新建立的分頁表頭是中文', function () {
+  _t(results, '新建立的分頁頁籤與表頭都是中文', function () {
     const ss = _spreadsheet();
     Object.keys(SCHEMA).forEach(function (name) {
-      const header = ss.getSheetByName(name).getRange(1, 1, 1, SCHEMA[name].length).getValues()[0];
+      const sh = ss.getSheetByName(SHEET_TAB_NAMES[name]);
+      _assert(sh, name + ' 分頁應該用中文頁籤名稱「' + SHEET_TAB_NAMES[name] + '」建立');
+      const header = sh.getRange(1, 1, 1, SCHEMA[name].length).getValues()[0];
       _assertEq(JSON.stringify(header), JSON.stringify(HEADER_LABELS[name]), name + ' 分頁的表頭應該是中文');
     });
+  });
+
+  _t(results, '舊版英文頁籤名稱會被改名成中文，資料原封不動', function () {
+    const ss = _spreadsheet();
+    delete _sheetCache.Machines;
+    const before = dbReadAll('Machines'); // 目前已經是中文頁籤「機台」
+    const beforeCount = before.length;
+
+    // 模擬「用改版前的程式碼建立的舊試算表」：頁籤名稱改回英文鍵值
+    ss.getSheetByName(SHEET_TAB_NAMES.Machines).setName('Machines');
+    delete _sheetCache.Machines;
+
+    const rows = dbReadAll('Machines'); // 觸發 _sheet() 的英文頁籤 fallback，應該原地改名，不是新開一張
+    _assertEq(rows.length, beforeCount, '改名後資料筆數應該不變');
+    _assert(!!ss.getSheetByName(SHEET_TAB_NAMES.Machines), '應該能用中文頁籤名稱重新找到這張分頁');
+    _assert(!ss.getSheetByName('Machines'), '改名後不該再有英文頁籤殘留');
   });
 
   // 手動塞這一列，模擬真實環境跑過 setup() 之後的狀態——這裡故意不直接呼叫
@@ -583,7 +601,7 @@ function _selfTestBody(results) {
   // setup() 不會再造一個，所以放最後執行是安全的。
   _t(results, '重新執行 setup 會把舊表頭修正成中文，且不動既有資料', function () {
     const ss = _spreadsheet();
-    const usersSheet = ss.getSheetByName('Users');
+    const usersSheet = ss.getSheetByName(SHEET_TAB_NAMES.Users);
 
     _clearSheetCache();
     const before = dbReadAll('Users');
