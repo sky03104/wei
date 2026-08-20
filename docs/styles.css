@@ -236,12 +236,18 @@ input[type="date"] { min-width: 0; }
    常常一直開著這頁看數字，機台一多要滑很久才看得到最上面的今日淨收益。
    margin-top/padding-top 那組負值＋等值是為了讓「還沒捲動」時位置不變
    （.app 原本的頂端留白照舊），「捲動貼齊」時內距才補回安全區，
-   不會被瀏海／動態島遮住。背景要不透明，不然機台卡片會從底下透出來。 */
+   不會被瀏海／動態島遮住。背景要不透明，不然機台卡片會從底下透出來。
+   跟機台清單中間的留白改用 padding-bottom，不能靠 .summary-strip 自己的
+   margin-bottom——那個 margin 會直接穿過 .home-sticky 的下邊界跟外面的
+   東西合併（margin collapsing，position:sticky 不會擋掉這件事），捲動
+   貼齊畫面頂端時看起來就變成貼在一起、沒有留白。padding 不會被穿透，
+   一定會是真正留出來的空間。 */
 .home-sticky {
   position: sticky; top: 0; z-index: 10;
   background: var(--bg);
   margin-top: calc(-1 * var(--safe-top));
   padding-top: var(--safe-top);
+  padding-bottom: var(--gap);
 }
 
 .topbar {
@@ -267,7 +273,9 @@ input[type="date"] { min-width: 0; }
      是合法的斷行點，數字一長就會斷成「-」自己一行、後面接 $29,300）。
      跟 .report-stats 用同一套「手機 2 欄、桌機才展開成 4 欄」的做法。 */
   display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;
-  margin-bottom: 16px;
+  /* 跟機台清單的留白由外層 .home-sticky 的 padding-bottom 負責，
+     這裡不能再放 margin-bottom——會跟前面提到的 margin collapsing
+     問題疊在一起，變成兩份間距混在一起、捲動貼齊時又消失一份。 */
 }
 .summary-strip .stat { padding: 10px 8px; text-align: center; }
 .stat {
