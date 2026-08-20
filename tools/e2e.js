@@ -531,8 +531,56 @@ async function main() {
     assert(totalLabels.some((t) => t.indexOf('骰台淨收益') >= 0), '加總分頁應該有骰台淨收益卡片');
     assert(totalLabels.some((t) => t.indexOf('電子淨收益') >= 0), '加總分頁應該有電子淨收益卡片');
     assert(totalLabels.some((t) => t.indexOf('總淨收益') >= 0), '加總分頁應該有總淨收益卡片');
-    assert(await page.locator('.machine-list').count() === 0, '加總分頁目前（第一階段）不該顯示機台清單');
+    assert(await page.locator('.machine-list').count() === 0, '加總分頁不該顯示機台清單，那裡改顯示現金結餘明細');
     await shot('16-home-total-tab');
+  });
+
+  await check('加總分頁顯示今日現金結餘明細（九行＋總結餘），且可以設定週轉金等五項數字', async () => {
+    await page.waitForSelector('.ledger-row');
+    const rowLabels = await page.locator('.ledger-row .ledger-label').allTextContents();
+    for (const label of ['開銷+432獎', '入幣', '出幣', '週轉金', '運拿', '台主給', '電子贏', '台主領', '還內場', '總結餘']) {
+      assert(rowLabels.indexOf(label) >= 0, '結餘明細缺少「' + label + '」這一行');
+    }
+
+    const totalBefore = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
+
+    await page.click('button:has-text("✎ 設定今日數字")');
+    await page.waitForSelector('.dialog');
+    let inputs = page.locator('.dialog input');
+    await inputs.nth(0).fill('100');
+    await inputs.nth(1).fill('-40');
+    await inputs.nth(2).fill('20');
+    await inputs.nth(3).fill('-15');
+    await inputs.nth(4).fill('5');
+    await page.click('.dialog button:has-text("儲存")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+
+    await page.waitForFunction((before) => {
+      const el = document.querySelector('.ledger-row.ledger-total .ledger-value');
+      return el && Number(el.textContent.replace(/[^0-9.-]/g, '')) !== before;
+    }, totalBefore, { timeout: 8000 });
+
+    const totalAfter = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
+    assert(totalAfter - totalBefore === 70,
+      '儲存 100－40＋20－15＋5＝70 之後，總結餘應該增加 70，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
+    await shot('17-home-total-ledger');
+
+    // 同一個營業日重複儲存應該是覆蓋，不是疊加——五項都改回 0，總結餘應該回到最初的值。
+    await page.click('button:has-text("✎ 設定今日數字")');
+    await page.waitForSelector('.dialog');
+    inputs = page.locator('.dialog input');
+    for (let i = 0; i < 5; i++) await inputs.nth(i).fill('0');
+    await page.click('.dialog button:has-text("儲存")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+
+    await page.waitForFunction((prev) => {
+      const el = document.querySelector('.ledger-row.ledger-total .ledger-value');
+      return el && Number(el.textContent.replace(/[^0-9.-]/g, '')) !== prev;
+    }, totalAfter, { timeout: 8000 });
+
+    const totalReset = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
+    assert(totalReset === totalBefore,
+      '五項都改回 0 之後，總結餘應該覆蓋回最初的值（不是疊加），實際 ' + totalReset + ' vs ' + totalBefore);
 
     // 收尾切回骰台分頁、進一台骰台機台，後面的測試（巡邏人員角色）預期
     // 停在一個有「← 返回主畫面」可以按的頁面，且首頁分頁籤要留在預設值。

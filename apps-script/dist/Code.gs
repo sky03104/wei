@@ -31,7 +31,8 @@ const SCHEMA = {
   Permissions: ['user_id', 'machine_id', 'granted_by', 'granted_at'],
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
   Config: ['key', 'value'],
-  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed']
+  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
+  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at']
 };
 
 /**
@@ -41,7 +42,7 @@ const SCHEMA = {
  * 欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，這裡把 business_date
  * 也一併鎖住，不要重蹈覆轍）。
  */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at'];
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -64,7 +65,8 @@ const HEADER_LABELS = {
   Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
   Config: ['設定鍵', '設定值'],
-  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單']
+  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
+  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給', '台主領', '還內場', '更新人', '更新時間']
 };
 
 /**
@@ -84,7 +86,8 @@ const SHEET_TAB_NAMES = {
   Permissions: '台主授權',
   Sessions: '登入狀態',
   Config: '系統設定',
-  BizDays: '營業日'
+  BizDays: '營業日',
+  DailyLedger: '每日手動帳目'
 };
 
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
@@ -834,6 +837,74 @@ function _machineCategory(machineId) {
   return (m && m.category) || MACHINE_CATEGORY_DICE;
 }
 
+// ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
+//
+// 這五項是整間店當天的現金調度，不屬於任何一台機台，每天只設定一個數字
+// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）：操作人直接輸入當天
+// 實際的正負數（例如運拿、台主領本來就是現金流出，直接輸入負數），
+// 系統原封不動存起來、加總時也不額外套正負號。同一個營業日重複儲存
+// 是覆蓋，不是疊加——DailyLedger 每個 business_date 最多一列。
+
+/** 某個營業日的手動帳目原始列，沒設定過就是 null。 */
+function _dailyLedgerRow(businessDate) {
+  const rows = dbFilter('DailyLedger', 'business_date', businessDate);
+  return rows.length ? rows[0] : null;
+}
+
+/** 轉成前端要的形狀，沒設定過的營業日五項都當 0，不是回傳 null 讓前端自己判斷。 */
+function _publicDailyLedger(row) {
+  return {
+    turnover: row ? toNumber(row.turnover) : 0,
+    transport: row ? toNumber(row.transport) : 0,
+    givenToOwner: row ? toNumber(row.given_to_owner) : 0,
+    takenByOwner: row ? toNumber(row.taken_by_owner) : 0,
+    returnedToHouse: row ? toNumber(row.returned_to_house) : 0,
+    updatedAt: row ? row.updated_at : ''
+  };
+}
+
+/** 跟 _validAmount 不同：這五項本來就可能是負數（現金流出），只限制數字的大小，不限正負。 */
+function _validSignedAmount(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) throw new Error('金額必須是數字');
+  if (Math.abs(n) > MAX_AMOUNT) throw new Error('金額超出上限');
+  return Math.round(n * 100) / 100;
+}
+
+/** 設定今天（目前營業日）的週轉金／運拿／台主給／台主領／還內場。 */
+function saveDailyLedger(user, payload) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  const turnover = _validSignedAmount(payload.turnover);
+  const transport = _validSignedAmount(payload.transport);
+  const givenToOwner = _validSignedAmount(payload.givenToOwner);
+  const takenByOwner = _validSignedAmount(payload.takenByOwner);
+  const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
+
+  return withLock(function () {
+    const businessDate = _currentBusinessDate();
+    const existing = _dailyLedgerRow(businessDate);
+    const patch = {
+      turnover: turnover,
+      transport: transport,
+      given_to_owner: givenToOwner,
+      taken_by_owner: takenByOwner,
+      returned_to_house: returnedToHouse,
+      updated_by: user.userId,
+      updated_at: nowIso()
+    };
+    if (existing) {
+      dbUpdate('DailyLedger', existing._row, patch);
+    } else {
+      dbInsert('DailyLedger', Object.assign({
+        ledger_id: newId('ldg'),
+        business_date: businessDate
+      }, patch));
+    }
+    return _publicDailyLedger(_dailyLedgerRow(businessDate));
+  });
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
 /**
@@ -895,6 +966,7 @@ function getDashboard(user) {
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
 
   let today432Count = 0;
+  let today432Amount = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
@@ -904,6 +976,7 @@ function getDashboard(user) {
       _accumulate(todays[mid], r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
         today432Count += toNumber(r.count);
+        today432Amount += toNumber(r.amount);
       }
     }
   });
@@ -952,12 +1025,27 @@ function getDashboard(user) {
   grand.chipOut = electronicTotal.chipOut;
   grand.chipNet = electronicTotal.chipNet;
 
+  const ledger = _publicDailyLedger(_dailyLedgerRow(today));
+
+  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（暫代「開銷+432獎」，
+  // 目前還沒有其他雜項開銷可以記）＋電子淨贏＋週轉金/運拿/台主給/台主領/
+  // 還內場這五個每天手動輸入的數字。這五個數字操作人可以直接輸入負數
+  // （例如運拿、台主領本來就是現金流出），所以這裡不用另外套正負號，
+  // 直接原始加總即可——跟前端「加總」分頁要顯示的九行明細用同一份數字，
+  // 不用另外算一次，兩邊才不會兜不起來。
+  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount
+    + ledger.turnover + ledger.transport + ledger.givenToOwner
+    + electronicTotal.chipNet + ledger.takenByOwner + ledger.returnedToHouse;
+
   return {
     machines: list,
     todayTotal: grand,
     diceTotal: diceTotal,
     electronicTotal: electronicTotal,
     today432Count: today432Count,
+    today432Amount: today432Amount,
+    ledger: ledger,
+    ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,
     businessDay: businessDayStatus(user)
   };
@@ -2087,6 +2175,7 @@ const ACTION_ROLES = {
   addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
   startBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
   endBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
+  saveDailyLedger: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
   saveQuickAmount: [ROLE_ADMIN],
@@ -2200,6 +2289,8 @@ function _dispatch(action, p, user) {
       return startBusinessDay(user);
     case 'endBusinessDay':
       return endBusinessDay(user);
+    case 'saveDailyLedger':
+      return saveDailyLedger(user, p);
     case 'voidRecord':
       return voidRecord(user, p.recordId);
 
@@ -2949,6 +3040,86 @@ function _selfTestBody(results) {
     _assert(csv.content.indexOf(yesterday) >= 0, 'CSV 的日期欄應該顯示營業日期（昨天），不是行事曆日期');
 
     _ok({ action: 'endBusinessDay', token: adminTok });
+  });
+
+  // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
+
+  _t(results, '每日手動帳目：沒設定過的營業日，五項都是 0', function () {
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 0, '週轉金預設 0');
+    _assertEq(dash.ledger.transport, 0, '運拿預設 0');
+    _assertEq(dash.ledger.givenToOwner, 0, '台主給預設 0');
+    _assertEq(dash.ledger.takenByOwner, 0, '台主領預設 0');
+    _assertEq(dash.ledger.returnedToHouse, 0, '還內場預設 0');
+  });
+
+  _t(results, '每日手動帳目：只有管理員跟巡邏人員能設定，台主不行', function () {
+    _fails({
+      action: 'saveDailyLedger', token: ownerTok,
+      turnover: 1, transport: 1, givenToOwner: 1, takenByOwner: 1, returnedToHouse: 1
+    }, 'PERMISSION');
+  });
+
+  _t(results, '每日手動帳目：可以輸入負數（現金流出），儲存後 dashboard 會反映最新值', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 416000, transport: -250000, givenToOwner: 60200, takenByOwner: -172600, returnedToHouse: 13000
+    });
+    _assertEq(saved.transport, -250000, '應該原封不動存負數，不做正負號轉換');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 416000, '週轉金應該是剛存的值');
+    _assertEq(dash.ledger.transport, -250000, '運拿應該是剛存的負數');
+    _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的值');
+    _assertEq(dash.ledger.takenByOwner, -172600, '台主領應該是剛存的負數');
+    _assertEq(dash.ledger.returnedToHouse, 13000, '還內場應該是剛存的值');
+  });
+
+  _t(results, '每日手動帳目：同一個營業日重複儲存是覆蓋，不是疊加', function () {
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 1000, transport: 0, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 1000, '第二次儲存應該覆蓋掉第一次的值，不是疊加成 417000');
+  });
+
+  _t(results, '今日432獎金額：只算獎型名稱剛好是432的活動金額，其他獎型不算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '每日帳目測試台', sortOrder: 94 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 70, sortOrder: 1 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他', amount: 20, sortOrder: 2 }).prizeId;
+
+    const before = _ok({ action: 'dashboard', token: adminTok }).today432Amount;
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 2 }, { prizeId: otherPrize, count: 3 }],
+      clientToken: newId('ct')
+    });
+    const after = _ok({ action: 'dashboard', token: adminTok }).today432Amount;
+    _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
+  });
+
+  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金＋運拿＋台主給＋電子淨贏＋台主領＋還內場', function () {
+    const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
+    const elecMid = _ok({
+      action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
+    }).machineId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceMid, type: 'in', amount: 300, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceMid, type: 'out', amount: 50, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: elecMid, type: 'chip_in', amount: 400, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: elecMid, type: 'chip_out', amount: 100, clientToken: newId('ct') });
+
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 10, transport: -20, givenToOwner: 30, takenByOwner: -40, returnedToHouse: 5
+    });
+
+    const after = _ok({ action: 'dashboard', token: adminTok });
+    const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
+      + after.ledger.turnover + after.ledger.transport + after.ledger.givenToOwner
+      + after.electronicTotal.chipNet + after.ledger.takenByOwner + after.ledger.returnedToHouse;
+    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
   });
 
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {

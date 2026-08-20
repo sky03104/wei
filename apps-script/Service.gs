@@ -161,6 +161,74 @@ function _machineCategory(machineId) {
   return (m && m.category) || MACHINE_CATEGORY_DICE;
 }
 
+// ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
+//
+// 這五項是整間店當天的現金調度，不屬於任何一台機台，每天只設定一個數字
+// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）：操作人直接輸入當天
+// 實際的正負數（例如運拿、台主領本來就是現金流出，直接輸入負數），
+// 系統原封不動存起來、加總時也不額外套正負號。同一個營業日重複儲存
+// 是覆蓋，不是疊加——DailyLedger 每個 business_date 最多一列。
+
+/** 某個營業日的手動帳目原始列，沒設定過就是 null。 */
+function _dailyLedgerRow(businessDate) {
+  const rows = dbFilter('DailyLedger', 'business_date', businessDate);
+  return rows.length ? rows[0] : null;
+}
+
+/** 轉成前端要的形狀，沒設定過的營業日五項都當 0，不是回傳 null 讓前端自己判斷。 */
+function _publicDailyLedger(row) {
+  return {
+    turnover: row ? toNumber(row.turnover) : 0,
+    transport: row ? toNumber(row.transport) : 0,
+    givenToOwner: row ? toNumber(row.given_to_owner) : 0,
+    takenByOwner: row ? toNumber(row.taken_by_owner) : 0,
+    returnedToHouse: row ? toNumber(row.returned_to_house) : 0,
+    updatedAt: row ? row.updated_at : ''
+  };
+}
+
+/** 跟 _validAmount 不同：這五項本來就可能是負數（現金流出），只限制數字的大小，不限正負。 */
+function _validSignedAmount(raw) {
+  const n = Number(raw);
+  if (!isFinite(n)) throw new Error('金額必須是數字');
+  if (Math.abs(n) > MAX_AMOUNT) throw new Error('金額超出上限');
+  return Math.round(n * 100) / 100;
+}
+
+/** 設定今天（目前營業日）的週轉金／運拿／台主給／台主領／還內場。 */
+function saveDailyLedger(user, payload) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  const turnover = _validSignedAmount(payload.turnover);
+  const transport = _validSignedAmount(payload.transport);
+  const givenToOwner = _validSignedAmount(payload.givenToOwner);
+  const takenByOwner = _validSignedAmount(payload.takenByOwner);
+  const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
+
+  return withLock(function () {
+    const businessDate = _currentBusinessDate();
+    const existing = _dailyLedgerRow(businessDate);
+    const patch = {
+      turnover: turnover,
+      transport: transport,
+      given_to_owner: givenToOwner,
+      taken_by_owner: takenByOwner,
+      returned_to_house: returnedToHouse,
+      updated_by: user.userId,
+      updated_at: nowIso()
+    };
+    if (existing) {
+      dbUpdate('DailyLedger', existing._row, patch);
+    } else {
+      dbInsert('DailyLedger', Object.assign({
+        ledger_id: newId('ldg'),
+        business_date: businessDate
+      }, patch));
+    }
+    return _publicDailyLedger(_dailyLedgerRow(businessDate));
+  });
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
 /**
@@ -222,6 +290,7 @@ function getDashboard(user) {
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
 
   let today432Count = 0;
+  let today432Amount = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
@@ -231,6 +300,7 @@ function getDashboard(user) {
       _accumulate(todays[mid], r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
         today432Count += toNumber(r.count);
+        today432Amount += toNumber(r.amount);
       }
     }
   });
@@ -279,12 +349,27 @@ function getDashboard(user) {
   grand.chipOut = electronicTotal.chipOut;
   grand.chipNet = electronicTotal.chipNet;
 
+  const ledger = _publicDailyLedger(_dailyLedgerRow(today));
+
+  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（暫代「開銷+432獎」，
+  // 目前還沒有其他雜項開銷可以記）＋電子淨贏＋週轉金/運拿/台主給/台主領/
+  // 還內場這五個每天手動輸入的數字。這五個數字操作人可以直接輸入負數
+  // （例如運拿、台主領本來就是現金流出），所以這裡不用另外套正負號，
+  // 直接原始加總即可——跟前端「加總」分頁要顯示的九行明細用同一份數字，
+  // 不用另外算一次，兩邊才不會兜不起來。
+  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount
+    + ledger.turnover + ledger.transport + ledger.givenToOwner
+    + electronicTotal.chipNet + ledger.takenByOwner + ledger.returnedToHouse;
+
   return {
     machines: list,
     todayTotal: grand,
     diceTotal: diceTotal,
     electronicTotal: electronicTotal,
     today432Count: today432Count,
+    today432Amount: today432Amount,
+    ledger: ledger,
+    ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,
     businessDay: businessDayStatus(user)
   };

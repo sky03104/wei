@@ -16,7 +16,8 @@ const SCHEMA = {
   Permissions: ['user_id', 'machine_id', 'granted_by', 'granted_at'],
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
   Config: ['key', 'value'],
-  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed']
+  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
+  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at']
 };
 
 /**
@@ -26,7 +27,7 @@ const SCHEMA = {
  * 欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，這裡把 business_date
  * 也一併鎖住，不要重蹈覆轍）。
  */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at'];
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -49,7 +50,8 @@ const HEADER_LABELS = {
   Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
   Config: ['設定鍵', '設定值'],
-  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單']
+  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
+  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給', '台主領', '還內場', '更新人', '更新時間']
 };
 
 /**
@@ -69,7 +71,8 @@ const SHEET_TAB_NAMES = {
   Permissions: '台主授權',
   Sessions: '登入狀態',
   Config: '系統設定',
-  BizDays: '營業日'
+  BizDays: '營業日',
+  DailyLedger: '每日手動帳目'
 };
 
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */

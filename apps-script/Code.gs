@@ -29,6 +29,7 @@ const ACTION_ROLES = {
   addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
   startBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
   endBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
+  saveDailyLedger: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
   saveQuickAmount: [ROLE_ADMIN],
@@ -142,6 +143,8 @@ function _dispatch(action, p, user) {
       return startBusinessDay(user);
     case 'endBusinessDay':
       return endBusinessDay(user);
+    case 'saveDailyLedger':
+      return saveDailyLedger(user, p);
     case 'voidRecord':
       return voidRecord(user, p.recordId);
 

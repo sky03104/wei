@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v14';
+const APP_VERSION = 'v15';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -487,7 +487,7 @@ function viewHome() {
       statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
       statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
     ]);
-    list = null;
+    list = ledgerCard(data);
   } else {
     const t = data.diceTotal;
     summary = h('div', { class: 'summary-strip' }, [
@@ -518,6 +518,86 @@ function homeTabBar() {
       class: state.homeTab === key ? 'active' : '',
       onclick: () => { state.homeTab = key; render(); }
     }, label)));
+}
+
+/**
+ * 「加總」分頁的今日現金結餘明細——跟上面三張淨收益卡片是不同的概念：
+ * 淨收益是機台本身的營收表現（入幣/出幣/開分/洗分），這裡則是整間店
+ * 當天實際的現金進出對帳（跟原本紙本/Excel 記的那張表一一對應）。
+ * 「開銷+432獎」目前只顯示 432 活動的金額，還沒有其他雜項開銷可以記，
+ * 之後如果要記其他開銷，會併進同一項。
+ */
+function ledgerCard(data) {
+  const l = data.ledger;
+  const rows = [
+    ['開銷+432獎', -data.today432Amount],
+    ['入幣', data.diceTotal.in],
+    ['出幣', -data.diceTotal.out],
+    ['週轉金', l.turnover],
+    ['運拿', l.transport],
+    ['台主給', l.givenToOwner],
+    ['電子贏', data.electronicTotal.chipNet],
+    ['台主領', l.takenByOwner],
+    ['還內場', l.returnedToHouse]
+  ];
+
+  return h('div', { class: 'card' }, [
+    h('div', { class: 'panel-head' }, [
+      h('h3', { text: '今日現金結餘明細' }),
+      canRecord()
+        ? h('button', { class: 'btn btn-sm btn-ghost', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
+        : null
+    ]),
+    h('div', {}, rows.map(([label, value]) => h('div', { class: 'ledger-row' }, [
+      h('span', { class: 'ledger-label', text: label }),
+      h('span', { class: 'ledger-value num ' + netClass(value), text: money(value) })
+    ]))),
+    h('div', { class: 'ledger-row ledger-total' }, [
+      h('span', { class: 'ledger-label', text: '總結餘' }),
+      h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
+    ]),
+    l.updatedAt
+      ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／運拿／台主給／台主領／還內場 最後更新：' + formatTime(l.updatedAt) })
+      : h('p', { class: 'small muted', style: 'margin-top:10px' }, isAdmin() || canRecord()
+        ? '週轉金／運拿／台主給／台主領／還內場 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
+        : '週轉金／運拿／台主給／台主領／還內場 今天還沒設定。')
+  ]);
+}
+
+/** 設定今天（進行中營業日）的週轉金／運拿／台主給／台主領／還內場，每天只存一組，重新儲存會覆蓋。 */
+function editDailyLedger(data) {
+  const l = data.ledger;
+  const turnover = h('input', { type: 'number', inputmode: 'decimal', value: l.turnover });
+  const transport = h('input', { type: 'number', inputmode: 'decimal', value: l.transport });
+  const givenToOwner = h('input', { type: 'number', inputmode: 'decimal', value: l.givenToOwner });
+  const takenByOwner = h('input', { type: 'number', inputmode: 'decimal', value: l.takenByOwner });
+  const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: l.returnedToHouse });
+
+  openDialog('設定今日數字', [
+    h('p', { class: 'small muted', style: 'margin-bottom:12px' },
+      '這五項是整間店當天的現金調度，跟哪一台機台無關；可以直接輸入負數代表現金流出（例如運拿、台主領）。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
+    dialogField('週轉金', turnover),
+    dialogField('運拿', transport),
+    dialogField('台主給', givenToOwner),
+    dialogField('台主領', takenByOwner),
+    dialogField('還內場', returnedToHouse)
+  ], [
+    h('button', { class: 'btn', onclick: closeDialog }, '取消'),
+    h('button', {
+      class: 'btn btn-primary',
+      onclick: () => run(async () => {
+        await api('saveDailyLedger', {
+          turnover: Number(turnover.value) || 0,
+          transport: Number(transport.value) || 0,
+          givenToOwner: Number(givenToOwner.value) || 0,
+          takenByOwner: Number(takenByOwner.value) || 0,
+          returnedToHouse: Number(returnedToHouse.value) || 0
+        });
+        closeDialog();
+        await loadHome();
+      }, { success: '已儲存' })
+    }, '儲存')
+  ]);
 }
 
 /**

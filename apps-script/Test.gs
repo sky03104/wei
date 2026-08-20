@@ -618,6 +618,86 @@ function _selfTestBody(results) {
     _ok({ action: 'endBusinessDay', token: adminTok });
   });
 
+  // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
+
+  _t(results, '每日手動帳目：沒設定過的營業日，五項都是 0', function () {
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 0, '週轉金預設 0');
+    _assertEq(dash.ledger.transport, 0, '運拿預設 0');
+    _assertEq(dash.ledger.givenToOwner, 0, '台主給預設 0');
+    _assertEq(dash.ledger.takenByOwner, 0, '台主領預設 0');
+    _assertEq(dash.ledger.returnedToHouse, 0, '還內場預設 0');
+  });
+
+  _t(results, '每日手動帳目：只有管理員跟巡邏人員能設定，台主不行', function () {
+    _fails({
+      action: 'saveDailyLedger', token: ownerTok,
+      turnover: 1, transport: 1, givenToOwner: 1, takenByOwner: 1, returnedToHouse: 1
+    }, 'PERMISSION');
+  });
+
+  _t(results, '每日手動帳目：可以輸入負數（現金流出），儲存後 dashboard 會反映最新值', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 416000, transport: -250000, givenToOwner: 60200, takenByOwner: -172600, returnedToHouse: 13000
+    });
+    _assertEq(saved.transport, -250000, '應該原封不動存負數，不做正負號轉換');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 416000, '週轉金應該是剛存的值');
+    _assertEq(dash.ledger.transport, -250000, '運拿應該是剛存的負數');
+    _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的值');
+    _assertEq(dash.ledger.takenByOwner, -172600, '台主領應該是剛存的負數');
+    _assertEq(dash.ledger.returnedToHouse, 13000, '還內場應該是剛存的值');
+  });
+
+  _t(results, '每日手動帳目：同一個營業日重複儲存是覆蓋，不是疊加', function () {
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 1000, transport: 0, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.ledger.turnover, 1000, '第二次儲存應該覆蓋掉第一次的值，不是疊加成 417000');
+  });
+
+  _t(results, '今日432獎金額：只算獎型名稱剛好是432的活動金額，其他獎型不算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '每日帳目測試台', sortOrder: 94 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 70, sortOrder: 1 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他', amount: 20, sortOrder: 2 }).prizeId;
+
+    const before = _ok({ action: 'dashboard', token: adminTok }).today432Amount;
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 2 }, { prizeId: otherPrize, count: 3 }],
+      clientToken: newId('ct')
+    });
+    const after = _ok({ action: 'dashboard', token: adminTok }).today432Amount;
+    _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
+  });
+
+  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金＋運拿＋台主給＋電子淨贏＋台主領＋還內場', function () {
+    const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
+    const elecMid = _ok({
+      action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
+    }).machineId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceMid, type: 'in', amount: 300, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceMid, type: 'out', amount: 50, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: elecMid, type: 'chip_in', amount: 400, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: elecMid, type: 'chip_out', amount: 100, clientToken: newId('ct') });
+
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 10, transport: -20, givenToOwner: 30, takenByOwner: -40, returnedToHouse: 5
+    });
+
+    const after = _ok({ action: 'dashboard', token: adminTok });
+    const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
+      + after.ledger.turnover + after.ledger.transport + after.ledger.givenToOwner
+      + after.electronicTotal.chipNet + after.ledger.takenByOwner + after.ledger.returnedToHouse;
+    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
+  });
+
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '欄位錯位測試台', sortOrder: 90 }).machineId;
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
