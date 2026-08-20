@@ -208,6 +208,11 @@ function setup() {
     out.push('已修正 ' + fixedRecords + ' 筆紀錄的欄位錯位（入幣改版當時造成的問題，資料已搬回正確位置，沒有遺失任何資料）');
   }
 
+  const fixedTextCells = _fixTextColumnFormatting();
+  if (fixedTextCells > 0) {
+    out.push('已修正 ' + fixedTextCells + ' 個被 Sheets 自動轉成日期型別的儲存格（例如舊分頁後來才加的 business_date 欄位），改回純文字並鎖住格式，數值本身沒有變過');
+  }
+
   _pepper();
   out.push('PEPPER 就緒');
 

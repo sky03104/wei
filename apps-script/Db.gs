@@ -208,6 +208,74 @@ function _migrateRecordsMeterColumns() {
   return fixed;
 }
 
+/** business_date 存 'yyyy-MM-dd'；TEXT_COLUMNS 其餘欄位都存完整 ISO 時間字串。 */
+const DATE_ONLY_TEXT_COLUMNS = ['business_date'];
+
+/**
+ * 修正「這一欄該存純文字，卻被 Sheets 自動轉成日期／時間型別」的舊資料。
+ *
+ * `_sheet()` 只有在「分頁是全新建立」的當下，才會把 TEXT_COLUMNS 的欄位鎖成
+ * 純文字格式（`'@'`）。這對「分頁本身早就存在、schema 後來才加了新欄位」的情況
+ * 沒有回溯生效——`Records.business_date` 就是這樣：`Records` 分頁從系統一開始
+ * 就存在，`business_date` 是後來才加進 schema 的新欄位，從來沒機會被鎖成文字。
+ * 欄位格式停留在 Sheets 預設的「一般」，寫進去的 `'2026-08-20'` 這種字串
+ * 會被自動解析成真正的日期序列值，讀出來變成 JS `Date` 物件，不是原本存的字串——
+ * 所有拿這幾欄做字串比對的地方（今日彙總、營業日比對）就全部對不起來，
+ * 而且不會噴任何錯誤，只是默默算出 0。`BizDays` 不會踩到這個坑，因為它是
+ * 跟「營業日」功能一起誕生的全新分頁，建立當下 `business_date` 就已經在
+ * schema 裡了，`isNew` 分支照樣鎖住了格式。
+ *
+ * 這裡對每張分頁的每個 TEXT_COLUMNS 欄位：先把整欄格式重新鎖回純文字，
+ * 再把目前已經被誤存成 Date 物件的儲存格轉換回正確的文字格式重新寫回去
+ * （`business_date` 轉回 `'yyyy-MM-dd'`，其餘轉回完整 ISO 字串）。
+ * 已經是字串的儲存格原封不動，天生冪等，重跑不會誤傷正常資料。
+ */
+function _fixTextColumnFormatting() {
+  const tz = _tz();
+  let fixedCells = 0;
+
+  Object.keys(SCHEMA).forEach(function (name) {
+    const cols = SCHEMA[name];
+    const textCols = cols.filter(function (c) { return TEXT_COLUMNS.indexOf(c) >= 0; });
+    if (!textCols.length) return;
+
+    const sh = _sheet(name);
+
+    textCols.forEach(function (col) {
+      const c = cols.indexOf(col) + 1;
+      sh.getRange(1, c, sh.getMaxRows(), 1).setNumberFormat('@');
+    });
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+
+    const range = sh.getRange(2, 1, lastRow - 1, cols.length);
+    const values = range.getValues();
+    let changed = false;
+
+    for (let r = 0; r < values.length; r++) {
+      textCols.forEach(function (col) {
+        const c = cols.indexOf(col);
+        const v = values[r][c];
+        if (v instanceof Date) {
+          values[r][c] = DATE_ONLY_TEXT_COLUMNS.indexOf(col) >= 0
+            ? Utilities.formatDate(v, tz, 'yyyy-MM-dd')
+            : v.toISOString();
+          changed = true;
+          fixedCells++;
+        }
+      });
+    }
+
+    if (changed) {
+      range.setValues(values);
+      delete _sheetCache[name];
+    }
+  });
+
+  return fixedCells;
+}
+
 /**
  * 讀出整張分頁，回傳物件陣列。每個物件多一個 _row（實際列號，從 2 起算）。
  * 同一次執行內只會真的讀一次。

@@ -223,6 +223,74 @@ function _migrateRecordsMeterColumns() {
   return fixed;
 }
 
+/** business_date 存 'yyyy-MM-dd'；TEXT_COLUMNS 其餘欄位都存完整 ISO 時間字串。 */
+const DATE_ONLY_TEXT_COLUMNS = ['business_date'];
+
+/**
+ * 修正「這一欄該存純文字，卻被 Sheets 自動轉成日期／時間型別」的舊資料。
+ *
+ * `_sheet()` 只有在「分頁是全新建立」的當下，才會把 TEXT_COLUMNS 的欄位鎖成
+ * 純文字格式（`'@'`）。這對「分頁本身早就存在、schema 後來才加了新欄位」的情況
+ * 沒有回溯生效——`Records.business_date` 就是這樣：`Records` 分頁從系統一開始
+ * 就存在，`business_date` 是後來才加進 schema 的新欄位，從來沒機會被鎖成文字。
+ * 欄位格式停留在 Sheets 預設的「一般」，寫進去的 `'2026-08-20'` 這種字串
+ * 會被自動解析成真正的日期序列值，讀出來變成 JS `Date` 物件，不是原本存的字串——
+ * 所有拿這幾欄做字串比對的地方（今日彙總、營業日比對）就全部對不起來，
+ * 而且不會噴任何錯誤，只是默默算出 0。`BizDays` 不會踩到這個坑，因為它是
+ * 跟「營業日」功能一起誕生的全新分頁，建立當下 `business_date` 就已經在
+ * schema 裡了，`isNew` 分支照樣鎖住了格式。
+ *
+ * 這裡對每張分頁的每個 TEXT_COLUMNS 欄位：先把整欄格式重新鎖回純文字，
+ * 再把目前已經被誤存成 Date 物件的儲存格轉換回正確的文字格式重新寫回去
+ * （`business_date` 轉回 `'yyyy-MM-dd'`，其餘轉回完整 ISO 字串）。
+ * 已經是字串的儲存格原封不動，天生冪等，重跑不會誤傷正常資料。
+ */
+function _fixTextColumnFormatting() {
+  const tz = _tz();
+  let fixedCells = 0;
+
+  Object.keys(SCHEMA).forEach(function (name) {
+    const cols = SCHEMA[name];
+    const textCols = cols.filter(function (c) { return TEXT_COLUMNS.indexOf(c) >= 0; });
+    if (!textCols.length) return;
+
+    const sh = _sheet(name);
+
+    textCols.forEach(function (col) {
+      const c = cols.indexOf(col) + 1;
+      sh.getRange(1, c, sh.getMaxRows(), 1).setNumberFormat('@');
+    });
+
+    const lastRow = sh.getLastRow();
+    if (lastRow < 2) return;
+
+    const range = sh.getRange(2, 1, lastRow - 1, cols.length);
+    const values = range.getValues();
+    let changed = false;
+
+    for (let r = 0; r < values.length; r++) {
+      textCols.forEach(function (col) {
+        const c = cols.indexOf(col);
+        const v = values[r][c];
+        if (v instanceof Date) {
+          values[r][c] = DATE_ONLY_TEXT_COLUMNS.indexOf(col) >= 0
+            ? Utilities.formatDate(v, tz, 'yyyy-MM-dd')
+            : v.toISOString();
+          changed = true;
+          fixedCells++;
+        }
+      });
+    }
+
+    if (changed) {
+      range.setValues(values);
+      delete _sheetCache[name];
+    }
+  });
+
+  return fixedCells;
+}
+
 /**
  * 讀出整張分頁，回傳物件陣列。每個物件多一個 _row（實際列號，從 2 起算）。
  * 同一次執行內只會真的讀一次。
@@ -2354,6 +2422,11 @@ function setup() {
     out.push('已修正 ' + fixedRecords + ' 筆紀錄的欄位錯位（入幣改版當時造成的問題，資料已搬回正確位置，沒有遺失任何資料）');
   }
 
+  const fixedTextCells = _fixTextColumnFormatting();
+  if (fixedTextCells > 0) {
+    out.push('已修正 ' + fixedTextCells + ' 個被 Sheets 自動轉成日期型別的儲存格（例如舊分頁後來才加的 business_date 欄位），改回純文字並鎖住格式，數值本身沒有變過');
+  }
+
   _pepper();
   out.push('PEPPER 就緒');
 
@@ -3120,6 +3193,72 @@ function _selfTestBody(results) {
       + after.ledger.turnover + after.ledger.transport + after.ledger.givenToOwner
       + after.electronicTotal.chipNet + after.ledger.takenByOwner + after.ledger.returnedToHouse;
     _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
+  });
+
+  // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──
+  //
+  // Records 分頁從系統一開始就存在，business_date 是後來才加進 schema 的新欄位，
+  // 從沒機會在「_sheet() 建立新分頁」那個時間點被鎖成純文字格式。實際 Google 試算表
+  // 遇到這種情況，會把看起來像日期的字串自動解析成真正的日期序列值，讀出來變成
+  // JS Date 物件，不是原本存的字串——今日彙總、營業日比對這些拿 business_date 做
+  // 字串比對的地方就會全部對不起來，卻不會噴任何錯誤，只是默默算出 0。
+  // 這裡的測試沙盒不會真的重現 Sheets 那個自動轉型別的行為，所以用手動塞一個
+  // Date 物件進儲存格的方式，模擬「已經被轉壞」的狀態，驗證修復程序真的能把它救回來。
+
+  _t(results, '修正舊分頁後來才加的欄位被 Sheets 自動轉成日期型別：business_date 修回文字，今日彙總恢復正常', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '日期型別修復測試台', sortOrder: 97 }).machineId;
+    const res = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 100, clientToken: newId('ct') });
+    const recordId = res.records[0].recordId;
+
+    const before1 = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('business_date') + 1;
+    sh.getRange(before1._row, col).setValue(new Date(before1.business_date + 'T00:00:00Z'));
+    _clearSheetCache();
+
+    const corrupted = dbFind('Records', 'record_id', recordId);
+    _assert(corrupted.business_date instanceof Date, '模擬應該要讓這格變成 Date 物件（測試前置條件）');
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.today.in, 0, '損壞狀態下，今日彙總應該抓不到這筆（重現使用者回報的症狀）');
+
+    const fixedCells = _fixTextColumnFormatting();
+    _assert(fixedCells > 0, '應該回報修正了至少一個儲存格');
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.business_date, 'string', '修好之後應該是字串，不是 Date 物件');
+    _assertEq(repaired.business_date, todayKey(), '修好之後日期值應該還原正確，沒有跑掉');
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.today.in, 100, '修好之後，今日彙總應該正確抓到這筆');
+  });
+
+  _t(results, '重新執行 setup 會自動修正被誤存成日期型別的儲存格，且不會誤傷正常的文字資料', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'setup日期修復測試台', sortOrder: 98 }).machineId;
+    const res = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 50, clientToken: newId('ct') });
+    const recordId = res.records[0].recordId;
+
+    const row = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('business_date') + 1;
+    sh.getRange(row._row, col).setValue(new Date(row.business_date + 'T00:00:00Z'));
+    _clearSheetCache();
+
+    setup();
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.business_date, 'string', 'setup 之後應該是字串');
+    _assertEq(repaired.business_date, todayKey(), '修好之後日期值應該還原正確，沒有跑掉');
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.today.out, 50, 'setup 修好之後今日彙總應該正確');
+
+    // 再跑一次 setup 應該不會誤傷已經是正常文字的資料（天生冪等）。
+    setup();
+    _clearSheetCache();
+    const stillOk = dbFind('Records', 'record_id', recordId);
+    _assertEq(stillOk.business_date, todayKey(), '重複執行 setup 不該誤傷已經是文字的正常資料');
   });
 
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {

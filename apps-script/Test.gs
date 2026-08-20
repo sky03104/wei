@@ -698,6 +698,72 @@ function _selfTestBody(results) {
     _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於九項明細直接加總');
   });
 
+  // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──
+  //
+  // Records 分頁從系統一開始就存在，business_date 是後來才加進 schema 的新欄位，
+  // 從沒機會在「_sheet() 建立新分頁」那個時間點被鎖成純文字格式。實際 Google 試算表
+  // 遇到這種情況，會把看起來像日期的字串自動解析成真正的日期序列值，讀出來變成
+  // JS Date 物件，不是原本存的字串——今日彙總、營業日比對這些拿 business_date 做
+  // 字串比對的地方就會全部對不起來，卻不會噴任何錯誤，只是默默算出 0。
+  // 這裡的測試沙盒不會真的重現 Sheets 那個自動轉型別的行為，所以用手動塞一個
+  // Date 物件進儲存格的方式，模擬「已經被轉壞」的狀態，驗證修復程序真的能把它救回來。
+
+  _t(results, '修正舊分頁後來才加的欄位被 Sheets 自動轉成日期型別：business_date 修回文字，今日彙總恢復正常', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '日期型別修復測試台', sortOrder: 97 }).machineId;
+    const res = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 100, clientToken: newId('ct') });
+    const recordId = res.records[0].recordId;
+
+    const before1 = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('business_date') + 1;
+    sh.getRange(before1._row, col).setValue(new Date(before1.business_date + 'T00:00:00Z'));
+    _clearSheetCache();
+
+    const corrupted = dbFind('Records', 'record_id', recordId);
+    _assert(corrupted.business_date instanceof Date, '模擬應該要讓這格變成 Date 物件（測試前置條件）');
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.today.in, 0, '損壞狀態下，今日彙總應該抓不到這筆（重現使用者回報的症狀）');
+
+    const fixedCells = _fixTextColumnFormatting();
+    _assert(fixedCells > 0, '應該回報修正了至少一個儲存格');
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.business_date, 'string', '修好之後應該是字串，不是 Date 物件');
+    _assertEq(repaired.business_date, todayKey(), '修好之後日期值應該還原正確，沒有跑掉');
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.today.in, 100, '修好之後，今日彙總應該正確抓到這筆');
+  });
+
+  _t(results, '重新執行 setup 會自動修正被誤存成日期型別的儲存格，且不會誤傷正常的文字資料', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'setup日期修復測試台', sortOrder: 98 }).machineId;
+    const res = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 50, clientToken: newId('ct') });
+    const recordId = res.records[0].recordId;
+
+    const row = dbFind('Records', 'record_id', recordId);
+    const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
+    const col = SCHEMA.Records.indexOf('business_date') + 1;
+    sh.getRange(row._row, col).setValue(new Date(row.business_date + 'T00:00:00Z'));
+    _clearSheetCache();
+
+    setup();
+    _clearSheetCache();
+
+    const repaired = dbFind('Records', 'record_id', recordId);
+    _assertEq(typeof repaired.business_date, 'string', 'setup 之後應該是字串');
+    _assertEq(repaired.business_date, todayKey(), '修好之後日期值應該還原正確，沒有跑掉');
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.today.out, 50, 'setup 修好之後今日彙總應該正確');
+
+    // 再跑一次 setup 應該不會誤傷已經是正常文字的資料（天生冪等）。
+    setup();
+    _clearSheetCache();
+    const stillOk = dbFind('Records', 'record_id', recordId);
+    _assertEq(stillOk.business_date, todayKey(), '重複執行 setup 不該誤傷已經是文字的正常資料');
+  });
+
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '欄位錯位測試台', sortOrder: 90 }).machineId;
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
