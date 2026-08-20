@@ -232,6 +232,18 @@ input[type="date"] { min-width: 0; }
 
 /* ── 頁首 ───────────────────────────────────────────── */
 
+/* 首頁的標題列＋今日數字固定在上面，往下捲動的是機台清單，不是整頁——
+   常常一直開著這頁看數字，機台一多要滑很久才看得到最上面的今日淨收益。
+   margin-top/padding-top 那組負值＋等值是為了讓「還沒捲動」時位置不變
+   （.app 原本的頂端留白照舊），「捲動貼齊」時內距才補回安全區，
+   不會被瀏海／動態島遮住。背景要不透明，不然機台卡片會從底下透出來。 */
+.home-sticky {
+  position: sticky; top: 0; z-index: 10;
+  background: var(--bg);
+  margin-top: calc(-1 * var(--safe-top));
+  padding-top: var(--safe-top);
+}
+
 .topbar {
   display: flex; align-items: center; justify-content: space-between;
   gap: 10px; margin-bottom: 16px;

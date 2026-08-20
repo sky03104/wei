@@ -8,9 +8,10 @@
  *
  * 改版流程：每次前端有異動就把 CACHE_VERSION 加一，
  * 使用者的 App 會偵測到新版並跳出「有新版本」提示。
+ * app.js 的 APP_VERSION（登入頁顯示用）要跟著一起加，兩邊保持同一個數字。
  */
 
-const CACHE_VERSION = 'v6';
+const CACHE_VERSION = 'v7';
 const CACHE_NAME = 'claw-shell-' + CACHE_VERSION;
 
 const SHELL = [

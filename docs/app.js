@@ -39,6 +39,10 @@ const STORAGE_TOKEN = 'claw_token';
 const STORAGE_REMEMBER = 'claw_remember';
 const POLL_MS = 20000;
 
+/** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
+ *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
+const APP_VERSION = 'v7';
+
 // ── 狀態 ────────────────────────────────────────────────
 
 const state = {
@@ -423,7 +427,8 @@ function viewLogin() {
     ]),
     h('div', { class: 'card' }, form),
     h('p', { class: 'small muted center', style: 'margin-top:14px' },
-      '帳號由管理員建立。忘記密碼請找管理員重設。')
+      '帳號由管理員建立。忘記密碼請找管理員重設。'),
+    h('p', { class: 'small muted center', style: 'margin-top:6px', text: APP_VERSION })
   ]);
 }
 
@@ -469,7 +474,10 @@ function viewHome() {
       ? '還沒有任何機台。到「⚙ 系統管理 → 機台」新增第一台。'
       : '目前沒有開放給你的機台，請聯絡管理員。');
 
-  return h('div', {}, [header, summary, list]);
+  return h('div', {}, [
+    h('div', { class: 'home-sticky' }, [header, summary]),
+    list
+  ]);
 }
 
 function machineCard(m) {

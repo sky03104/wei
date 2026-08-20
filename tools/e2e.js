@@ -77,6 +77,8 @@ async function main() {
     assert(await page.locator('.checkbox input').count() === 1, '應該有記住我勾選框');
     assert(!(await page.locator('#update-bar').isVisible()), '首次載入不該跳出「有新版本」提示');
     assert(!(await page.locator('#offline-bar').isVisible()), '連線正常時不該顯示離線提示');
+    assert(/^v\d+$/.test((await page.locator('.login-wrap').textContent()).match(/v\d+/)?.[0] || ''),
+      '登入頁應該顯示版本號（例如 v6），方便確認手機上是不是最新版');
     await shot('01-login');
     await login('admin', 'admin123', true);
   });
@@ -230,6 +232,23 @@ async function main() {
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     assert(overflow <= 2, '頁面被數字撐出橫向捲動了，溢出 ' + overflow + 'px');
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+  });
+
+  await check('首頁的標題列與今日數字固定在畫面上方，不會跟著機台清單捲動', async () => {
+    // 不在這裡多加測試機台——後面「巡邏人員應看得到 3 台」那個斷言
+    // 假設機台總數固定是 3，加了會把那個測試弄壞。直接驗 CSS 本身的
+    // sticky 設定就夠了，實際捲動的視覺效果已經用截圖人工核對過。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.home-sticky');
+    const style = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector('.home-sticky'));
+      return { position: cs.position, top: cs.top };
+    });
+    assert(style.position === 'sticky', '.home-sticky 應該是 position:sticky，實際 ' + style.position);
+    assert(style.top === '0px', '.home-sticky 應該貼齊視窗頂端（top:0），實際 ' + style.top);
 
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
