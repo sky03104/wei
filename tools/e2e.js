@@ -80,7 +80,27 @@ async function main() {
     assert(/^v\d+$/.test((await page.locator('.login-wrap').textContent()).match(/v\d+/)?.[0] || ''),
       '登入頁應該顯示版本號（例如 v6），方便確認手機上是不是最新版');
     await shot('01-login');
+
+    // 登入當下就掛上監聽，才不會錯過登入完成那一刻馬上觸發的背景預取——
+    // 這個監聽故意留到下一個 check 才拆掉，給背景預取一點時間真的跑完。
+    let machineDetailCalls = 0;
+    const trackPrefetch = (req) => {
+      if (req.url().includes('/api') && req.method() === 'POST') {
+        const body = decodeURIComponent(req.postData() || '');
+        if (body.includes('"action":"machineDetail"')) machineDetailCalls++;
+      }
+    };
+    page.on('request', trackPrefetch);
+    page.__machineDetailCallCounter = () => machineDetailCalls;
+
     await login('admin', 'admin123', true);
+  });
+
+  await check('登入後背景會先把全部機台的詳細資料抓好，不用等進去才抓', async () => {
+    await page.waitForTimeout(1200); // 給背景預取一點時間跑完（3 台機台，併發 3，應該很快）
+    const count = page.__machineDetailCallCounter();
+    page.removeAllListeners('request');
+    assert(count === 3, '應該背景打 3 次 machineDetail（對應 3 台機台），實際 ' + count);
   });
 
   await check('管理員首頁看得到全部 3 台機台', async () => {
@@ -309,7 +329,7 @@ async function main() {
     await shot('08-report-custom');
   });
 
-  await check('回訪同一台機台會先用快取秒開，第一次進不同機台仍會先看到轉圈圈', async () => {
+  await check('背景預取：登入後就先把全部機台抓好，第一次進哪一台都秒開', async () => {
     await page.click('button:has-text("← 返回")');
     await page.waitForSelector('.detail-hero');
     await page.click('button:has-text("← 返回主畫面")');
@@ -319,18 +339,18 @@ async function main() {
     const firstName = await cards.nth(0).locator('.name').textContent();
     const secondName = await cards.nth(1).locator('.name').textContent();
 
-    // 第一次進第 2 台機台：前面測試都只碰過第 1 台，這台還沒有快取，
-    // 點下去的當下應該先看到轉圈圈，資料回來後才換成內容。
+    // 登入的時候（本測試最前面）背景就該把全部機台的詳細資料預先抓好、
+    // 存進快取，所以「第一次」點進第 2 台這種前面測試從沒碰過的機台，
+    // 現在也該直接秒開，不會再看到轉圈圈——這是跟舊版行為的關鍵差異，
+    // 專門測這一點才不會讓 prefetchMachineDetails 悄悄退化回原本要等的樣子。
     await cards.nth(1).click();
-    assert((await page.locator('.boot').count()) > 0, '第一次進這台機台應該先顯示轉圈圈（還沒有快取）');
-    await page.waitForSelector('.detail-hero');
+    assert((await page.locator('.boot').count()) === 0, '背景已經預取過，第一次進這台機台也該直接秒開，不該看到轉圈圈');
     assert((await page.locator('.detail-hero h2').textContent()) === secondName, '應該顯示第 2 台機台的資料');
 
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
 
-    // 回訪第 1 台機台（前面 03~06 的測試已經進去看過）：
-    // click() 一回來 DOM 就該已經是 .detail-hero，中間不會再閃過轉圈圈。
+    // 回訪第 1 台機台（前面測試已經進去看過）：一樣該秒開。
     await cards.nth(0).click();
     assert((await page.locator('.detail-hero').count()) > 0, '回訪已經看過的機台應該直接秒開，不該再看到轉圈圈');
     assert((await page.locator('.detail-hero h2').textContent()) === firstName, '秒開當下顯示的就該是正確的機台名稱');

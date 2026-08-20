@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -409,6 +409,7 @@ function viewLogin() {
       state.home = data.dashboard;
       _resetToHomeNav();
       render();
+      prefetchMachineDetails();
     }
   }, [
     dialogField('帳號', username),
@@ -1545,7 +1546,47 @@ function adminPerms(data) {
 
 async function loadHome(opts) {
   const data = await run(() => api('dashboard'), opts);
-  if (data) { state.home = data; render(); }
+  if (data) { state.home = data; render(); prefetchMachineDetails(); }
+}
+
+/**
+ * 首頁一載入就趁背景把每一台機台的詳細資料先抓回來存進快取，
+ * 用機台切換籤跳來跳去時大多是「第一次」進某一台，本來一定要
+ * 等一趟 GAS 來回；預先抓好之後不管跳去哪一台都秒開。
+ *
+ * 不走 run()：這是背景低優先度的事，不該讓 state.busy 卡住、
+ * 影響到使用者正在做的事情或每 20 秒的輪詢；失敗也靜靜略過，
+ * 使用者真的點進去時 loadDetail 會照正常流程重新抓一次。
+ * 用小併發（3 個一批）避免機台一多時一次炸出二三十個請求。
+ * 不用旗標擋重複呼叫——內部本來就會先看快取，已經抓過的機台
+ * 直接跳過，同一批 id 被叫第二次也只是白檢查一次，沒有副作用。
+ */
+let _prefetchInFlight = false;
+async function prefetchMachineDetails() {
+  if (_prefetchInFlight || !state.home) return;
+  const ids = state.home.machines
+    .map((m) => m.machineId)
+    .filter((id) => !state.cache['detail:' + id]);
+  if (!ids.length) return;
+
+  _prefetchInFlight = true;
+  try {
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < ids.length) {
+        const id = ids[cursor++];
+        if (state.cache['detail:' + id]) continue;
+        try {
+          state.cache['detail:' + id] = await api('machineDetail', { machineId: id });
+        } catch (err) {
+          // 背景預取失敗不用理，使用者真的點進去時走正常流程會重新抓一次
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
+  } finally {
+    _prefetchInFlight = false;
+  }
 }
 
 async function loadDetail(machineId, opts) {
@@ -1758,6 +1799,7 @@ async function boot() {
     state.home = data.dashboard;
     _resetToHomeNav();
     render();
+    prefetchMachineDetails();
   } catch (err) {
     if (err.code !== 'AUTH') {
       state.view = 'login';
