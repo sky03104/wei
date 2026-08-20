@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1566,6 +1566,32 @@ function adminPerms(data) {
 
 // ── 資料載入 ────────────────────────────────────────────
 
+/**
+ * state.cache 現在存的是 { data, at }，不是原始資料本身——多包一個
+ * 時間戳，才分得出「這筆快取是剛抓的」還是「放了一陣子」。
+ *
+ * cacheFresh() 在 CACHE_FRESH_MS 之內視為夠新：進頁面時如果快取還新鮮，
+ * 就不用再多打一次背景重新整理。原本的作法是「先秒開快取、無論如何
+ * 都立刻背景重打一次」，好處是資料一定準，代價是每次進頁面都會看到
+ * 數字先出現、過一下又跳一次——尤其是背景預取剛抓完沒多久就點進去，
+ * 那個「跳」完全是白跑一趟，資料根本沒變。真的動到帳（送出入幣/出幣/
+ * 開獎、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
+ * 的函式、不經過這裡的新鮮度判斷，一定會拿到最新的。
+ */
+const CACHE_FRESH_MS = 10000;
+
+function cacheWrite(key, data) {
+  state.cache[key] = { data: data, at: Date.now() };
+}
+function cacheRead(key) {
+  const entry = state.cache[key];
+  return entry ? entry.data : null;
+}
+function cacheFresh(key) {
+  const entry = state.cache[key];
+  return !!entry && (Date.now() - entry.at) < CACHE_FRESH_MS;
+}
+
 async function loadHome(opts) {
   const data = await run(() => api('dashboard'), opts);
   if (data) { state.home = data; render(); prefetchMachineDetails(); }
@@ -1599,7 +1625,7 @@ async function prefetchMachineDetails() {
         const id = ids[cursor++];
         if (state.cache['detail:' + id]) continue;
         try {
-          state.cache['detail:' + id] = await api('machineDetail', { machineId: id });
+          cacheWrite('detail:' + id, await api('machineDetail', { machineId: id }));
         } catch (err) {
           // 背景預取失敗不用理，使用者真的點進去時走正常流程會重新抓一次
         }
@@ -1614,7 +1640,7 @@ async function prefetchMachineDetails() {
 async function loadDetail(machineId, opts) {
   const data = await run(() => api('machineDetail', { machineId: machineId }), opts);
   if (data) {
-    state.cache['detail:' + machineId] = data;
+    cacheWrite('detail:' + machineId, data);
     state.detail = data;
     render();
   }
@@ -1622,11 +1648,11 @@ async function loadDetail(machineId, opts) {
 
 async function loadReport() {
   const key = 'report:' + JSON.stringify(state.reportParams);
-  state.report = state.cache[key] || null;
+  state.report = cacheRead(key);
   render();
   const data = await run(() => api('report', state.reportParams));
   if (data) {
-    state.cache[key] = data;
+    cacheWrite(key, data);
     state.report = data;
     render();
   }
@@ -1637,7 +1663,7 @@ async function loadAdmin() {
   // 而不是分開打 4 支——省下 3 次「/exec 轉址 + GAS 執行」的固定成本。
   const data = await run(() => api('adminBootstrap'));
   if (!data) return;
-  state.cache.admin = data;
+  cacheWrite('admin', data);
   state.admin = data;
   render();
 }
@@ -1645,7 +1671,8 @@ async function loadAdmin() {
 // ── 導覽 ────────────────────────────────────────────────
 //
 // goX() 系列進畫面時，先看 state.cache 有沒有這個畫面上次的資料：
-// 有就直接秒開（同時背景照樣打 API 拿最新的來覆蓋），完全沒有才顯示轉圈圈。
+// 有就直接秒開，完全沒有才顯示轉圈圈。快取夠新鮮（CACHE_FRESH_MS 之內）
+// 就不再多打一次背景重新整理，放久了才會真的重打一次確認資料還是最新的。
 
 /** 重設成首頁該有的導覽狀態，不動 state.home——留給呼叫端決定要不要一起換資料。 */
 function _resetToHomeNav() {
@@ -1667,9 +1694,10 @@ function goMachine(machineId) {
   state.panel = null;
   state.editMode = false;
   state.prizeCounts = {};
-  state.detail = state.cache['detail:' + machineId] || null;
+  const key = 'detail:' + machineId;
+  state.detail = cacheRead(key);
   render();
-  loadDetail(machineId);
+  if (!cacheFresh(key)) loadDetail(machineId);
 }
 
 function goReport(machineId) {
@@ -1678,17 +1706,18 @@ function goReport(machineId) {
     machineId: machineId || '',
     preset: 'day', from: '', to: '', type: '', userId: ''
   };
-  state.report = state.cache['report:' + JSON.stringify(state.reportParams)] || null;
+  const key = 'report:' + JSON.stringify(state.reportParams);
+  state.report = cacheRead(key);
   render();
-  loadReport();
+  if (!cacheFresh(key)) loadReport();
 }
 
 function goAdmin() {
   state.view = 'admin';
   state.adminTab = 'users';
-  state.admin = state.cache.admin || null;
+  state.admin = cacheRead('admin');
   render();
-  loadAdmin();
+  if (!cacheFresh('admin')) loadAdmin();
 }
 
 function doLogout() {

@@ -356,6 +356,48 @@ async function main() {
     assert((await page.locator('.detail-hero h2').textContent()) === firstName, '秒開當下顯示的就該是正確的機台名稱');
   });
 
+  await check('快取還新鮮時進頁面不會多打一次背景重新整理，記帳之後一定會', async () => {
+    // 使用者原本的抱怨：「數字馬上出現，但過一下子又跳一次」——
+    // 快取秒開沒問題，問題是不管快不快都會再背景打一次 machineDetail，
+    // 舊資料先閃一下再被新資料蓋掉，體感就是在等。
+    // 快取夠新鮮（CACHE_FRESH_MS 之內）就不該再多打這一次。
+    let calls = 0;
+    const track = (req) => {
+      if (req.url().includes('/api') && req.method() === 'POST') {
+        const body = decodeURIComponent(req.postData() || '');
+        if (body.includes('"action":"machineDetail"')) calls++;
+      }
+    };
+    page.on('request', track);
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    await page.waitForTimeout(400);
+    const afterEnter = calls;
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    await page.waitForTimeout(400);
+    assert(calls === afterEnter, '快取還新鮮時，短時間內重新進同一台不該再多打一次 machineDetail（' + afterEnter + ' → ' + calls + '）');
+
+    // 記帳是使用者自己的動作，不管快取新不新鮮都一定要拿到最新資料。
+    await page.click('.action-buttons button:has-text("出幣")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '33');
+    await page.click('.custom-amount button:has-text("送出")');
+    // .record-item 從快取就有了，waitForSelector 對這個斷言沒有意義
+    // （不會等到 addRecord → loadDetail 真的跑完）；改成直接輪詢 calls 變多，
+    // 或等到逾時——逾時也沒關係，下面的斷言一樣會抓到「calls 沒變多」。
+    for (let i = 0; i < 40 && calls <= afterEnter; i++) await page.waitForTimeout(200);
+    assert(calls > afterEnter, '送出帳目之後一定要重新整理，不能沿用新鮮快取（' + afterEnter + ' → ' + calls + '）');
+
+    page.removeAllListeners('request');
+  });
+
   await check('系統管理頁四個分頁都打得開，且第一次進頁面只打 1 次 API', async () => {
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
