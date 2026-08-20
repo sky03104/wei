@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -286,8 +286,13 @@ async function run(fn, opts) {
     if (options.success) toast(options.success, 'success');
     return result;
   } catch (err) {
-    // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每 20 秒再彈一次）
-    if (err.code !== 'AUTH' && !options.silent) toast(err.message, 'error');
+    // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每 20 秒再彈一次）。
+    // AUTH 錯誤預設也不彈 toast——這是為了「操作到一半 session 過期，靜靜跳回
+    // 登入頁就好，不用再彈一個刺眼的錯誤」設計的。但登入表單本身送出的帳密錯誤／
+    // 帳號被鎖，後端一樣是用 AUTH 這個代碼回傳，如果照這條規則整個吃掉，
+    // 使用者會看到轉圈圈轉完、什麼也沒發生、停在空白登入頁，完全不知道錯在哪。
+    // 呼叫端（登入表單）用 showAuthError:true 蓋掉這個預設，帳密錯誤才會顯示出來。
+    if (!options.silent && (err.code !== 'AUTH' || options.showAuthError)) toast(err.message, 'error');
     return undefined;
   } finally {
     runDepth--;
@@ -401,7 +406,7 @@ function viewLogin() {
         username: username.value.trim(),
         password: password.value,
         remember: remember.checked
-      }));
+      }), { showAuthError: true });
       submitBtn.disabled = false;
       if (!data) return;
       saveSession(data.token, data.remember);

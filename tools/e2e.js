@@ -69,6 +69,23 @@ async function main() {
     await page.waitForSelector('form', { timeout: 8000 });
   }
 
+  await check('登入密碼錯誤時會顯示明確的錯誤訊息，不會靜靜卡在登入頁什麼提示都沒有', async () => {
+    // 後端密碼錯誤／帳號被鎖都是用 AUTH 這個錯誤代碼回傳，run() 預設會吃掉
+    // AUTH 錯誤的 toast（那是為了「session 過期，靜靜跳回登入頁」設計的）——
+    // 登入表單自己送出的帳密錯誤如果被同一條規則吃掉，使用者會看到轉圈圈轉完、
+    // 什麼也沒發生，完全不知道是密碼打錯還是連線壞了。這裡驗證登入表單有蓋掉
+    // 這個預設，真的會把錯誤顯示出來。
+    await page.goto(BASE, { waitUntil: 'networkidle' });
+    await page.waitForSelector('form');
+    await page.fill('input[autocomplete="username"]', 'admin');
+    await page.fill('input[type="password"]', 'definitely-the-wrong-password');
+    await page.click('button[type="submit"]');
+    await page.waitForSelector('#toast.error', { timeout: 8000 });
+    const msg = await page.locator('#toast').textContent();
+    assert(msg.indexOf('密碼') >= 0 || msg.indexOf('帳號') >= 0, '應該顯示帳號或密碼錯誤的提示，實際「' + msg + '」');
+    assert(await page.locator('.login-wrap').count() === 1, '密碼錯誤時應該還停在登入頁');
+  });
+
   // ── 管理員 ──
   await check('登入頁可以正常開啟並登入', async () => {
     await page.goto(BASE, { waitUntil: 'networkidle' });
