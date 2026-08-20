@@ -30,6 +30,123 @@ function todayKey() {
   return Utilities.formatDate(new Date(), _tz(), 'yyyy-MM-dd');
 }
 
+// ── 營業日 ──────────────────────────────────────────────
+//
+// 預設沒人管：「今天」就是行事曆日期（todayKey()），凌晨 0 點自動換日，
+// 跟這個功能上線之前完全一樣。只有店家實際按下「今日營業開始」，
+// 才會改用手動的營業日邊界——晚上開始、跨過午夜才打烊的營業額，
+// 會整批算進「開始那一天」，不會被行事曆日期從中間切開。
+//
+// 同一時間最多只有一個「進行中」的營業日（closed_at 是空的）。
+// 記帳當下呼叫 _currentBusinessDate()：有進行中的營業日就用它的
+// business_date，沒有就退回 todayKey()——這個退回路徑保證沒人用過
+// 這個功能的店家，行為跟以前一模一樣。
+
+/** 目前進行中的營業日（closed_at 空白），沒有就是 null。 */
+function _openBizDay() {
+  const rows = dbReadAll('BizDays').filter(function (r) { return !r.closed_at; });
+  if (!rows.length) return null;
+  // 正常情況下最多一列，防禦性地取最新建立的（列號最大）一列。
+  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return rows[0];
+}
+
+/** 記帳當下該算進哪一天：有進行中的營業日就用它，沒有就退回行事曆日期。 */
+function _currentBusinessDate() {
+  const open = _openBizDay();
+  return open ? String(open.business_date) : todayKey();
+}
+
+/**
+ * 某一筆紀錄該算進哪一天。
+ *
+ * 新紀錄一律在寫入當下就把 business_date 快照進去（跟獎型單價、
+ * 碼表讀數同一個道理：算好的結果存下來，之後設定怎麼變都不會動到
+ * 歷史帳）。這支是給「讀」的地方用的：舊資料（這個功能上線前寫的）
+ * 沒有 business_date 這欄，退回用 created_at 的行事曆日期，這樣舊帳
+ * 的日期分類不會因為升級而改變。
+ */
+function _recordBusinessDate(r) {
+  return r.business_date || localDateKey(r.created_at);
+}
+
+function _publicBizDay(row) {
+  if (!row) return null;
+  const users = dbReadAll('Users');
+  const nameOf = function (id) {
+    if (!id) return '';
+    for (let i = 0; i < users.length; i++) {
+      if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
+    }
+    return '';
+  };
+  return {
+    businessDate: String(row.business_date),
+    openedAt: row.opened_at,
+    openedByName: nameOf(row.opened_by),
+    closedAt: row.closed_at || null,
+    closedByName: row.closed_by ? nameOf(row.closed_by) : null,
+    autoClosed: toBool(row.auto_closed)
+  };
+}
+
+/** 首頁顯示用：目前有沒有進行中的營業日、是哪一天開始的。 */
+function businessDayStatus(user) {
+  const open = _openBizDay();
+  return { open: !!open, current: _publicBizDay(open) };
+}
+
+/**
+ * 按下「今日營業開始」。
+ *
+ * 如果前一個營業日忘記結單，這裡直接幫忙結掉（記錄 auto_closed，
+ * 結束時間就是這次「開始」按下去的當下），不會卡住不讓開新的——
+ * 現場人員忘記按結單是常態，擋住比自動處理風險更高。
+ */
+function startBusinessDay(user) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  return withLock(function () {
+    const now = nowIso();
+    const open = _openBizDay();
+    if (open) {
+      dbUpdate('BizDays', open._row, {
+        closed_at: now,
+        closed_by: user.userId,
+        auto_closed: true
+      });
+    }
+    const row = {
+      biz_id: newId('biz'),
+      business_date: todayKey(),
+      opened_at: now,
+      opened_by: user.userId,
+      closed_at: '',
+      closed_by: '',
+      auto_closed: false
+    };
+    dbInsert('BizDays', row);
+    return { open: true, current: _publicBizDay(row), previousAutoClosed: !!open };
+  });
+}
+
+/** 按下「今日營業結單」。沒有進行中的營業日就明確報錯，不要默默沒反應。 */
+function endBusinessDay(user) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  return withLock(function () {
+    const open = _openBizDay();
+    if (!open) throw new Error('目前沒有進行中的營業日，請先按「今日營業開始」');
+    dbUpdate('BizDays', open._row, {
+      closed_at: nowIso(),
+      closed_by: user.userId,
+      auto_closed: false
+    });
+    const closed = dbFind('BizDays', 'biz_id', open.biz_id);
+    return { open: false, current: _publicBizDay(closed) };
+  });
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
 function emptySummary() {
@@ -76,7 +193,7 @@ function getDashboard(user) {
     return ids.indexOf(String(m.machine_id)) >= 0;
   });
 
-  const today = todayKey();
+  const today = _currentBusinessDate();
   const totals = {};
   const todays = {};
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
@@ -85,7 +202,7 @@ function getDashboard(user) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    if (localDateKey(r.created_at) === today) _accumulate(todays[mid], r);
+    if (_recordBusinessDate(r) === today) _accumulate(todays[mid], r);
   });
 
   const list = machines.map(function (m) {
@@ -115,7 +232,7 @@ function getDashboard(user) {
   });
   grand.net = grand.in - grand.out - grand.prize;
 
-  return { machines: list, todayTotal: grand, today: today };
+  return { machines: list, todayTotal: grand, today: today, businessDay: businessDayStatus(user) };
 }
 
 /**
@@ -141,7 +258,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   const m = dbFind('Machines', 'machine_id', machineId);
   if (!m) throw new Error('找不到這台機台');
 
-  const today = todayKey();
+  const today = _currentBusinessDate();
   const total = emptySummary();
   const todaySum = emptySummary();
   const mine = [];
@@ -149,7 +266,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   activeRecords().forEach(function (r) {
     if (String(r.machine_id) !== String(machineId)) return;
     _accumulate(total, r);
-    if (localDateKey(r.created_at) === today) _accumulate(todaySum, r);
+    if (_recordBusinessDate(r) === today) _accumulate(todaySum, r);
     mine.push(r);
   });
 
@@ -204,6 +321,7 @@ function _publicRecord(r) {
     meterEnd: r.meter_end === '' || r.meter_end === undefined ? null : toNumber(r.meter_end),
     userName: name,
     createdAt: r.created_at,
+    businessDate: _recordBusinessDate(r),
     note: r.note || ''
   };
 }
@@ -240,7 +358,8 @@ function addRecord(user, payload) {
       voided: false,
       voided_by: '',
       voided_at: '',
-      client_token: String(payload.clientToken || '')
+      client_token: String(payload.clientToken || ''),
+      business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
@@ -285,7 +404,8 @@ function addMeterRecord(user, payload) {
       voided: false,
       voided_by: '',
       voided_at: '',
-      client_token: String(payload.clientToken || '')
+      client_token: String(payload.clientToken || ''),
+      business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
@@ -350,6 +470,7 @@ function addPrizeRecord(user, payload) {
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
     const now = nowIso();
+    const businessDate = _currentBusinessDate();
     const note = String(payload.note || '').substring(0, 200);
     const rows = prepared.map(function (p) {
       return {
@@ -367,7 +488,8 @@ function addPrizeRecord(user, payload) {
         voided: false,
         voided_by: '',
         voided_at: '',
-        client_token: String(payload.clientToken || '')
+        client_token: String(payload.clientToken || ''),
+        business_date: businessDate
       };
     });
 

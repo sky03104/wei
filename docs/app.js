@@ -41,7 +41,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -476,9 +476,50 @@ function viewHome() {
       : '目前沒有開放給你的機台，請聯絡管理員。');
 
   return h('div', {}, [
-    h('div', { class: 'home-sticky' }, [header, summary]),
+    h('div', { class: 'home-sticky' }, [header, summary, businessDayBar(data.businessDay)]),
     list
   ]);
+}
+
+/**
+ * 「今日營業開始／結單」——預設「今日」是凌晨 0 點自動換日，
+ * 有些店家晚上開到隔天凌晨，帳會被行事曆日期從中間切開，跟現場
+ * 認知的「一個晚上的營業額」對不起來。按了「開始」之後，記帳會
+ * 一律算進按下去那一刻的日期，直到按「結單」為止，不受凌晨 0 點
+ * 影響；沒按過的話，行為跟以前完全一樣。
+ *
+ * 只有能記帳的角色（管理員／巡邏人員）才看得到——台主唯讀，
+ * 這兩顆按鈕不該出現在他們的畫面上。
+ */
+function businessDayBar(biz) {
+  if (!canRecord()) return null;
+  const isOpen = !!(biz && biz.open);
+  const status = isOpen
+    ? '營業中 · ' + formatTime(biz.current.openedAt) + ' 開始'
+      + (biz.current.openedByName ? '（' + biz.current.openedByName + '）' : '')
+    : '尚未開始今日營業，記帳暫時照行事曆日期算';
+
+  return h('div', { class: 'bizday-bar' }, [
+    h('div', { class: 'bizday-status small muted', text: status }),
+    h('div', { class: 'bizday-actions' }, [
+      h('button', { class: 'btn btn-sm btn-ghost', onclick: doStartBusinessDay }, '今日營業開始'),
+      h('button', { class: 'btn btn-sm btn-ghost', onclick: doEndBusinessDay }, '今日營業結單')
+    ])
+  ]);
+}
+
+function doStartBusinessDay() {
+  run(async () => {
+    await api('startBusinessDay', {});
+    await loadHome();
+  }, { success: '已開始今日營業' });
+}
+
+function doEndBusinessDay() {
+  run(async () => {
+    await api('endBusinessDay', {});
+    await loadHome();
+  }, { success: '已結算今日營業' });
 }
 
 function machineCard(m) {

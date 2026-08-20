@@ -274,6 +274,39 @@ async function main() {
     await page.waitForSelector('.detail-hero');
   });
 
+  await check('營業日：管理員能按開始/結單，狀態文字會跟著變', async () => {
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.bizday-bar');
+
+    const before = await page.locator('.bizday-status').textContent();
+    assert(before.indexOf('尚未開始') >= 0 || before.indexOf('營業中') >= 0, '應該有明確的營業狀態文字，實際「' + before + '」');
+
+    await page.click('button:has-text("今日營業開始")');
+    await page.waitForSelector('.bizday-status:has-text("營業中")', { timeout: 8000 });
+
+    await page.click('button:has-text("今日營業結單")');
+    await page.waitForSelector('.bizday-status:has-text("尚未開始")', { timeout: 8000 });
+
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+  });
+
+  await check('營業日：台主看不到「今日營業開始/結單」，因為他不能記帳', async () => {
+    // 用同一個 page 切換角色，不要開新分頁——記住我的 token 存在
+    // localStorage，同一個 context 的分頁會共用，開新分頁進來會直接
+    // 用現有的 admin token 秒登入，永遠看不到登入表單。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await logout();
+    await login('owner1', 'owner123', false);
+    assert(await page.locator('.bizday-bar').count() === 0, '台主是唯讀角色，不該看到營業日操作按鈕');
+
+    await logout();
+    await login('admin', 'admin123', true);
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+  });
+
   // 開發伺服器是長駐的，資料會一直累積，所以一律驗「差額」而不是絕對值
   const num = (s) => Number(String(s).replace(/[^0-9.-]/g, ''));
   const statValue = async (label) => {

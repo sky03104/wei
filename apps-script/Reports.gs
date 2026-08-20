@@ -34,9 +34,14 @@ function _isValidKey(key) {
 /**
  * 把 preset 換算成 from / to。
  * day=今天、week=本週（週一起）、month=本月（1 號起）、custom=自己給。
+ *
+ * 這裡的「今天」用 _currentBusinessDate()，不是行事曆日期——沒人按過
+ * 「今日營業開始」的話兩者是同一個值，跟以前行為一樣；有進行中的
+ * 營業日，週/月的邊界也該照營業日算，不然凌晨一點行事曆日期跳到隔天，
+ * 但營業日還沒結束，「本週」卻已經算進下一週就怪了。
  */
 function resolveRange(preset, from, to) {
-  const today = todayKey();
+  const today = _currentBusinessDate();
 
   if (preset === 'custom') {
     if (!_isValidKey(from) || !_isValidKey(to)) throw new Error('日期格式不正確');
@@ -85,7 +90,7 @@ function getReport(user, params) {
 
   rows.forEach(function (r) {
     _accumulate(summary, r);
-    const key = localDateKey(r.created_at);
+    const key = _recordBusinessDate(r);
     if (daily[key]) _accumulate(daily[key], r);
 
     if (r.type === RECORD_PRIZE) {
@@ -144,7 +149,7 @@ function _reportRows(machineIds, range, params) {
 
   return activeRecords().filter(function (r) {
     if (!idSet[String(r.machine_id)]) return false;
-    const key = localDateKey(r.created_at);
+    const key = _recordBusinessDate(r);
     if (key < range.from || key > range.to) return false;
     if (params.type && r.type !== params.type) return false;
     if (params.userId && String(r.user_id) !== String(params.userId)) return false;
@@ -198,7 +203,7 @@ function exportCsv(user, params) {
   rows.forEach(function (r) {
     const d = new Date(r.created_at);
     lines.push([
-      _csvCell(localDateKey(r.created_at)),
+      _csvCell(_recordBusinessDate(r)),
       _csvCell(isNaN(d.getTime()) ? '' : Utilities.formatDate(d, _tz(), 'HH:mm:ss')),
       _csvCell(machineNames[String(r.machine_id)] || r.machine_id),
       _csvCell(TYPE_LABELS[r.type] || r.type),

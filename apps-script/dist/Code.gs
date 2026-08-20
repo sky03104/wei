@@ -24,17 +24,24 @@
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
   Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at'],
-  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end'],
+  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
   MeterRates: ['rate_id', 'machine_id', 'rate'],
   Permissions: ['user_id', 'machine_id', 'granted_by', 'granted_at'],
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
-  Config: ['key', 'value']
+  Config: ['key', 'value'],
+  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed']
 };
 
-/** 這些欄位存 ISO 時間字串，欄位格式必須設成純文字，否則 Sheets 會自作主張轉時區。 */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at'];
+/**
+ * 這些欄位存 ISO 時間字串或 yyyy-MM-dd 日期字串，欄位格式必須設成純文字，
+ * 否則 Sheets 會自作主張轉成日期／時間型別（改天再讀出來就變成 Date 物件，
+ * 不是原本存的字串，字串排序、比對全部跟著壞掉——這正是入幣改版那次
+ * 欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，這裡把 business_date
+ * 也一併鎖住，不要重蹈覆轍）。
+ */
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -50,13 +57,14 @@ const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
   Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
-    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表'],
+    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
   QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
   MeterRates: ['設定編號', '機台編號', '每格金額'],
   Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
-  Config: ['設定鍵', '設定值']
+  Config: ['設定鍵', '設定值'],
+  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單']
 };
 
 /**
@@ -75,7 +83,8 @@ const SHEET_TAB_NAMES = {
   MeterRates: '入幣費率',
   Permissions: '台主授權',
   Sessions: '登入狀態',
-  Config: '系統設定'
+  Config: '系統設定',
+  BizDays: '營業日'
 };
 
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
@@ -694,6 +703,123 @@ function todayKey() {
   return Utilities.formatDate(new Date(), _tz(), 'yyyy-MM-dd');
 }
 
+// ── 營業日 ──────────────────────────────────────────────
+//
+// 預設沒人管：「今天」就是行事曆日期（todayKey()），凌晨 0 點自動換日，
+// 跟這個功能上線之前完全一樣。只有店家實際按下「今日營業開始」，
+// 才會改用手動的營業日邊界——晚上開始、跨過午夜才打烊的營業額，
+// 會整批算進「開始那一天」，不會被行事曆日期從中間切開。
+//
+// 同一時間最多只有一個「進行中」的營業日（closed_at 是空的）。
+// 記帳當下呼叫 _currentBusinessDate()：有進行中的營業日就用它的
+// business_date，沒有就退回 todayKey()——這個退回路徑保證沒人用過
+// 這個功能的店家，行為跟以前一模一樣。
+
+/** 目前進行中的營業日（closed_at 空白），沒有就是 null。 */
+function _openBizDay() {
+  const rows = dbReadAll('BizDays').filter(function (r) { return !r.closed_at; });
+  if (!rows.length) return null;
+  // 正常情況下最多一列，防禦性地取最新建立的（列號最大）一列。
+  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return rows[0];
+}
+
+/** 記帳當下該算進哪一天：有進行中的營業日就用它，沒有就退回行事曆日期。 */
+function _currentBusinessDate() {
+  const open = _openBizDay();
+  return open ? String(open.business_date) : todayKey();
+}
+
+/**
+ * 某一筆紀錄該算進哪一天。
+ *
+ * 新紀錄一律在寫入當下就把 business_date 快照進去（跟獎型單價、
+ * 碼表讀數同一個道理：算好的結果存下來，之後設定怎麼變都不會動到
+ * 歷史帳）。這支是給「讀」的地方用的：舊資料（這個功能上線前寫的）
+ * 沒有 business_date 這欄，退回用 created_at 的行事曆日期，這樣舊帳
+ * 的日期分類不會因為升級而改變。
+ */
+function _recordBusinessDate(r) {
+  return r.business_date || localDateKey(r.created_at);
+}
+
+function _publicBizDay(row) {
+  if (!row) return null;
+  const users = dbReadAll('Users');
+  const nameOf = function (id) {
+    if (!id) return '';
+    for (let i = 0; i < users.length; i++) {
+      if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
+    }
+    return '';
+  };
+  return {
+    businessDate: String(row.business_date),
+    openedAt: row.opened_at,
+    openedByName: nameOf(row.opened_by),
+    closedAt: row.closed_at || null,
+    closedByName: row.closed_by ? nameOf(row.closed_by) : null,
+    autoClosed: toBool(row.auto_closed)
+  };
+}
+
+/** 首頁顯示用：目前有沒有進行中的營業日、是哪一天開始的。 */
+function businessDayStatus(user) {
+  const open = _openBizDay();
+  return { open: !!open, current: _publicBizDay(open) };
+}
+
+/**
+ * 按下「今日營業開始」。
+ *
+ * 如果前一個營業日忘記結單，這裡直接幫忙結掉（記錄 auto_closed，
+ * 結束時間就是這次「開始」按下去的當下），不會卡住不讓開新的——
+ * 現場人員忘記按結單是常態，擋住比自動處理風險更高。
+ */
+function startBusinessDay(user) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  return withLock(function () {
+    const now = nowIso();
+    const open = _openBizDay();
+    if (open) {
+      dbUpdate('BizDays', open._row, {
+        closed_at: now,
+        closed_by: user.userId,
+        auto_closed: true
+      });
+    }
+    const row = {
+      biz_id: newId('biz'),
+      business_date: todayKey(),
+      opened_at: now,
+      opened_by: user.userId,
+      closed_at: '',
+      closed_by: '',
+      auto_closed: false
+    };
+    dbInsert('BizDays', row);
+    return { open: true, current: _publicBizDay(row), previousAutoClosed: !!open };
+  });
+}
+
+/** 按下「今日營業結單」。沒有進行中的營業日就明確報錯，不要默默沒反應。 */
+function endBusinessDay(user) {
+  if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
+
+  return withLock(function () {
+    const open = _openBizDay();
+    if (!open) throw new Error('目前沒有進行中的營業日，請先按「今日營業開始」');
+    dbUpdate('BizDays', open._row, {
+      closed_at: nowIso(),
+      closed_by: user.userId,
+      auto_closed: false
+    });
+    const closed = dbFind('BizDays', 'biz_id', open.biz_id);
+    return { open: false, current: _publicBizDay(closed) };
+  });
+}
+
 // ── 彙總 ────────────────────────────────────────────────
 
 function emptySummary() {
@@ -740,7 +866,7 @@ function getDashboard(user) {
     return ids.indexOf(String(m.machine_id)) >= 0;
   });
 
-  const today = todayKey();
+  const today = _currentBusinessDate();
   const totals = {};
   const todays = {};
   ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
@@ -749,7 +875,7 @@ function getDashboard(user) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    if (localDateKey(r.created_at) === today) _accumulate(todays[mid], r);
+    if (_recordBusinessDate(r) === today) _accumulate(todays[mid], r);
   });
 
   const list = machines.map(function (m) {
@@ -779,7 +905,7 @@ function getDashboard(user) {
   });
   grand.net = grand.in - grand.out - grand.prize;
 
-  return { machines: list, todayTotal: grand, today: today };
+  return { machines: list, todayTotal: grand, today: today, businessDay: businessDayStatus(user) };
 }
 
 /**
@@ -805,7 +931,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   const m = dbFind('Machines', 'machine_id', machineId);
   if (!m) throw new Error('找不到這台機台');
 
-  const today = todayKey();
+  const today = _currentBusinessDate();
   const total = emptySummary();
   const todaySum = emptySummary();
   const mine = [];
@@ -813,7 +939,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   activeRecords().forEach(function (r) {
     if (String(r.machine_id) !== String(machineId)) return;
     _accumulate(total, r);
-    if (localDateKey(r.created_at) === today) _accumulate(todaySum, r);
+    if (_recordBusinessDate(r) === today) _accumulate(todaySum, r);
     mine.push(r);
   });
 
@@ -868,6 +994,7 @@ function _publicRecord(r) {
     meterEnd: r.meter_end === '' || r.meter_end === undefined ? null : toNumber(r.meter_end),
     userName: name,
     createdAt: r.created_at,
+    businessDate: _recordBusinessDate(r),
     note: r.note || ''
   };
 }
@@ -904,7 +1031,8 @@ function addRecord(user, payload) {
       voided: false,
       voided_by: '',
       voided_at: '',
-      client_token: String(payload.clientToken || '')
+      client_token: String(payload.clientToken || ''),
+      business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
@@ -949,7 +1077,8 @@ function addMeterRecord(user, payload) {
       voided: false,
       voided_by: '',
       voided_at: '',
-      client_token: String(payload.clientToken || '')
+      client_token: String(payload.clientToken || ''),
+      business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
@@ -1014,6 +1143,7 @@ function addPrizeRecord(user, payload) {
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
     const now = nowIso();
+    const businessDate = _currentBusinessDate();
     const note = String(payload.note || '').substring(0, 200);
     const rows = prepared.map(function (p) {
       return {
@@ -1031,7 +1161,8 @@ function addPrizeRecord(user, payload) {
         voided: false,
         voided_by: '',
         voided_at: '',
-        client_token: String(payload.clientToken || '')
+        client_token: String(payload.clientToken || ''),
+        business_date: businessDate
       };
     });
 
@@ -1634,9 +1765,14 @@ function _isValidKey(key) {
 /**
  * 把 preset 換算成 from / to。
  * day=今天、week=本週（週一起）、month=本月（1 號起）、custom=自己給。
+ *
+ * 這裡的「今天」用 _currentBusinessDate()，不是行事曆日期——沒人按過
+ * 「今日營業開始」的話兩者是同一個值，跟以前行為一樣；有進行中的
+ * 營業日，週/月的邊界也該照營業日算，不然凌晨一點行事曆日期跳到隔天，
+ * 但營業日還沒結束，「本週」卻已經算進下一週就怪了。
  */
 function resolveRange(preset, from, to) {
-  const today = todayKey();
+  const today = _currentBusinessDate();
 
   if (preset === 'custom') {
     if (!_isValidKey(from) || !_isValidKey(to)) throw new Error('日期格式不正確');
@@ -1685,7 +1821,7 @@ function getReport(user, params) {
 
   rows.forEach(function (r) {
     _accumulate(summary, r);
-    const key = localDateKey(r.created_at);
+    const key = _recordBusinessDate(r);
     if (daily[key]) _accumulate(daily[key], r);
 
     if (r.type === RECORD_PRIZE) {
@@ -1744,7 +1880,7 @@ function _reportRows(machineIds, range, params) {
 
   return activeRecords().filter(function (r) {
     if (!idSet[String(r.machine_id)]) return false;
-    const key = localDateKey(r.created_at);
+    const key = _recordBusinessDate(r);
     if (key < range.from || key > range.to) return false;
     if (params.type && r.type !== params.type) return false;
     if (params.userId && String(r.user_id) !== String(params.userId)) return false;
@@ -1798,7 +1934,7 @@ function exportCsv(user, params) {
   rows.forEach(function (r) {
     const d = new Date(r.created_at);
     lines.push([
-      _csvCell(localDateKey(r.created_at)),
+      _csvCell(_recordBusinessDate(r)),
       _csvCell(isNaN(d.getTime()) ? '' : Utilities.formatDate(d, _tz(), 'HH:mm:ss')),
       _csvCell(machineNames[String(r.machine_id)] || r.machine_id),
       _csvCell(TYPE_LABELS[r.type] || r.type),
@@ -1859,6 +1995,8 @@ const ACTION_ROLES = {
   addRecord: [ROLE_ADMIN, ROLE_PATROL],
   addPrizeRecord: [ROLE_ADMIN, ROLE_PATROL],
   addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
+  startBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
+  endBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
   saveQuickAmount: [ROLE_ADMIN],
@@ -1968,6 +2106,10 @@ function _dispatch(action, p, user) {
       return addPrizeRecord(user, p);
     case 'addMeterRecord':
       return addMeterRecord(user, p);
+    case 'startBusinessDay':
+      return startBusinessDay(user);
+    case 'endBusinessDay':
+      return endBusinessDay(user);
     case 'voidRecord':
       return voidRecord(user, p.recordId);
 
@@ -2563,6 +2705,99 @@ function _selfTestBody(results) {
     _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 200, meterEnd: 350, clientToken: newId('ct') });
     d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(d.lastMeterReading, 350, '再記一筆後應該更新成最新的下班表讀數');
+  });
+
+  _t(results, '營業日：沒人按過開始/結單，行為跟以前一樣照行事曆日期算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '營業日對照台', sortOrder: 91 }).machineId;
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 10, clientToken: newId('ct') });
+    const d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.records[0].businessDate, todayKey(), '沒有進行中的營業日時，紀錄的營業日期應該退回今天的行事曆日期');
+    _assertEq(d.today.out, 10, '今日彙總應該照行事曆日期正常算進去');
+  });
+
+  _t(results, '營業日：只有管理員跟巡邏人員能按開始/結單，台主不行', function () {
+    _fails({ action: 'startBusinessDay', token: ownerTok }, 'PERMISSION');
+    _fails({ action: 'endBusinessDay', token: ownerTok }, 'PERMISSION');
+  });
+
+  _t(results, '營業日：結單前沒有進行中的營業日，會明確報錯', function () {
+    _fails({ action: 'endBusinessDay', token: patrolTok });
+  });
+
+  _t(results, '營業日：開始之後，記帳會用開始那天的日期，就算實際寫入時間已經跨過午夜', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '跨夜營業日測試台', sortOrder: 92 }).machineId;
+
+    const started = _ok({ action: 'startBusinessDay', token: patrolTok });
+    _assert(started.open, '按下開始之後應該是進行中狀態');
+    _assertEq(started.current.businessDate, todayKey(), '開始當下記錄的營業日期應該是今天');
+
+    // 模擬「晚上開始營業、跨過午夜才打烊」：把這個營業日的 business_date
+    // 手動改成昨天，代表它其實是昨晚開始的，還沒結束就跨到今天了。
+    const bizRow = _openBizDay();
+    const yesterday = _addDays(todayKey(), -1);
+    dbUpdate('BizDays', bizRow._row, { business_date: yesterday });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: patrolTok, machineId: mid, type: 'out', amount: 20, clientToken: newId('ct') });
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.records[0].businessDate, yesterday,
+      '就算實際寫入時間是今天，只要營業日還開著，紀錄就該算進營業日開始那一天（昨天）');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.today, yesterday, '首頁的「今天」應該顯示進行中營業日的日期，不是行事曆日期');
+    _assert(dash.businessDay.open, '首頁應該回報營業中');
+    _assertEq(dash.businessDay.current.businessDate, yesterday, '首頁回報的營業日期應該是昨天');
+    const mine = dash.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(mine.today.out, 20, '這筆紀錄應該被算進「今日」彙總（因為它屬於進行中的營業日）');
+
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    const afterEnd = _ok({ action: 'dashboard', token: adminTok });
+    _assert(!afterEnd.businessDay.open, '結單後應該顯示沒有進行中的營業日');
+    _assertEq(afterEnd.today, todayKey(), '結單後「今天」應該退回行事曆日期');
+
+    // 結單之後再記一筆：沒有進行中的營業日了，退回今天的行事曆日期。
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: newId('ct') });
+    const afterEndDetail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(afterEndDetail.records[0].businessDate, todayKey(), '結單後新記的帳應該用今天的行事曆日期，不是已經結束的營業日');
+  });
+
+  _t(results, '營業日：忘記結單、隔天又按開始，會自動把前一個結掉再開新的', function () {
+    const first = _ok({ action: 'startBusinessDay', token: adminTok });
+    _assert(first.open, '第一次開始應該成功');
+    const firstBizId = _openBizDay().biz_id;
+
+    const second = _ok({ action: 'startBusinessDay', token: patrolTok });
+    _assertEq(second.previousAutoClosed, true, '前一個還開著時再按開始，應該回報有自動結掉前一個');
+
+    const firstRow = dbFind('BizDays', 'biz_id', firstBizId);
+    _assert(toBool(firstRow.auto_closed), '前一個營業日應該被標記成自動結單');
+    _assert(!!firstRow.closed_at, '前一個營業日應該有結束時間');
+
+    const openNow = _openBizDay();
+    _assert(openNow.biz_id !== firstBizId, '目前進行中的應該是第二次開的那筆，不是第一筆');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
+  _t(results, '營業日：報表的日/週/月分組也照營業日算，不是行事曆日期', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '報表營業日測試台', sortOrder: 93 }).machineId;
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const bizRow = _openBizDay();
+    const yesterday = _addDays(todayKey(), -1);
+    dbUpdate('BizDays', bizRow._row, { business_date: yesterday });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+
+    const report = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'day' });
+    _assertEq(report.range.from, yesterday, '報表「日」區間應該用進行中的營業日期，不是今天的行事曆日期');
+    _assertEq(report.summary.out, 30, '報表彙總應該把這筆算進去');
+
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(csv.content.indexOf(yesterday) >= 0, 'CSV 的日期欄應該顯示營業日期（昨天），不是行事曆日期');
+
+    _ok({ action: 'endBusinessDay', token: adminTok });
   });
 
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {

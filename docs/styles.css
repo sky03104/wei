@@ -293,6 +293,10 @@ input[type="date"] { min-width: 0; }
   white-space: nowrap;
 }
 
+.bizday-bar { margin-top: 10px; }
+.bizday-status { text-align: center; margin-bottom: 6px; }
+.bizday-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+
 .machine-list { display: grid; gap: var(--gap); }
 
 .machine-card {

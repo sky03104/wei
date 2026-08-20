@@ -464,6 +464,99 @@ function _selfTestBody(results) {
     _assertEq(d.lastMeterReading, 350, '再記一筆後應該更新成最新的下班表讀數');
   });
 
+  _t(results, '營業日：沒人按過開始/結單，行為跟以前一樣照行事曆日期算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '營業日對照台', sortOrder: 91 }).machineId;
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 10, clientToken: newId('ct') });
+    const d = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(d.records[0].businessDate, todayKey(), '沒有進行中的營業日時，紀錄的營業日期應該退回今天的行事曆日期');
+    _assertEq(d.today.out, 10, '今日彙總應該照行事曆日期正常算進去');
+  });
+
+  _t(results, '營業日：只有管理員跟巡邏人員能按開始/結單，台主不行', function () {
+    _fails({ action: 'startBusinessDay', token: ownerTok }, 'PERMISSION');
+    _fails({ action: 'endBusinessDay', token: ownerTok }, 'PERMISSION');
+  });
+
+  _t(results, '營業日：結單前沒有進行中的營業日，會明確報錯', function () {
+    _fails({ action: 'endBusinessDay', token: patrolTok });
+  });
+
+  _t(results, '營業日：開始之後，記帳會用開始那天的日期，就算實際寫入時間已經跨過午夜', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '跨夜營業日測試台', sortOrder: 92 }).machineId;
+
+    const started = _ok({ action: 'startBusinessDay', token: patrolTok });
+    _assert(started.open, '按下開始之後應該是進行中狀態');
+    _assertEq(started.current.businessDate, todayKey(), '開始當下記錄的營業日期應該是今天');
+
+    // 模擬「晚上開始營業、跨過午夜才打烊」：把這個營業日的 business_date
+    // 手動改成昨天，代表它其實是昨晚開始的，還沒結束就跨到今天了。
+    const bizRow = _openBizDay();
+    const yesterday = _addDays(todayKey(), -1);
+    dbUpdate('BizDays', bizRow._row, { business_date: yesterday });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: patrolTok, machineId: mid, type: 'out', amount: 20, clientToken: newId('ct') });
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.records[0].businessDate, yesterday,
+      '就算實際寫入時間是今天，只要營業日還開著，紀錄就該算進營業日開始那一天（昨天）');
+
+    const dash = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(dash.today, yesterday, '首頁的「今天」應該顯示進行中營業日的日期，不是行事曆日期');
+    _assert(dash.businessDay.open, '首頁應該回報營業中');
+    _assertEq(dash.businessDay.current.businessDate, yesterday, '首頁回報的營業日期應該是昨天');
+    const mine = dash.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(mine.today.out, 20, '這筆紀錄應該被算進「今日」彙總（因為它屬於進行中的營業日）');
+
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    const afterEnd = _ok({ action: 'dashboard', token: adminTok });
+    _assert(!afterEnd.businessDay.open, '結單後應該顯示沒有進行中的營業日');
+    _assertEq(afterEnd.today, todayKey(), '結單後「今天」應該退回行事曆日期');
+
+    // 結單之後再記一筆：沒有進行中的營業日了，退回今天的行事曆日期。
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: newId('ct') });
+    const afterEndDetail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(afterEndDetail.records[0].businessDate, todayKey(), '結單後新記的帳應該用今天的行事曆日期，不是已經結束的營業日');
+  });
+
+  _t(results, '營業日：忘記結單、隔天又按開始，會自動把前一個結掉再開新的', function () {
+    const first = _ok({ action: 'startBusinessDay', token: adminTok });
+    _assert(first.open, '第一次開始應該成功');
+    const firstBizId = _openBizDay().biz_id;
+
+    const second = _ok({ action: 'startBusinessDay', token: patrolTok });
+    _assertEq(second.previousAutoClosed, true, '前一個還開著時再按開始，應該回報有自動結掉前一個');
+
+    const firstRow = dbFind('BizDays', 'biz_id', firstBizId);
+    _assert(toBool(firstRow.auto_closed), '前一個營業日應該被標記成自動結單');
+    _assert(!!firstRow.closed_at, '前一個營業日應該有結束時間');
+
+    const openNow = _openBizDay();
+    _assert(openNow.biz_id !== firstBizId, '目前進行中的應該是第二次開的那筆，不是第一筆');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
+  _t(results, '營業日：報表的日/週/月分組也照營業日算，不是行事曆日期', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '報表營業日測試台', sortOrder: 93 }).machineId;
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const bizRow = _openBizDay();
+    const yesterday = _addDays(todayKey(), -1);
+    dbUpdate('BizDays', bizRow._row, { business_date: yesterday });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+
+    const report = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'day' });
+    _assertEq(report.range.from, yesterday, '報表「日」區間應該用進行中的營業日期，不是今天的行事曆日期');
+    _assertEq(report.summary.out, 30, '報表彙總應該把這筆算進去');
+
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(csv.content.indexOf(yesterday) >= 0, 'CSV 的日期欄應該顯示營業日期（昨天），不是行事曆日期');
+
+    _ok({ action: 'endBusinessDay', token: adminTok });
+  });
+
   _t(results, '修正入幣改版當時欄位錯位：舊紀錄與錯位紀錄都能救回，且天生冪等', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '欄位錯位測試台', sortOrder: 90 }).machineId;
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);

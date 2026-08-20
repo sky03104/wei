@@ -9,17 +9,24 @@
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
   Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at'],
-  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end'],
+  Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
   MeterRates: ['rate_id', 'machine_id', 'rate'],
   Permissions: ['user_id', 'machine_id', 'granted_by', 'granted_at'],
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
-  Config: ['key', 'value']
+  Config: ['key', 'value'],
+  BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed']
 };
 
-/** 這些欄位存 ISO 時間字串，欄位格式必須設成純文字，否則 Sheets 會自作主張轉時區。 */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at'];
+/**
+ * 這些欄位存 ISO 時間字串或 yyyy-MM-dd 日期字串，欄位格式必須設成純文字，
+ * 否則 Sheets 會自作主張轉成日期／時間型別（改天再讀出來就變成 Date 物件，
+ * 不是原本存的字串，字串排序、比對全部跟著壞掉——這正是入幣改版那次
+ * 欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，這裡把 business_date
+ * 也一併鎖住，不要重蹈覆轍）。
+ */
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -35,13 +42,14 @@ const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
   Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
-    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表'],
+    '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
   QuickAmounts: ['快捷編號', '機台編號', '類型', '金額', '顯示文字', '排序'],
   MeterRates: ['設定編號', '機台編號', '每格金額'],
   Permissions: ['帳號編號', '機台編號', '授權人', '授權時間'],
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
-  Config: ['設定鍵', '設定值']
+  Config: ['設定鍵', '設定值'],
+  BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單']
 };
 
 /**
@@ -60,7 +68,8 @@ const SHEET_TAB_NAMES = {
   MeterRates: '入幣費率',
   Permissions: '台主授權',
   Sessions: '登入狀態',
-  Config: '系統設定'
+  Config: '系統設定',
+  BizDays: '營業日'
 };
 
 /** 單次執行內的分頁快取，避免同一次請求重複讀同一張表。 */
