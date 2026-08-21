@@ -144,7 +144,8 @@ const SpreadsheetApp = {
     if (!ss) throw new Error('找不到試算表 ' + id);
     return ss;
   },
-  getActive() { return null; }
+  getActive() { return null; },
+  flush() {}
 };
 
 const DriveApp = {

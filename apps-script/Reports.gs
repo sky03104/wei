@@ -315,6 +315,12 @@ function exportLedgerXlsx(user, params) {
 
     sheet.autoResizeColumns(1, numCols);
 
+    // 一定要在打匯出網址之前 flush：剛套用的樣式（底色／字色）是透過
+    // Sheets service 排入佇列的操作，沒有 flush 過就直接打匯出網址，
+    // Google 後端有時候還沒把這些樣式真的寫進試算表，匯出抓到的會是
+    // 「數值都對，但底色/字色全部消失」的半套版本——這是已知的 GAS 陷阱。
+    SpreadsheetApp.flush();
+
     const url = 'https://docs.google.com/spreadsheets/d/' + id + '/export?format=xlsx';
     const resp = UrlFetchApp.fetch(url, {
       headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
