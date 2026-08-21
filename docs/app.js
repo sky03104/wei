@@ -698,7 +698,7 @@ function ledgerCard(data) {
     h('div', { class: 'panel-head' }, [
       h('h3', { text: '今日現金結餘明細' }),
       canRecord()
-        ? h('button', { class: 'btn btn-sm btn-ghost', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
+        ? h('button', { class: 'btn btn-sm btn-prize', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
         : null
     ]),
     h('div', {}, rows.map(([label, value]) => h('div', { class: 'ledger-row' }, [
@@ -785,8 +785,8 @@ function businessDayBar(biz) {
   return h('div', { class: 'bizday-bar' }, [
     h('div', { class: 'bizday-status small muted', text: status }),
     h('div', { class: 'bizday-actions' }, [
-      h('button', { class: 'btn btn-sm btn-ghost', onclick: doStartBusinessDay }, '今日營業開始'),
-      h('button', { class: 'btn btn-sm btn-ghost', onclick: doEndBusinessDay }, '今日營業結單')
+      h('button', { class: 'btn btn-in', onclick: doStartBusinessDay }, '▶ 今日營業開始'),
+      h('button', { class: 'btn btn-out', onclick: doEndBusinessDay }, '⏹ 今日營業結單')
     ])
   ]);
 }
