@@ -301,10 +301,15 @@ function getDashboard(user) {
     return ids.indexOf(String(m.machine_id)) >= 0;
   });
 
+  const machineById = {};
+  machines.forEach(function (m) { machineById[String(m.machine_id)] = m; });
+
   const today = _currentBusinessDate();
   const totals = {};
   const todays = {};
-  ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
+  // totals 是「累計」（全部歷史加總），要從封存前累計開始疊；
+  // todays 只看今天，跟封存無關，一律從 0 開始。
+  ids.forEach(function (id) { totals[id] = _seedSummary(machineById[id] || {}); todays[id] = emptySummary(); });
 
   let today432Count = 0;
   let today432Amount = 0;
@@ -416,7 +421,8 @@ function homeBootstrap(user) {
  */
 function _buildMachineDetail(m, records, recordLimit) {
   const today = _currentBusinessDate();
-  const total = emptySummary();
+  // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
+  const total = _seedSummary(m);
   const todaySum = emptySummary();
   let today432Count = 0;
 

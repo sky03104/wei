@@ -219,6 +219,45 @@ const LockService = {
 
 const Session = { getScriptTimeZone: () => 'Asia/Taipei' };
 
+// ── 觸發器 ──────────────────────────────────────────────
+//
+// 只模擬 archiveOldRecords() 那種「裝一個每月執行一次」的時間觸發器需要的
+// 最小介面：newTrigger().timeBased().onMonthDay().atHour().create()，
+// 跟 getProjectTriggers() 讓程式碼可以判斷「已經裝過了，不要重複裝」。
+// 不會真的排程執行——本機測試只驗證「有沒有裝上去」，不驗證它真的會
+// 在某個時間點觸發（那件事只有部署到真正的 GAS 上才驗得到）。
+
+const _triggers = [];
+let _triggerSeq = 0;
+
+const ScriptApp = {
+  getProjectTriggers() {
+    return _triggers.map((t) => ({
+      getHandlerFunction: () => t.handlerFunction,
+      getUniqueId: () => t.id
+    }));
+  },
+  newTrigger(handlerFunction) {
+    const spec = { handlerFunction };
+    const builder = {
+      timeBased() { return builder; },
+      onMonthDay(d) { spec.monthDay = d; return builder; },
+      atHour(h) { spec.hour = h; return builder; },
+      create() {
+        const id = 'trig_' + (++_triggerSeq);
+        _triggers.push(Object.assign({ id: id }, spec));
+        return { getUniqueId: () => id };
+      }
+    };
+    return builder;
+  },
+  deleteTrigger(trigger) {
+    const id = trigger.getUniqueId();
+    const idx = _triggers.findIndex((t) => t.id === id);
+    if (idx >= 0) _triggers.splice(idx, 1);
+  }
+};
+
 const ContentService = {
   MimeType: { JSON: 'application/json' },
   createTextOutput(text) {
@@ -231,7 +270,7 @@ const Logger = { log: (msg) => logLines.push(String(msg)) };
 
 // ── 組裝 ────────────────────────────────────────────────
 
-const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'Reports.gs', 'Code.gs', 'Test.gs'];
+const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
 
 /**
  * 載入 apps-script/*.gs 到一個模擬環境裡。
@@ -255,7 +294,7 @@ function createGasSandbox(options) {
 
   const sandbox = {
     SpreadsheetApp, DriveApp, PropertiesService, CacheService,
-    Utilities, LockService, Session, ContentService, Logger,
+    Utilities, LockService, Session, ScriptApp, ContentService, Logger,
     console, Date, JSON, Math, Object, Array, String, Number,
     RegExp, Error, isNaN, isFinite, Intl, Promise
   };

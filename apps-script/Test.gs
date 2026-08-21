@@ -1099,6 +1099,85 @@ function _selfTestBody(results) {
     _assertEq(lines[2], '出幣,0,0,30', '出幣小計：沒紀錄的兩天是 0，今天是 30');
   });
 
+  // ── 按季自動封存舊資料 ──
+  _t(results, '_quarterKey：日期換算季度正確', function () {
+    _assertEq(_quarterKey('2026-01-15'), '2026Q1', '1月屬於Q1');
+    _assertEq(_quarterKey('2026-03-31'), '2026Q1', '3月底還是Q1');
+    _assertEq(_quarterKey('2026-04-01'), '2026Q2', '4月開始是Q2');
+    _assertEq(_quarterKey('2026-08-21'), '2026Q3', '8月屬於Q3');
+    _assertEq(_quarterKey('2026-12-31'), '2026Q4', '12月屬於Q4');
+  });
+
+  _t(results, '封存：把上一季以前的紀錄搬到封存分頁，且不影響今天的紀錄', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存測試台', sortOrder: 96 }).machineId;
+    const oldDate = _addDays(todayKey(), -200); // 200 天前，保證是更早的季度
+
+    const oldIn = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 1000, clientToken: newId('ct') }).records[0];
+    const oldOut = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 300, clientToken: newId('ct') }).records[0];
+    [oldIn, oldOut].forEach(function (rec) {
+      const row = dbFind('Records', 'record_id', rec.recordId);
+      dbUpdate('Records', row._row, { business_date: oldDate });
+    });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 50, clientToken: newId('ct') });
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.total.in, 1050, '封存前：累計入幣應該包含舊紀錄跟今天的紀錄');
+    _assertEq(before.total.out, 300, '封存前：累計出幣應該包含舊紀錄');
+    _assertEq(before.records.length, 3, '封存前：明細應該看得到全部 3 筆');
+
+    const oldQ = _quarterKey(oldDate);
+    const result = archiveOldRecords();
+    _assert(result.archived >= 2, '至少應該封存剛剛那兩筆舊紀錄，實際 ' + result.archived);
+    _assert(result.quarters.indexOf(oldQ) >= 0, '回傳的季度清單應該包含 ' + oldQ);
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.total.in, 1050, '封存後：累計入幣要靠封存前累計補回來，不能掉回 50');
+    _assertEq(after.total.out, 300, '封存後：累計出幣一樣要對');
+    _assertEq(after.records.length, 1, '封存後：明細應該只剩今天那 1 筆，舊的已經搬走');
+    _assertEq(after.today.in, 50, '今日彙總不該被封存動到');
+
+    const archiveKey = 'RecordsArchive_' + oldQ;
+    const archived = dbReadAll(archiveKey).filter(function (r) { return String(r.machine_id) === mid; });
+    _assertEq(archived.length, 2, '封存分頁應該存有剛剛那兩筆舊紀錄');
+    _assertEq(configGet('last_archived_quarter', ''), oldQ, 'Config 應該記下最後封存到哪一季');
+
+    const again = archiveOldRecords();
+    _assertEq(again.archived, 0, '天生冪等：再跑一次不該重複封存');
+  });
+
+  _t(results, '封存：每月自動檢查的觸發器，setup() 只會裝一次，不會重複裝', function () {
+    const before = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'archiveOldRecords'; }).length;
+    const first = _ensureArchiveTrigger();
+    const second = _ensureArchiveTrigger();
+    _assert(before === 0 ? first === true : true, '沒裝過的話第一次呼叫應該回傳 true（真的裝了）');
+    _assertEq(second, false, '已經裝過了，第二次呼叫應該回傳 false');
+    const after = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'archiveOldRecords'; }).length;
+    _assertEq(after, 1, '不管呼叫幾次，觸發器都只該有 1 個');
+
+    const msg = setup();
+    _assert(msg.indexOf('每月自動封存檢查已經設定過，略過') >= 0, 'setup() 訊息應該說明觸發器已經裝過，不是又裝一個');
+  });
+
+  _t(results, '封存：報表／匯出CSV 選到已封存的舊區間會明確報錯，選現在這一季不受影響', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存區間測試台', sortOrder: 95 }).machineId;
+    const oldDate = _addDays(todayKey(), -300);
+    const rec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 10, clientToken: newId('ct') }).records[0];
+    dbUpdate('Records', dbFind('Records', 'record_id', rec.recordId)._row, { business_date: oldDate });
+    _clearSheetCache();
+    archiveOldRecords();
+
+    _fails({ action: 'report', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
+    _fails({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
+
+    // 選現在這一季（今天）不該被誤擋
+    const rep = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(rep, '查詢今天的報表不該被封存區間擋下來');
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(csv, '匯出今天的 CSV 不該被封存區間擋下來');
+  });
+
   // ── 雜項 ──
   _t(results, '不支援的 action 會被拒絕', function () {
     _fails({ action: 'dropAllTables', token: adminTok });

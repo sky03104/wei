@@ -80,6 +80,7 @@ function _eachDay(from, to) {
 function getReport(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
+  _assertRangeNotArchived(range);
   const rows = _reportRows(scope.ids, range, params);
 
   const summary = emptySummary();
@@ -203,6 +204,7 @@ function _byCreatedAtAsc(a, b) {
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
+  _assertRangeNotArchived(range);
   const rows = _reportRows(scope.ids, range, params);
   const days = _eachDay(range.from, range.to);
 

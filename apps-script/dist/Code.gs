@@ -23,7 +23,8 @@
 /** 每個分頁的欄位順序。setup() 會照這個建表頭。 */
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
-  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category', 'icon'],
+  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category', 'icon',
+    'carry_in', 'carry_out', 'carry_prize', 'carry_chip_in', 'carry_chip_out'],
   Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
@@ -64,7 +65,8 @@ const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 
  */
 const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
-  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類', '圖案'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類', '圖案',
+    '封存前累計入幣', '封存前累計出幣', '封存前累計活動', '封存前累計開分', '封存前累計洗分'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
     '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
@@ -1075,10 +1077,15 @@ function getDashboard(user) {
     return ids.indexOf(String(m.machine_id)) >= 0;
   });
 
+  const machineById = {};
+  machines.forEach(function (m) { machineById[String(m.machine_id)] = m; });
+
   const today = _currentBusinessDate();
   const totals = {};
   const todays = {};
-  ids.forEach(function (id) { totals[id] = emptySummary(); todays[id] = emptySummary(); });
+  // totals 是「累計」（全部歷史加總），要從封存前累計開始疊；
+  // todays 只看今天，跟封存無關，一律從 0 開始。
+  ids.forEach(function (id) { totals[id] = _seedSummary(machineById[id] || {}); todays[id] = emptySummary(); });
 
   let today432Count = 0;
   let today432Amount = 0;
@@ -1190,7 +1197,8 @@ function homeBootstrap(user) {
  */
 function _buildMachineDetail(m, records, recordLimit) {
   const today = _currentBusinessDate();
-  const total = emptySummary();
+  // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
+  const total = _seedSummary(m);
   const todaySum = emptySummary();
   let today432Count = 0;
 
@@ -2146,6 +2154,7 @@ function _eachDay(from, to) {
 function getReport(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
+  _assertRangeNotArchived(range);
   const rows = _reportRows(scope.ids, range, params);
 
   const summary = emptySummary();
@@ -2269,6 +2278,7 @@ function _byCreatedAtAsc(a, b) {
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
+  _assertRangeNotArchived(range);
   const rows = _reportRows(scope.ids, range, params);
   const days = _eachDay(range.from, range.to);
 
@@ -2319,6 +2329,194 @@ function exportCsv(user, params) {
     content: lines.join('\r\n'),
     rowCount: rows.length
   };
+}
+
+// ────────────────────────────────────────────────────────────
+// Archive.gs
+// ────────────────────────────────────────────────────────────
+/**
+ * Archive.gs — 每季自動把上一季（以前）的 Records 搬到封存分頁
+ *
+ * 背景：每次操作（首頁、機台詳細頁、報表、匯出 CSV）都會把整張 Records
+ * 分頁全部讀進記憶體再篩選——不是只抓畫面顯示的區間，所以效能是跟著
+ * 「累計總筆數」變慢，不是跟著「你在看的區間」。筆數多到一個程度
+ * （大概幾萬筆以上）就會開始有感地變慢。
+ *
+ * 這裡的做法：把已經過去、不會再變動的季度資料搬到獨立的封存分頁
+ * （例如「封存_2026Q1」），Records 只留「目前這一季」，讀取速度就
+ * 只跟「這一季的筆數」有關，不會隨著開店年數一直往上疊加。
+ *
+ * 封存前累計（carry_in/out/prize/chip_in/chip_out）：機台詳細頁的
+ * 「累計淨收益」是歷史全部加總，紀錄搬去封存分頁之後這個數字不能
+ * 憑空掉下去——封存當下先把要搬走的那批紀錄加總進 Machines 分頁的
+ * 這幾欄，之後「累計」＝這幾欄＋目前還留在 Records 裡的量。
+ *
+ * 觸發方式：setup() 會確保一個「每月 2 號凌晨 3 點」的時間觸發器存在，
+ * 呼叫 archiveOldRecords()。這支函式本身天生冪等（只會搬「目前這一季」
+ * 以前的資料，沒有東西可搬就安全地什麼都不做），所以固定每月檢查一次
+ * 就能保證封存進度不會落後超過一個月，不需要另外判斷「現在是不是剛好
+ * 換季」。
+ */
+
+/** 'yyyy-MM-dd' → '2026Q3'。 */
+function _quarterKey(dateKey) {
+  const p = String(dateKey).split('-');
+  const y = Number(p[0]);
+  const m = Number(p[1]);
+  const q = Math.ceil(m / 3);
+  return y + 'Q' + q;
+}
+
+function _archiveTabName(quarterKey) {
+  return '封存_' + quarterKey;
+}
+
+/**
+ * 幫某一季的封存分頁動態註冊 SCHEMA／HEADER_LABELS／SHEET_TAB_NAMES，
+ * 讓 _sheet()／dbInsertMany() 這些既有的存取層函式可以直接把這個
+ * 「假分頁名稱」當一般分頁用，不用另外寫一套專門存取封存分頁的程式碼。
+ * 欄位結構跟 Records 完全一樣，只是分頁名稱不同。
+ */
+function _registerArchiveSheet(quarterKey) {
+  const key = 'RecordsArchive_' + quarterKey;
+  if (!SCHEMA[key]) {
+    SCHEMA[key] = SCHEMA.Records.slice();
+    HEADER_LABELS[key] = HEADER_LABELS.Records.slice();
+    SHEET_TAB_NAMES[key] = _archiveTabName(quarterKey);
+  }
+  return key;
+}
+
+/** 從一批要被搬走的紀錄，算出每台機台要疊加進「封存前累計」的量。 */
+function _sumCarryForward(records) {
+  const byMachine = {};
+  records.forEach(function (r) {
+    const mid = String(r.machine_id);
+    if (!byMachine[mid]) byMachine[mid] = { in: 0, out: 0, prize: 0, chipIn: 0, chipOut: 0 };
+    const amt = toNumber(r.amount);
+    if (r.type === RECORD_IN) byMachine[mid].in += amt;
+    else if (r.type === RECORD_OUT) byMachine[mid].out += amt;
+    else if (r.type === RECORD_PRIZE) byMachine[mid].prize += amt;
+    else if (r.type === RECORD_CHIP_IN) byMachine[mid].chipIn += amt;
+    else if (r.type === RECORD_CHIP_OUT) byMachine[mid].chipOut += amt;
+  });
+  return byMachine;
+}
+
+/** 把算好的「封存前累計」疊加寫回 Machines 分頁對應的機台列。 */
+function _applyCarryForward(byMachine) {
+  const machines = dbReadAll('Machines');
+  Object.keys(byMachine).forEach(function (mid) {
+    const m = machines.filter(function (x) { return String(x.machine_id) === mid; })[0];
+    if (!m) return; // 機台已經不存在（目前系統沒有刪機台功能，防禦性略過）
+    const add = byMachine[mid];
+    dbUpdate('Machines', m._row, {
+      carry_in: toNumber(m.carry_in) + add.in,
+      carry_out: toNumber(m.carry_out) + add.out,
+      carry_prize: toNumber(m.carry_prize) + add.prize,
+      carry_chip_in: toNumber(m.carry_chip_in) + add.chipIn,
+      carry_chip_out: toNumber(m.carry_chip_out) + add.chipOut
+    });
+  });
+}
+
+/**
+ * 「累計」用的起始值：從沒被封存過的機台一律是 0（等同 emptySummary()），
+ * 封存過的機台會帶入封存時記下來的「封存前累計」，讓機台詳細頁的
+ * 「累計淨收益」不會因為舊紀錄搬去封存分頁就憑空掉下去。
+ */
+function _seedSummary(m) {
+  const s = {
+    in: toNumber(m.carry_in),
+    out: toNumber(m.carry_out),
+    prize: toNumber(m.carry_prize),
+    chipIn: toNumber(m.carry_chip_in),
+    chipOut: toNumber(m.carry_chip_out),
+    net: 0,
+    chipNet: 0
+  };
+  s.net = s.in - s.out - s.prize;
+  s.chipNet = s.chipIn - s.chipOut;
+  return s;
+}
+
+/**
+ * 把「目前這一季」以前、還留在 Records 的紀錄搬到對應季度的封存分頁。
+ *
+ * 天生冪等：只挑「業務日期的季度 < 目前這一季」的紀錄，已經搬走的
+ * 紀錄不在 Records 裡了，重跑不會重複搬；沒有東西可搬時安全地
+ * 什麼都不做。可能一次橫跨好幾個季度（例如超過一季沒執行過），
+ * 這裡會依季分桶、各自搬進各自的封存分頁。
+ */
+function archiveOldRecords() {
+  return withLock(function () {
+    const currentQ = _quarterKey(_currentBusinessDate());
+    const rows = dbReadAll('Records');
+
+    const toArchive = rows.filter(function (r) {
+      return _quarterKey(_recordBusinessDate(r)) < currentQ;
+    });
+    if (!toArchive.length) {
+      return { archived: 0, quarters: [] };
+    }
+
+    const buckets = {};
+    toArchive.forEach(function (r) {
+      const q = _quarterKey(_recordBusinessDate(r));
+      if (!buckets[q]) buckets[q] = [];
+      buckets[q].push(r);
+    });
+
+    // 封存前先把每台機台的「封存前累計」補上，這批紀錄從 Records
+    // 消失後，machineDetail 的「累計淨收益」才不會憑空掉下去。
+    _applyCarryForward(_sumCarryForward(toArchive));
+
+    const quarters = Object.keys(buckets).sort();
+    quarters.forEach(function (q) {
+      const key = _registerArchiveSheet(q);
+      dbInsertMany(key, buckets[q]);
+    });
+
+    dbDeleteRows('Records', toArchive.map(function (r) { return r._row; }));
+
+    configSet('last_archived_quarter', quarters[quarters.length - 1]);
+    configSet('last_archived_at', nowIso());
+
+    return { archived: toArchive.length, quarters: quarters };
+  });
+}
+
+/**
+ * 確保「每月自動封存檢查」的時間觸發器存在。setup() 會呼叫這支。
+ * 用專案既有的觸發器清單判斷「已經裝過了」，重跑 setup() 不會疊加裝出
+ * 好幾個一樣的觸發器。回傳這次是不是真的新裝了一個。
+ */
+function _ensureArchiveTrigger() {
+  const already = ScriptApp.getProjectTriggers().some(function (t) {
+    return t.getHandlerFunction() === 'archiveOldRecords';
+  });
+  if (already) return false;
+  ScriptApp.newTrigger('archiveOldRecords')
+    .timeBased()
+    .onMonthDay(2)
+    .atHour(3)
+    .create();
+  return true;
+}
+
+/**
+ * 報表／匯出 CSV 選到的區間如果早於「已封存」的季度，直接明確報錯，
+ * 不要默默算出不完整的數字——那些資料還在試算表裡，只是搬去了封存
+ * 分頁，系統目前不會跨分頁合併查詢，使用者要自己去對應的封存分頁看。
+ */
+function _assertRangeNotArchived(range) {
+  const lastArchived = configGet('last_archived_quarter', '');
+  if (!lastArchived) return; // 還沒封存過，不用管
+  if (_quarterKey(range.from) > lastArchived) return;
+  throw new Error(
+    '查詢區間包含已封存的舊資料（' + lastArchived + ' 以前，含）。'
+    + '系統只查得到封存之後的資料，更早的部分請到試算表「' + _archiveTabName(_quarterKey(range.from)) + '」等封存分頁查看。'
+  );
 }
 
 // ────────────────────────────────────────────────────────────
@@ -2544,6 +2742,11 @@ function setup() {
 
   _pepper();
   out.push('PEPPER 就緒');
+
+  const triggerInstalled = _ensureArchiveTrigger();
+  out.push(triggerInstalled
+    ? '已設定每月自動封存檢查（每月 2 號凌晨 3 點，會把上一季以前還留在「紀錄」分頁的資料搬去封存分頁）'
+    : '每月自動封存檢查已經設定過，略過');
 
   const props = PropertiesService.getScriptProperties();
   const admins = dbReadAll('Users').filter(function (u) { return String(u.role) === ROLE_ADMIN; });
@@ -3719,6 +3922,85 @@ function _selfTestBody(results) {
       '三天區間應該有三欄，由舊到新排列');
     _assertEq(lines[1], '1,,,30', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料');
     _assertEq(lines[2], '出幣,0,0,30', '出幣小計：沒紀錄的兩天是 0，今天是 30');
+  });
+
+  // ── 按季自動封存舊資料 ──
+  _t(results, '_quarterKey：日期換算季度正確', function () {
+    _assertEq(_quarterKey('2026-01-15'), '2026Q1', '1月屬於Q1');
+    _assertEq(_quarterKey('2026-03-31'), '2026Q1', '3月底還是Q1');
+    _assertEq(_quarterKey('2026-04-01'), '2026Q2', '4月開始是Q2');
+    _assertEq(_quarterKey('2026-08-21'), '2026Q3', '8月屬於Q3');
+    _assertEq(_quarterKey('2026-12-31'), '2026Q4', '12月屬於Q4');
+  });
+
+  _t(results, '封存：把上一季以前的紀錄搬到封存分頁，且不影響今天的紀錄', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存測試台', sortOrder: 96 }).machineId;
+    const oldDate = _addDays(todayKey(), -200); // 200 天前，保證是更早的季度
+
+    const oldIn = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 1000, clientToken: newId('ct') }).records[0];
+    const oldOut = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 300, clientToken: newId('ct') }).records[0];
+    [oldIn, oldOut].forEach(function (rec) {
+      const row = dbFind('Records', 'record_id', rec.recordId);
+      dbUpdate('Records', row._row, { business_date: oldDate });
+    });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 50, clientToken: newId('ct') });
+
+    const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(before.total.in, 1050, '封存前：累計入幣應該包含舊紀錄跟今天的紀錄');
+    _assertEq(before.total.out, 300, '封存前：累計出幣應該包含舊紀錄');
+    _assertEq(before.records.length, 3, '封存前：明細應該看得到全部 3 筆');
+
+    const oldQ = _quarterKey(oldDate);
+    const result = archiveOldRecords();
+    _assert(result.archived >= 2, '至少應該封存剛剛那兩筆舊紀錄，實際 ' + result.archived);
+    _assert(result.quarters.indexOf(oldQ) >= 0, '回傳的季度清單應該包含 ' + oldQ);
+
+    const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(after.total.in, 1050, '封存後：累計入幣要靠封存前累計補回來，不能掉回 50');
+    _assertEq(after.total.out, 300, '封存後：累計出幣一樣要對');
+    _assertEq(after.records.length, 1, '封存後：明細應該只剩今天那 1 筆，舊的已經搬走');
+    _assertEq(after.today.in, 50, '今日彙總不該被封存動到');
+
+    const archiveKey = 'RecordsArchive_' + oldQ;
+    const archived = dbReadAll(archiveKey).filter(function (r) { return String(r.machine_id) === mid; });
+    _assertEq(archived.length, 2, '封存分頁應該存有剛剛那兩筆舊紀錄');
+    _assertEq(configGet('last_archived_quarter', ''), oldQ, 'Config 應該記下最後封存到哪一季');
+
+    const again = archiveOldRecords();
+    _assertEq(again.archived, 0, '天生冪等：再跑一次不該重複封存');
+  });
+
+  _t(results, '封存：每月自動檢查的觸發器，setup() 只會裝一次，不會重複裝', function () {
+    const before = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'archiveOldRecords'; }).length;
+    const first = _ensureArchiveTrigger();
+    const second = _ensureArchiveTrigger();
+    _assert(before === 0 ? first === true : true, '沒裝過的話第一次呼叫應該回傳 true（真的裝了）');
+    _assertEq(second, false, '已經裝過了，第二次呼叫應該回傳 false');
+    const after = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'archiveOldRecords'; }).length;
+    _assertEq(after, 1, '不管呼叫幾次，觸發器都只該有 1 個');
+
+    const msg = setup();
+    _assert(msg.indexOf('每月自動封存檢查已經設定過，略過') >= 0, 'setup() 訊息應該說明觸發器已經裝過，不是又裝一個');
+  });
+
+  _t(results, '封存：報表／匯出CSV 選到已封存的舊區間會明確報錯，選現在這一季不受影響', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存區間測試台', sortOrder: 95 }).machineId;
+    const oldDate = _addDays(todayKey(), -300);
+    const rec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 10, clientToken: newId('ct') }).records[0];
+    dbUpdate('Records', dbFind('Records', 'record_id', rec.recordId)._row, { business_date: oldDate });
+    _clearSheetCache();
+    archiveOldRecords();
+
+    _fails({ action: 'report', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
+    _fails({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
+
+    // 選現在這一季（今天）不該被誤擋
+    const rep = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(rep, '查詢今天的報表不該被封存區間擋下來');
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(csv, '匯出今天的 CSV 不該被封存區間擋下來');
   });
 
   // ── 雜項 ──

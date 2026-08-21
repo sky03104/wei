@@ -24,7 +24,7 @@ const OUT_FILE = path.join(OUT_DIR, 'Code.gs');
 
 // 執行順序不影響結果（GAS 是共用作用域），這裡照「資料層 → 邏輯層 → 進入點 → 測試」排，
 // 純粹是讓人讀合併後的檔案時比較順。
-const FILES = ['Db.gs', 'Auth.gs', 'Service.gs', 'Reports.gs', 'Code.gs', 'Test.gs'];
+const FILES = ['Db.gs', 'Auth.gs', 'Service.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
 
 function divider(name) {
   const bar = '// ' + '─'.repeat(60);

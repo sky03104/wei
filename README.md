@@ -105,9 +105,9 @@ npm run test:e2e     # 用真的瀏覽器跑流程測試（需要先開著 npm r
 npm run icons        # 重新產生 App 圖示
 ```
 
-**後端的維護方式**：實際會改的原始碼是 `apps-script/` 底下 6 個分開的檔案
+**後端的維護方式**：實際會改的原始碼是 `apps-script/` 底下 7 個分開的檔案
 （`Db.gs` 資料層、`Auth.gs` 認證、`Service.gs` 業務邏輯、`Reports.gs` 報表、
-`Code.gs` 路由、`Test.gs` 測試）。改完執行 `npm run bundle` 重新產生
+`Archive.gs` 按季自動封存、`Code.gs` 路由、`Test.gs` 測試）。改完執行 `npm run bundle` 重新產生
 `apps-script/dist/Code.gs`——這份合併檔案才是要貼進 GAS 的東西。
 `npm test` 會檢查合併檔案是不是最新版本，忘記重跑會直接測試失敗，
 不會有「原始碼改了、貼上去的版本卻沒跟著改」這種事。
