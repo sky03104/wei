@@ -453,8 +453,8 @@ input[type="date"] { min-width: 0; }
 .report-stats .stat { padding: 12px; }
 .report-stats .stat-value { font-size: 20px; }
 
-.chart-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-.chart { display: block; min-width: 100%; }
+.chart-wrap { min-width: 0; }
+.chart { display: block; width: 100%; height: 160px; }
 .chart .bar-pos { fill: var(--in); }
 .chart .bar-neg { fill: var(--danger); }
 .chart .axis { stroke: var(--border); stroke-width: 1; }

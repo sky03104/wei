@@ -1522,6 +1522,9 @@ function viewReport() {
 
 /** 純手繪 SVG 長條圖：每日淨收益，正值綠、負值紅。 */
 function trendCard(trend) {
+  // width 只是給下面算長條間距、字型密度用的「邏輯座標」，不是真的畫面像素寬——
+  // 不管 trend 有幾天，viewBox 都會用這個邏輯寬度，但透過 preserveAspectRatio="none"
+  // 硬拉伸成卡片實際的寬度，所以不管幾天的資料都會直接塞進卡片裡，不會橫向捲動。
   const width = Math.max(300, trend.length * 34);
   const height = 160;
   const padTop = 12;
@@ -1534,9 +1537,8 @@ function trendCard(trend) {
   const svgNs = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNs, 'svg');
   svg.setAttribute('class', 'chart');
-  svg.setAttribute('width', String(width));
-  svg.setAttribute('height', String(height));
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+  svg.setAttribute('preserveAspectRatio', 'none');
 
   const zeroY = padTop + plot / 2;
   const axis = document.createElementNS(svgNs, 'line');
