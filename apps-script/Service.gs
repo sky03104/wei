@@ -15,7 +15,7 @@ const MACHINE_CATEGORY_DICE = 'dice';
 const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
 /** 機台卡片用的像素風圖案款式，對應前端 docs/app.js 的 MACHINE_ICON_MAPS。 */
-const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall'];
+const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall', 'dice'];
 const DEFAULT_MACHINE_ICON = 'classic';
 
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */

@@ -789,7 +789,7 @@ const MACHINE_CATEGORY_DICE = 'dice';
 const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
 /** 機台卡片用的像素風圖案款式，對應前端 docs/app.js 的 MACHINE_ICON_MAPS。 */
-const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall'];
+const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall', 'dice'];
 const DEFAULT_MACHINE_ICON = 'classic';
 
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
@@ -3073,7 +3073,7 @@ function _selfTestBody(results) {
     _assertEq(detail.machine.icon, 'classic', 'machineDetail 也應該預設 classic');
   });
 
-  _t(results, '機台圖案：可以指定成 round/twin/tall，之後編輯（不像分類）隨時能再改', function () {
+  _t(results, '機台圖案：可以指定成 round/twin/tall/dice，之後編輯（不像分類）隨時能再改', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '圖案測試台', sortOrder: 33, icon: 'round' }).machineId;
     let found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
     _assertEq(found.icon, 'round', '新增時指定的圖案應該存起來');
@@ -3085,6 +3085,14 @@ function _selfTestBody(results) {
     });
     found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
     _assertEq(found.icon, 'twin', '編輯時應該可以把圖案換成別款，不像分類會被鎖住');
+
+    _ok({
+      action: 'adminSaveMachine', token: adminTok, machineId: mid,
+      name: found.name, location: found.location, status: found.status, color: found.color, sortOrder: found.sortOrder,
+      icon: 'dice'
+    });
+    found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'dice', '新增的夾骰子款也要能選');
   });
 
   _t(results, '機台圖案：給不認得的鍵值會落回 classic，不會整個請求失敗', function () {

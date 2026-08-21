@@ -100,14 +100,41 @@ const PIXEL_MACHINE_TALL = [
   '..KK........KK..'
 ];
 
+/** 夾骰子機：跟經典款共用同一套機身／爪子，把底下的娃娃換成兩顆有點數的骰子。 */
+const PIXEL_MACHINE_DICE = [
+  '................',
+  '..KKKKKKKKKKKK..',
+  '..KLLLLLLLLLLK..',
+  '..KLBBBBBBBBLK..',
+  '.KKKKKKKKKKKKKK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGCCCCCCCCGBK.',
+  '.KBGGGGCCGGGGBK.',
+  '.KBGGGCCCCGGGBK.',
+  '.KBGGGCGGCGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBWWWWGGWKWWBK.',
+  '.KBWWWWGGWWWWBK.',
+  '.KBWKKWGGWWWWBK.',
+  '.KBWWWWGGWWKWBK.',
+  '.KKKKKKKKKKKKKK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KBSSBBBBBBWWBK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KKKKKKKKKKKKKK.',
+  '..KK........KK..'
+];
+
 /** 圖案鍵值 → 對應的像素圖陣列；經典款以外都是後來新增的機台圖案選項。 */
 const MACHINE_ICON_MAPS = {
   classic: PIXEL_MACHINE,
   round: PIXEL_MACHINE_ROUND,
   twin: PIXEL_MACHINE_TWIN,
-  tall: PIXEL_MACHINE_TALL
+  tall: PIXEL_MACHINE_TALL,
+  dice: PIXEL_MACHINE_DICE
 };
-const MACHINE_ICON_LABELS = { classic: '經典', round: '圓頂', twin: '雙爪', tall: '招牌' };
+const MACHINE_ICON_LABELS = { classic: '經典', round: '圓頂', twin: '雙爪', tall: '招牌', dice: '骰子' };
 const DEFAULT_MACHINE_ICON = 'classic';
 
 const STATUS_COLORS = { running: '#4ADE80', maintenance: '#FBBF24', offline: '#6B7488' };
