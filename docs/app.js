@@ -185,7 +185,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v19';
+const APP_VERSION = 'v20';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -926,14 +926,16 @@ function viewElectronicMachine(d, nav, hero, switcher) {
 }
 
 /**
- * 兩排可以橫向捲動的機台小按鈕，讓巡機時可以直接跳下一台，不用先按
+ * 好幾排可以橫向捲動的機台小按鈕，讓巡機時可以直接跳下一台，不用先按
  * 「返回主畫面」再從列表點一次。資料直接沿用 state.home（首頁載入時
  * 就有了，不用為了這排按鈕多打一次 API）；只有一台機台或首頁資料還
  * 沒載入過時就不顯示，沒有意義。
  *
- * 骰台跟電子機台分開各一排——併成一排的話機台一多（尤其兩種都有時）
- * 那排籤會長到要一直滑，而且兩種機台的記帳方式完全不同（入幣/出幣/
- * 活動 vs 開分/洗分），混在一起也容易點錯台。
+ * 骰台跟電子機台分開排——併在一起的話機台一多（尤其兩種都有時）那排
+ * 籤會長到要一直滑，而且兩種機台的記帳方式完全不同（入幣/出幣/活動
+ * vs 開分/洗分），混在一起也容易點錯台。同一分類機台超過
+ * SWITCHER_CHUNK_SIZE 台（例如骰台有 20 台）還會再往下分成好幾排，
+ * 每排最多這個數字，不用在一排裡橫向滑很遠才找得到最後幾台。
  */
 /**
  * 記住上一次 machineSwitcher() 是幫哪一台機台畫的，用來分辨這次重畫
@@ -945,17 +947,33 @@ function viewElectronicMachine(d, nav, hero, switcher) {
  */
 let _switcherLastMachineId = null;
 
-/** 單一分類（骰台或電子）那一排籤，兩排各自獨立記自己的捲動位置。 */
-function _machineSwitcherRow(machines, category, currentMachineId, isNavigation) {
+/** 一個分類最多幾台擠在同一排橫向捲動籤——超過的話換下一排，不然機台一多
+ * （例如 20 台骰台）要滑很遠才找得到後面那幾台。 */
+const SWITCHER_CHUNK_SIZE = 10;
+
+function _chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+/**
+ * 單一排籤（某分類的其中一段，最多 SWITCHER_CHUNK_SIZE 台）。
+ * rowKey 是這一排的獨立識別（分類＋第幾段），各自記自己的捲動位置；
+ * showLabel 只有分類的第一段才會是 true，同分類換行的其他段不用重複標。
+ */
+function _machineSwitcherRow(machines, rowKey, category, showLabel, currentMachineId, isNavigation) {
   if (!machines.length) return null;
 
-  const prevEl = document.querySelector('.machine-switcher[data-category="' + category + '"]');
+  const prevEl = document.querySelector('.machine-switcher[data-row-key="' + rowKey + '"]');
   const prevScrollLeft = prevEl ? prevEl.scrollLeft : 0;
   const hasCurrent = machines.some(function (m) { return m.machineId === currentMachineId; });
 
-  const chips = [
-    h('span', { class: 'switcher-row-label', text: MACHINE_CATEGORY_LABELS[category] || category })
-  ].concat(machines.map(function (m) {
+  const label = showLabel
+    ? h('span', { class: 'switcher-row-label', text: MACHINE_CATEGORY_LABELS[category] || category })
+    : null;
+
+  const chips = [label].concat(machines.map(function (m) {
     const active = m.machineId === currentMachineId;
     return h('button', {
       class: 'machine-chip' + (active ? ' active' : ''),
@@ -968,7 +986,7 @@ function _machineSwitcherRow(machines, category, currentMachineId, isNavigation)
     ]);
   }));
 
-  const el = h('div', { class: 'machine-switcher', 'data-category': category }, chips);
+  const el = h('div', { class: 'machine-switcher', 'data-row-key': rowKey }, chips);
   requestAnimationFrame(() => {
     if (isNavigation && hasCurrent) {
       // 真的切到這一排裡的機台了：捲到看得到目前這台，機台一多、剛好在畫面外時不用自己找。
@@ -994,13 +1012,16 @@ function machineSwitcher(currentMachineId) {
   const dice = machines.filter(function (m) { return m.category !== 'electronic'; });
   const electronic = machines.filter(function (m) { return m.category === 'electronic'; });
 
-  const rows = [
-    _machineSwitcherRow(dice, 'dice', currentMachineId, isNavigation),
-    _machineSwitcherRow(electronic, 'electronic', currentMachineId, isNavigation)
-  ].filter(Boolean);
+  const rows = [];
+  [['dice', dice], ['electronic', electronic]].forEach(function ([category, list]) {
+    _chunk(list, SWITCHER_CHUNK_SIZE).forEach(function (part, i) {
+      rows.push(_machineSwitcherRow(part, category + '-' + i, category, i === 0, currentMachineId, isNavigation));
+    });
+  });
+  const nonEmpty = rows.filter(Boolean);
 
-  if (rows.length < 2) return rows[0] || null; // 只有一種分類有機台時，不用多包一層容器
-  return h('div', { class: 'machine-switcher-group' }, rows);
+  if (nonEmpty.length < 2) return nonEmpty[0] || null; // 只有一排時，不用多包一層容器
+  return h('div', { class: 'machine-switcher-group' }, nonEmpty);
 }
 
 function togglePanel(kind) {

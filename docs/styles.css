@@ -347,9 +347,17 @@ input[type="date"] { min-width: 0; }
 .machine-switcher::-webkit-scrollbar { display: none; }
 /* 骰台／電子各一排時的外層容器，純粹讓兩排上下疊，不影響各排自己的橫向捲動。 */
 .machine-switcher-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+/* 分類標籤（骰台／電子）固定在最左邊，不跟著那一排籤橫向捲走——
+   position:sticky 對橫向捲動的 flex 子項目有效，貼著捲動容器（自己）
+   的左緣。要蓋住底下捲過去的機台籤，所以背景補成跟頁面同色，不透明；
+   z-index 確保疊在籤的上面；右邊一道漸層陰影提示「這裡開始能捲」，
+   不然標籤跟籤直接切齊看起來會像貼歪了。 */
 .switcher-row-label {
+  position: sticky; left: 0; z-index: 2;
   flex: 0 0 auto; display: flex; align-items: center;
-  font-size: 12px; color: var(--muted); padding: 0 2px;
+  font-size: 12px; color: var(--muted); padding: 0 8px 0 2px;
+  background: var(--bg);
+  box-shadow: 6px 0 6px -6px rgba(0, 0, 0, 0.6);
 }
 .machine-chip {
   flex: 0 0 auto; display: flex; align-items: center; gap: 6px;

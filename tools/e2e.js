@@ -578,7 +578,7 @@ async function main() {
 
     // 現在骰台跟電子機台都有了，機台切換籤該分成兩排，不是全部擠在同一排。
     await page.waitForSelector('.machine-switcher-group');
-    const switcherRows = await page.locator('.machine-switcher[data-category]').all();
+    const switcherRows = await page.locator('.machine-switcher[data-row-key]').all();
     assert(switcherRows.length === 2, '骰台跟電子都有機台時，切換籤應該分成兩排，實際 ' + switcherRows.length + ' 排');
     const rowLabels = await page.locator('.switcher-row-label').allTextContents();
     assert(rowLabels.includes('骰台') && rowLabels.includes('電子'), '兩排應該各自標示「骰台」「電子」，實際 ' + JSON.stringify(rowLabels));
@@ -830,6 +830,35 @@ async function main() {
     assert(desktopInfo.overflow <= 2, '桌機版不該把整頁撐出橫向捲動，實際多出 ' + desktopInfo.overflow + 'px');
     assert(desktopInfo.rows > 1, '機台這麼多，桌機版應該自動換行成多列，實際只有 ' + desktopInfo.rows + ' 列');
     await desktop.close();
+  });
+
+  await check('骰台超過 10 台時分成好幾排，分類標籤（骰台/電子）橫向捲動時固定在最左邊不會被捲走', async () => {
+    // 上一項測試的 20 台是繞過前端直接打 API 加的，state.cache 裡的機台清單
+    // 還是舊的（只有 3 台）；reload 逼前端重新抓一次首頁資料，才看得到新機台。
+    await page.reload({ waitUntil: 'networkidle' });
+    await page.waitForSelector('.machine-card', { timeout: 8000 });
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.machine-switcher-group');
+
+    const diceRows = await page.locator('.machine-switcher[data-row-key^="dice-"]').all();
+    assert(diceRows.length === 2, '20 台骰台每排最多 10 台，應該分成 2 排，實際 ' + diceRows.length + ' 排');
+
+    const labelsByRow = await page.$$eval('.machine-switcher[data-row-key^="dice-"]', (rows) =>
+      rows.map((r) => !!r.querySelector('.switcher-row-label')));
+    assert(labelsByRow[0] === true && labelsByRow[1] === false,
+      '只有骰台第一排該顯示「骰台」標籤，第二排不用重複顯示，實際 ' + JSON.stringify(labelsByRow));
+
+    const firstRow = page.locator('.machine-switcher[data-row-key="dice-0"]');
+    const labelBefore = await firstRow.locator('.switcher-row-label').boundingBox();
+    await firstRow.evaluate((el) => { el.scrollLeft = 200; });
+    await page.waitForTimeout(50);
+    const labelAfter = await firstRow.locator('.switcher-row-label').boundingBox();
+    assert(Math.abs(labelAfter.x - labelBefore.x) < 2,
+      '分類標籤應該固定在最左邊，捲動籤的時候不該跟著移動，捲動前 x=' + labelBefore.x + '、之後 x=' + labelAfter.x);
+
+    // 下一項測試假設從首頁開始，這裡收尾回首頁，不要留在詳細頁。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
   });
 
   await check('手動把機台切換籤滑到後面之後，背景重繪不會把捲動位置彈回去', async () => {
