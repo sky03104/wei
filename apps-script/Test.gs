@@ -471,6 +471,14 @@ function _selfTestBody(results) {
     });
     found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
     _assertEq(found.icon, 'dice', '新增的夾骰子款也要能選');
+
+    _ok({
+      action: 'adminSaveMachine', token: adminTok, machineId: mid,
+      name: found.name, location: found.location, status: found.status, color: found.color, sortOrder: found.sortOrder,
+      icon: 'sixdice'
+    });
+    found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'sixdice', '單顆六點骰款也要能選');
   });
 
   _t(results, '機台圖案：給不認得的鍵值會落回 classic，不會整個請求失敗', function () {

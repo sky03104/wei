@@ -789,7 +789,7 @@ const MACHINE_CATEGORY_DICE = 'dice';
 const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
 /** 機台卡片用的像素風圖案款式，對應前端 docs/app.js 的 MACHINE_ICON_MAPS。 */
-const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall', 'dice'];
+const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall', 'dice', 'sixdice'];
 const DEFAULT_MACHINE_ICON = 'classic';
 
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
@@ -3093,6 +3093,14 @@ function _selfTestBody(results) {
     });
     found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
     _assertEq(found.icon, 'dice', '新增的夾骰子款也要能選');
+
+    _ok({
+      action: 'adminSaveMachine', token: adminTok, machineId: mid,
+      name: found.name, location: found.location, status: found.status, color: found.color, sortOrder: found.sortOrder,
+      icon: 'sixdice'
+    });
+    found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'sixdice', '單顆六點骰款也要能選');
   });
 
   _t(results, '機台圖案：給不認得的鍵值會落回 classic，不會整個請求失敗', function () {

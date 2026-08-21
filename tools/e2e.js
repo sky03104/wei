@@ -500,8 +500,8 @@ async function main() {
     await page.waitForSelector('.dialog');
 
     const iconLabels = await page.locator('.icon-swatches button').allTextContents();
-    assert(['經典', '圓頂', '雙爪', '招牌', '骰子'].every((l) => iconLabels.some((t) => t.indexOf(l) >= 0)),
-      '應該有經典/圓頂/雙爪/招牌/骰子五種圖案可以選，實際 ' + JSON.stringify(iconLabels));
+    assert(['經典', '圓頂', '雙爪', '招牌', '骰子', '六點骰'].every((l) => iconLabels.some((t) => t.indexOf(l) >= 0)),
+      '應該有經典/圓頂/雙爪/招牌/骰子/六點骰六種圖案可以選，實際 ' + JSON.stringify(iconLabels));
     assert(await page.locator('.icon-swatches button.active').count() === 1, '預設應該有剛好一款被標成選中');
 
     const previewBefore = await page.locator('.dialog svg.pixel-machine').first().getAttribute('viewBox');

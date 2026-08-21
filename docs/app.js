@@ -100,7 +100,11 @@ const PIXEL_MACHINE_TALL = [
   '..KK........KK..'
 ];
 
-/** 夾骰子機：跟經典款共用同一套機身／爪子，把底下的娃娃換成兩顆有點數的骰子。 */
+/**
+ * 夾骰子機：跟經典款共用同一套機身／爪子，把底下的娃娃換成兩顆有點數的骰子。
+ * 左邊「一點」骰子的點是紅色（R）——很多實體骰子的「1」點就是印紅色，
+ * 使用者看過黑白版之後特別要求改的。
+ */
 const PIXEL_MACHINE_DICE = [
   '................',
   '..KKKKKKKKKKKK..',
@@ -116,8 +120,40 @@ const PIXEL_MACHINE_DICE = [
   '.KBGGGGGGGGGGBK.',
   '.KBWWWWGGWKWWBK.',
   '.KBWWWWGGWWWWBK.',
-  '.KBWKKWGGWWWWBK.',
+  '.KBWRRWGGWWWWBK.',
   '.KBWWWWGGWWKWBK.',
+  '.KKKKKKKKKKKKKK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KBSSBBBBBBWWBK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KKKKKKKKKKKKKK.',
+  '..KK........KK..'
+];
+
+/** 單顆骰子、六點的娃娃機：跟經典款共用機身／爪子，底下換成一顆大骰子，六點排成 2 欄 3 列。 */
+const PIXEL_MACHINE_SIXDICE = [
+  '................',
+  '..KKKKKKKKKKKK..',
+  '..KLLLLLLLLLLK..',
+  '..KLBBBBBBBBLK..',
+  '.KKKKKKKKKKKKKK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGCCCCCCCCGBK.',
+  '.KBGGGGCCGGGGBK.',
+  '.KBGGGCCCCGGGBK.',
+  '.KBGGGCGGCGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGWWWWWWWWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWWWWWWWWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWWWWWWWWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWKKWWKKWGBK.',
+  '.KBGWWWWWWWWGBK.',
   '.KKKKKKKKKKKKKK.',
   '.KBBBBBBBBBBBBK.',
   '.KBSSBBBBBBWWBK.',
@@ -132,9 +168,10 @@ const MACHINE_ICON_MAPS = {
   round: PIXEL_MACHINE_ROUND,
   twin: PIXEL_MACHINE_TWIN,
   tall: PIXEL_MACHINE_TALL,
-  dice: PIXEL_MACHINE_DICE
+  dice: PIXEL_MACHINE_DICE,
+  sixdice: PIXEL_MACHINE_SIXDICE
 };
-const MACHINE_ICON_LABELS = { classic: '經典', round: '圓頂', twin: '雙爪', tall: '招牌', dice: '骰子' };
+const MACHINE_ICON_LABELS = { classic: '經典', round: '圓頂', twin: '雙爪', tall: '招牌', dice: '骰子', sixdice: '六點骰' };
 const DEFAULT_MACHINE_ICON = 'classic';
 
 const STATUS_COLORS = { running: '#4ADE80', maintenance: '#FBBF24', offline: '#6B7488' };
