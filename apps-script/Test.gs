@@ -838,7 +838,17 @@ function _selfTestBody(results) {
     _assert(ledgerRows.some(function (r) { return toNumber(r.turnover) === 88; }),
       '按開始之後存的那筆週轉金 88，應該是獨立新增的一列，不是覆蓋掉舊的那筆');
 
-    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+    // 按「今日營業結單」之後，「今日」數字不該立刻跳回去跟結單前的舊帳
+    // （那筆 70）混在一起——結單後的「今日」邊界要繼續維持這個 session
+    // 剛剛歸零之後的樣子，一直到下次又按「今日營業開始」才會再往前挪。
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    const afterEndSameSession = _ok({ action: 'dashboard', token: adminTok });
+    const afterEndMine = afterEndSameSession.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(afterEndMine.today.out, 15, '結單後「今日出幣」應該還是這個 session 的 15，不會跳回去加上結單前的 70（變成 85）');
+    _assertEq(afterEndSameSession.ledger.turnover, 88, '結單後加總分頁的週轉金應該還是這個 session 存的 88，不會退回結單前那筆 999');
+
+    const afterEndDetail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(afterEndDetail.today.out, 15, '機台詳細頁結單後的「今日出幣」也要跟首頁一致，維持 15');
   });
 
   // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──

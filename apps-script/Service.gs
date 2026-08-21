@@ -72,20 +72,43 @@ function _currentBusinessDate() {
 }
 
 /**
+ * 「今日」數字要照哪一個營業日 session 的邊界算——優先用「進行中」的那個；
+ * 沒有進行中的（已經按過結單）就退回找「今天結束的最後一個」，讓「今日」
+ * 數字繼續維持那個 session 重置後的邊界，不會結單那一刻就跳回去跟結單前
+ * 的舊帳（忘記結單被自動結掉的上一個 session、或行事曆日期退回路徑記的）
+ * 混在一起——要下次又按「今日營業開始」開新的 session，邊界才會再往前挪。
+ *
+ * 今天完全沒按過這個功能（今天沒有任何 BizDays 紀錄）才會真的回傳 null，
+ * 退回沒有邊界的舊行為，跟這個功能上線前完全一樣。
+ */
+function _relevantBizDayForToday() {
+  const open = _openBizDay();
+  if (open) return open;
+  const today = todayKey();
+  const rows = dbReadAll('BizDays').filter(function (r) {
+    return String(r.business_date) === today && r.closed_at;
+  });
+  if (!rows.length) return null;
+  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return rows[0];
+}
+
+/**
  * 「今日」數字的重置邊界——按一次「今日營業開始」，所有機台跟加總分頁的
  * 手動帳目都該從那一刻重新歸零算，不能沿用同一個日期裡、這次開始「之前」
  * 記過的帳（不管是忘記結單被自動結掉的上一個 session，還是這個功能上線前
- * 用行事曆日期退回路徑記的）。判斷式只看「有沒有進行中的營業日」跟
- * 「這筆紀錄的建立時間是不是在這次開始之後」，紀錄本身完全不動，
+ * 用行事曆日期退回路徑記的）。判斷式只看「有沒有相關的營業日 session」跟
+ * 「這筆紀錄的建立時間是不是在那個 session 開始之後」，紀錄本身完全不動，
  * 只是這次不把它算進「今日」而已——歷史查詢跟累計數字看到的還是全部。
  *
- * 沒有進行中的營業日（沒按過這個功能，或已經結單）就退回單純比對日期，
- * 跟這個功能上線前完全一樣。
+ * bizDay 用 _relevantBizDayForToday() 算出來的，可能是進行中的、也可能是
+ * 已經結單的——結單後這個邊界還是繼續生效，不會退回單純比對日期。真的
+ * 沒有邊界（今天完全沒按過這個功能）bizDay 才會是 null。
  */
-function _isTodayRecord(r, today, openBiz) {
+function _isTodayRecord(r, today, bizDay) {
   if (_recordBusinessDate(r) !== today) return false;
-  if (!openBiz) return true;
-  return String(r.created_at) >= String(openBiz.opened_at);
+  if (!bizDay) return true;
+  return String(r.created_at) >= String(bizDay.opened_at);
 }
 
 /**
@@ -203,18 +226,19 @@ function _machineCategory(machineId) {
 /**
  * 某個營業日的手動帳目原始列，沒設定過就是 null。
  *
- * 有進行中的營業日：只認這個 session 自己存的那一列（biz_id 要對得上），
- * 上一個 session 存的舊列即使日期一樣也不算，這樣才會「看起來像歸零」。
- * 沒有進行中的營業日（沒按過這個功能，或已經結單）：退回這個功能上線前
- * 的行為，單純比對日期，取最新一列（防禦性地取列號最大的）——這是結單後
- * 還想看「今天結算完的數字」的唯一入口，不該因為沒有 session 就看不到。
+ * 只認「相關的營業日 session」（_relevantBizDayForToday()：進行中的，或
+ * 今天結束的最後一個）自己存的那一列（biz_id 要對得上）——結單後這個邊界
+ * 還是繼續生效，不會跳回去顯示結單前那個舊 session 存的數字。上一個 session
+ * 存的舊列即使日期一樣也不算，這樣才會「看起來像歸零」。
+ * 今天完全沒按過這個功能（沒有相關 session）才會退回這個功能上線前的
+ * 行為，單純比對日期，取最新一列（防禦性地取列號最大的）。
  */
 function _dailyLedgerRow(businessDate) {
   const rows = dbFilter('DailyLedger', 'business_date', businessDate);
   if (!rows.length) return null;
-  const openBiz = _openBizDay();
-  if (openBiz) {
-    const mine = rows.filter(function (r) { return String(r.biz_id || '') === String(openBiz.biz_id); });
+  const relevant = _relevantBizDayForToday();
+  if (relevant) {
+    const mine = rows.filter(function (r) { return String(r.biz_id || '') === String(relevant.biz_id); });
     return mine.length ? mine[0] : null;
   }
   rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
@@ -275,11 +299,11 @@ function saveDailyLedger(user, payload) {
     if (existing) {
       dbUpdate('DailyLedger', existing._row, patch);
     } else {
-      const openBiz = _openBizDay();
+      const relevant = _relevantBizDayForToday();
       dbInsert('DailyLedger', Object.assign({
         ledger_id: newId('ldg'),
         business_date: businessDate,
-        biz_id: openBiz ? openBiz.biz_id : ''
+        biz_id: relevant ? relevant.biz_id : ''
       }, patch));
     }
     return _publicDailyLedger(_dailyLedgerRow(businessDate));
@@ -344,7 +368,7 @@ function getDashboard(user) {
   const machineById = {};
   machines.forEach(function (m) { machineById[String(m.machine_id)] = m; });
 
-  const openBiz = _openBizDay();
+  const openBiz = _relevantBizDayForToday();
   const today = openBiz ? String(openBiz.business_date) : todayKey();
   const totals = {};
   const todays = {};
@@ -521,7 +545,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   if (!m) throw new Error('找不到這台機台');
 
   const mine = activeRecords().filter(function (r) { return String(r.machine_id) === String(machineId); });
-  return _buildMachineDetail(m, mine, recordLimit, _openBizDay());
+  return _buildMachineDetail(m, mine, recordLimit, _relevantBizDayForToday());
 }
 
 /**
@@ -545,7 +569,7 @@ function getAllMachineDetails(user, recordLimit) {
     if (byMachine[mid]) byMachine[mid].push(r);
   });
 
-  const openBiz = _openBizDay();
+  const openBiz = _relevantBizDayForToday();
   const result = {};
   machines.forEach(function (m) {
     const id = String(m.machine_id);
