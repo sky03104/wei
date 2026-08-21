@@ -790,6 +790,8 @@ const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
 const TRACKED_PRIZE_NAME = '432';
+/** CSV 匯出的「逐日對帳表」另外追蹤的第二個活動名稱次數，目前先寫死。 */
+const TRACKED_PRIZE_NAME_2 = '441';
 
 const MAX_AMOUNT = 10000000;
 const MAX_PRIZE_COUNT = 9999;
@@ -2232,54 +2234,76 @@ function _csvCell(v) {
   return s;
 }
 
-const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
+/** 'yyyy-MM-dd' → 「8月9日」，跟現場原本手記的逐日對帳表同一種寫法（不補零）。 */
+function _dayKeyToLabel(key) {
+  const p = String(key).split('-');
+  return Number(p[1]) + '月' + Number(p[2]) + '日';
+}
+
+/** _byCreatedAtDesc 的反向版：逐日對帳表要的是當天發生的先後順序（由舊到新）。 */
+function _byCreatedAtAsc(a, b) {
+  const byTime = String(a.created_at).localeCompare(String(b.created_at));
+  if (byTime !== 0) return byTime;
+  return (a._row || 0) - (b._row || 0);
+}
 
 /**
- * 匯出整個區間的紀錄（不受畫面 500 筆上限影響）。
+ * 匯出區間的「逐日對帳表」（不受畫面 500 筆上限影響）：橫向一欄一天，
+ * 直向把當天每一筆出幣依發生順序列出來，底下再接出幣/432/441/入幣/
+ * 淨額五列小計——現場原本就是這樣手記在紙本試算表上對帳，匯出照抄
+ * 同一種版面，不是系統原本「一筆一列」的流水帳格式。
  * BOM 由前端加，這裡只回純 CSV 內容。
  */
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
   const rows = _reportRows(scope.ids, range, params);
+  const days = _eachDay(range.from, range.to);
 
-  const machineNames = {};
-  dbReadAll('Machines').forEach(function (m) { machineNames[String(m.machine_id)] = m.name; });
-  const userNames = {};
-  dbReadAll('Users').forEach(function (u) { userNames[String(u.user_id)] = u.display_name || u.username; });
+  const byDay = {};
+  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0 }; });
 
-  const lines = [];
-  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '上班表', '下班表', '操作人', '備註'].join(','));
-
-  rows.sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); });
   rows.forEach(function (r) {
-    const d = new Date(r.created_at);
-    lines.push([
-      _csvCell(_recordBusinessDate(r)),
-      _csvCell(isNaN(d.getTime()) ? '' : Utilities.formatDate(d, _tz(), 'HH:mm:ss')),
-      _csvCell(machineNames[String(r.machine_id)] || r.machine_id),
-      _csvCell(TYPE_LABELS[r.type] || r.type),
-      _csvCell(toNumber(r.amount)),
-      _csvCell(r.prize_name || ''),
-      _csvCell(r.unit_amount === '' ? '' : toNumber(r.unit_amount)),
-      _csvCell(r.count === '' ? '' : toNumber(r.count)),
-      _csvCell(r.meter_start === '' ? '' : toNumber(r.meter_start)),
-      _csvCell(r.meter_end === '' ? '' : toNumber(r.meter_end)),
-      _csvCell(userNames[String(r.user_id)] || ''),
-      _csvCell(r.note || '')
-    ].join(','));
+    const bucket = byDay[_recordBusinessDate(r)];
+    if (!bucket) return; // _reportRows 已經照 range 篩過，這裡只是防呆
+    if (r.type === RECORD_OUT) {
+      bucket.outs.push(r);
+    } else if (r.type === RECORD_IN) {
+      bucket.inTotal += toNumber(r.amount);
+    } else if (r.type === RECORD_PRIZE) {
+      if (r.prize_name === TRACKED_PRIZE_NAME) bucket.count432 += toNumber(r.count);
+      else if (r.prize_name === TRACKED_PRIZE_NAME_2) bucket.count441 += toNumber(r.count);
+    }
   });
 
-  const summary = emptySummary();
-  rows.forEach(function (r) { _accumulate(summary, r); });
-  lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '活動', summary.prize, '', '', ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '開分', summary.chipIn, '洗分', summary.chipOut, '電子淨額', summary.chipNet, '', '', ''].map(_csvCell).join(','));
+  let maxOuts = 0;
+  days.forEach(function (d) {
+    byDay[d].outs.sort(_byCreatedAtAsc);
+    maxOuts = Math.max(maxOuts, byDay[d].outs.length);
+  });
+
+  const lines = [];
+  lines.push(['圖數'].concat(days.map(_dayKeyToLabel)).map(_csvCell).join(','));
+
+  for (let i = 0; i < maxOuts; i++) {
+    const row = [String(i + 1)];
+    days.forEach(function (d) {
+      const rec = byDay[d].outs[i];
+      row.push(rec ? toNumber(rec.amount) : '');
+    });
+    lines.push(row.map(_csvCell).join(','));
+  }
+
+  const outTotal = function (d) { return byDay[d].outs.reduce(function (s, r) { return s + toNumber(r.amount); }, 0); };
+  lines.push(['出幣'].concat(days.map(outTotal)).map(_csvCell).join(','));
+  lines.push(['432'].concat(days.map(function (d) { return byDay[d].count432; })).map(_csvCell).join(','));
+  lines.push(['441'].concat(days.map(function (d) { return byDay[d].count441; })).map(_csvCell).join(','));
+  lines.push(['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).map(_csvCell).join(','));
+  lines.push(['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {
-    filename: '娃娃機報表_' + label + '_' + range.from + '_' + range.to + '.csv',
+    filename: '娃娃機對帳表_' + label + '_' + range.from + '_' + range.to + '.csv',
     content: lines.join('\r\n'),
     rowCount: rows.length
   };
@@ -3225,7 +3249,7 @@ function _selfTestBody(results) {
     _assertEq(report.summary.out, 30, '報表彙總應該把這筆算進去');
 
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
-    _assert(csv.content.indexOf(yesterday) >= 0, 'CSV 的日期欄應該顯示營業日期（昨天），不是行事曆日期');
+    _assert(csv.content.indexOf(_dayKeyToLabel(yesterday)) >= 0, 'CSV 的欄位應該顯示營業日期（昨天），不是行事曆日期');
 
     _ok({ action: 'endBusinessDay', token: adminTok });
   });
@@ -3591,12 +3615,48 @@ function _selfTestBody(results) {
     _fails({ action: 'report', token: adminTok, preset: 'custom', from: 'bad', to: '2026-05-01' });
   });
 
-  _t(results, 'CSV：含表頭、逐筆資料與合計', function () {
-    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: prizeMachine, preset: 'day' });
-    _assert(csv.content.indexOf('日期,時間,機台,類型,金額') === 0, 'CSV 應以表頭開始');
-    _assert(csv.content.indexOf('活動') > 0, 'CSV 應含活動（原開獎）列');
-    _assert(csv.content.indexOf('淨收益') > 0, 'CSV 應含淨收益合計');
+  _t(results, 'CSV：匯出的是逐日對帳表——出幣逐筆列出、432/441 計次、入幣與淨額都對得起來', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV對帳表測試台', sortOrder: 97 }).machineId;
+    const p432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 10, sortOrder: 1 }).prizeId;
+    const p441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 10, sortOrder: 2 }).prizeId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 100, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 50, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 500, clientToken: newId('ct') });
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: p432, count: 2 }, { prizeId: p441, count: 1 }],
+      clientToken: newId('ct')
+    });
+
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    const lines = csv.content.split('\r\n');
+    _assertEq(lines[0], '圖數,' + _dayKeyToLabel(todayKey()), '表頭第一列應該是「圖數」＋今天的日期標籤（例如 8月20日）');
+    _assertEq(lines[1], '1,100', '第 1 筆出幣應該依發生順序排在第一列');
+    _assertEq(lines[2], '2,200', '第 2 筆出幣應該排在第二列');
+    _assertEq(lines[3], '3,50', '第 3 筆出幣應該排在第三列');
+    _assertEq(lines[4], '出幣,350', '出幣小計應該是三筆加總 100+200+50');
+    _assertEq(lines[5], '432,2', '432 應該是計次（送出時 count=2），不是金額');
+    _assertEq(lines[6], '441,1', '441 應該是計次（送出時 count=1），不是金額');
+    _assertEq(lines[7], '入幣,500', '入幣是當天總額，不逐筆列出');
+    _assertEq(lines[8], '+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）');
     _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
+  });
+
+  _t(results, 'CSV：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV多日測試台', sortOrder: 98 }).machineId;
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+
+    const csv = _ok({
+      action: 'exportCsv', token: adminTok, machineId: mid,
+      preset: 'custom', from: _addDays(todayKey(), -2), to: todayKey()
+    });
+    const lines = csv.content.split('\r\n');
+    _assertEq(lines[0], '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(','),
+      '三天區間應該有三欄，由舊到新排列');
+    _assertEq(lines[1], '1,,,30', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料');
+    _assertEq(lines[2], '出幣,0,0,30', '出幣小計：沒紀錄的兩天是 0，今天是 30');
   });
 
   // ── 雜項 ──

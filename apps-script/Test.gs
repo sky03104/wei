@@ -639,7 +639,7 @@ function _selfTestBody(results) {
     _assertEq(report.summary.out, 30, '報表彙總應該把這筆算進去');
 
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
-    _assert(csv.content.indexOf(yesterday) >= 0, 'CSV 的日期欄應該顯示營業日期（昨天），不是行事曆日期');
+    _assert(csv.content.indexOf(_dayKeyToLabel(yesterday)) >= 0, 'CSV 的欄位應該顯示營業日期（昨天），不是行事曆日期');
 
     _ok({ action: 'endBusinessDay', token: adminTok });
   });
@@ -1005,12 +1005,48 @@ function _selfTestBody(results) {
     _fails({ action: 'report', token: adminTok, preset: 'custom', from: 'bad', to: '2026-05-01' });
   });
 
-  _t(results, 'CSV：含表頭、逐筆資料與合計', function () {
-    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: prizeMachine, preset: 'day' });
-    _assert(csv.content.indexOf('日期,時間,機台,類型,金額') === 0, 'CSV 應以表頭開始');
-    _assert(csv.content.indexOf('活動') > 0, 'CSV 應含活動（原開獎）列');
-    _assert(csv.content.indexOf('淨收益') > 0, 'CSV 應含淨收益合計');
+  _t(results, 'CSV：匯出的是逐日對帳表——出幣逐筆列出、432/441 計次、入幣與淨額都對得起來', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV對帳表測試台', sortOrder: 97 }).machineId;
+    const p432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 10, sortOrder: 1 }).prizeId;
+    const p441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 10, sortOrder: 2 }).prizeId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 100, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 50, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 500, clientToken: newId('ct') });
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: p432, count: 2 }, { prizeId: p441, count: 1 }],
+      clientToken: newId('ct')
+    });
+
+    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
+    const lines = csv.content.split('\r\n');
+    _assertEq(lines[0], '圖數,' + _dayKeyToLabel(todayKey()), '表頭第一列應該是「圖數」＋今天的日期標籤（例如 8月20日）');
+    _assertEq(lines[1], '1,100', '第 1 筆出幣應該依發生順序排在第一列');
+    _assertEq(lines[2], '2,200', '第 2 筆出幣應該排在第二列');
+    _assertEq(lines[3], '3,50', '第 3 筆出幣應該排在第三列');
+    _assertEq(lines[4], '出幣,350', '出幣小計應該是三筆加總 100+200+50');
+    _assertEq(lines[5], '432,2', '432 應該是計次（送出時 count=2），不是金額');
+    _assertEq(lines[6], '441,1', '441 應該是計次（送出時 count=1），不是金額');
+    _assertEq(lines[7], '入幣,500', '入幣是當天總額，不逐筆列出');
+    _assertEq(lines[8], '+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）');
     _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
+  });
+
+  _t(results, 'CSV：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV多日測試台', sortOrder: 98 }).machineId;
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+
+    const csv = _ok({
+      action: 'exportCsv', token: adminTok, machineId: mid,
+      preset: 'custom', from: _addDays(todayKey(), -2), to: todayKey()
+    });
+    const lines = csv.content.split('\r\n');
+    _assertEq(lines[0], '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(','),
+      '三天區間應該有三欄，由舊到新排列');
+    _assertEq(lines[1], '1,,,30', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料');
+    _assertEq(lines[2], '出幣,0,0,30', '出幣小計：沒紀錄的兩天是 0，今天是 30');
   });
 
   // ── 雜項 ──

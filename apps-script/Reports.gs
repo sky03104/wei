@@ -180,54 +180,76 @@ function _csvCell(v) {
   return s;
 }
 
-const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
+/** 'yyyy-MM-dd' → 「8月9日」，跟現場原本手記的逐日對帳表同一種寫法（不補零）。 */
+function _dayKeyToLabel(key) {
+  const p = String(key).split('-');
+  return Number(p[1]) + '月' + Number(p[2]) + '日';
+}
+
+/** _byCreatedAtDesc 的反向版：逐日對帳表要的是當天發生的先後順序（由舊到新）。 */
+function _byCreatedAtAsc(a, b) {
+  const byTime = String(a.created_at).localeCompare(String(b.created_at));
+  if (byTime !== 0) return byTime;
+  return (a._row || 0) - (b._row || 0);
+}
 
 /**
- * 匯出整個區間的紀錄（不受畫面 500 筆上限影響）。
+ * 匯出區間的「逐日對帳表」（不受畫面 500 筆上限影響）：橫向一欄一天，
+ * 直向把當天每一筆出幣依發生順序列出來，底下再接出幣/432/441/入幣/
+ * 淨額五列小計——現場原本就是這樣手記在紙本試算表上對帳，匯出照抄
+ * 同一種版面，不是系統原本「一筆一列」的流水帳格式。
  * BOM 由前端加，這裡只回純 CSV 內容。
  */
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
   const rows = _reportRows(scope.ids, range, params);
+  const days = _eachDay(range.from, range.to);
 
-  const machineNames = {};
-  dbReadAll('Machines').forEach(function (m) { machineNames[String(m.machine_id)] = m.name; });
-  const userNames = {};
-  dbReadAll('Users').forEach(function (u) { userNames[String(u.user_id)] = u.display_name || u.username; });
+  const byDay = {};
+  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0 }; });
 
-  const lines = [];
-  lines.push(['日期', '時間', '機台', '類型', '金額', '獎型', '單價', '次數', '上班表', '下班表', '操作人', '備註'].join(','));
-
-  rows.sort(function (a, b) { return String(a.created_at).localeCompare(String(b.created_at)); });
   rows.forEach(function (r) {
-    const d = new Date(r.created_at);
-    lines.push([
-      _csvCell(_recordBusinessDate(r)),
-      _csvCell(isNaN(d.getTime()) ? '' : Utilities.formatDate(d, _tz(), 'HH:mm:ss')),
-      _csvCell(machineNames[String(r.machine_id)] || r.machine_id),
-      _csvCell(TYPE_LABELS[r.type] || r.type),
-      _csvCell(toNumber(r.amount)),
-      _csvCell(r.prize_name || ''),
-      _csvCell(r.unit_amount === '' ? '' : toNumber(r.unit_amount)),
-      _csvCell(r.count === '' ? '' : toNumber(r.count)),
-      _csvCell(r.meter_start === '' ? '' : toNumber(r.meter_start)),
-      _csvCell(r.meter_end === '' ? '' : toNumber(r.meter_end)),
-      _csvCell(userNames[String(r.user_id)] || ''),
-      _csvCell(r.note || '')
-    ].join(','));
+    const bucket = byDay[_recordBusinessDate(r)];
+    if (!bucket) return; // _reportRows 已經照 range 篩過，這裡只是防呆
+    if (r.type === RECORD_OUT) {
+      bucket.outs.push(r);
+    } else if (r.type === RECORD_IN) {
+      bucket.inTotal += toNumber(r.amount);
+    } else if (r.type === RECORD_PRIZE) {
+      if (r.prize_name === TRACKED_PRIZE_NAME) bucket.count432 += toNumber(r.count);
+      else if (r.prize_name === TRACKED_PRIZE_NAME_2) bucket.count441 += toNumber(r.count);
+    }
   });
 
-  const summary = emptySummary();
-  rows.forEach(function (r) { _accumulate(summary, r); });
-  lines.push('');
-  lines.push(['合計', '', '', '入幣', summary.in, '出幣', summary.out, '活動', summary.prize, '', '', ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '淨收益', summary.net, '', '', '', '', '', '', ''].map(_csvCell).join(','));
-  lines.push(['', '', '', '開分', summary.chipIn, '洗分', summary.chipOut, '電子淨額', summary.chipNet, '', '', ''].map(_csvCell).join(','));
+  let maxOuts = 0;
+  days.forEach(function (d) {
+    byDay[d].outs.sort(_byCreatedAtAsc);
+    maxOuts = Math.max(maxOuts, byDay[d].outs.length);
+  });
+
+  const lines = [];
+  lines.push(['圖數'].concat(days.map(_dayKeyToLabel)).map(_csvCell).join(','));
+
+  for (let i = 0; i < maxOuts; i++) {
+    const row = [String(i + 1)];
+    days.forEach(function (d) {
+      const rec = byDay[d].outs[i];
+      row.push(rec ? toNumber(rec.amount) : '');
+    });
+    lines.push(row.map(_csvCell).join(','));
+  }
+
+  const outTotal = function (d) { return byDay[d].outs.reduce(function (s, r) { return s + toNumber(r.amount); }, 0); };
+  lines.push(['出幣'].concat(days.map(outTotal)).map(_csvCell).join(','));
+  lines.push(['432'].concat(days.map(function (d) { return byDay[d].count432; })).map(_csvCell).join(','));
+  lines.push(['441'].concat(days.map(function (d) { return byDay[d].count441; })).map(_csvCell).join(','));
+  lines.push(['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).map(_csvCell).join(','));
+  lines.push(['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {
-    filename: '娃娃機報表_' + label + '_' + range.from + '_' + range.to + '.csv',
+    filename: '娃娃機對帳表_' + label + '_' + range.from + '_' + range.to + '.csv',
     content: lines.join('\r\n'),
     rowCount: rows.length
   };

@@ -16,6 +16,8 @@ const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
 const TRACKED_PRIZE_NAME = '432';
+/** CSV 匯出的「逐日對帳表」另外追蹤的第二個活動名稱次數，目前先寫死。 */
+const TRACKED_PRIZE_NAME_2 = '441';
 
 const MAX_AMOUNT = 10000000;
 const MAX_PRIZE_COUNT = 9999;
