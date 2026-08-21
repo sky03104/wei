@@ -383,6 +383,7 @@ async function main() {
     // 「自訂」的日期選擇器該鎖在近三個月內，不然選到已封存的舊區間只會白白等一次錯誤訊息。
     const customMin = await page.locator('input[type="date"]').first().getAttribute('min');
     assert(customMin, '「自訂」的日期選擇器應該有 min 下限');
+    assert(await page.locator('text=自訂日期只能選近三個月內的區間').count() === 1, '「自訂」分頁應該顯示提示文字');
 
     // 「歷史」不該有這個下限——它是專門用來查更久以前、已經封存的資料的。
     await page.click('.seg button:has-text("歷史")');

@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v22';
+const APP_VERSION = 'v23';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1535,12 +1535,14 @@ function viewReport() {
     ])
     : null;
 
-  const historyHint = p.preset === 'history'
-    ? h('p', { class: 'small muted', style: 'margin:-4px 0 12px' }, '會一併查詢已封存的歷史資料，區間拉太長可能要等一下。')
-    : null;
+  const rangeHint = p.preset === 'custom'
+    ? h('p', { class: 'small muted', style: 'margin:-4px 0 12px' }, '自訂日期只能選近三個月內的區間，更早的資料請用「歷史」查詢。')
+    : p.preset === 'history'
+      ? h('p', { class: 'small muted', style: 'margin:-4px 0 12px' }, '會一併查詢已封存的歷史資料，區間拉太長可能要等一下。')
+      : null;
 
   if (!rep) {
-    return h('div', {}, [nav, presets, customRange, historyHint, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+    return h('div', {}, [nav, presets, customRange, rangeHint, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
   }
 
   const s = rep.summary;
@@ -1559,7 +1561,7 @@ function viewReport() {
   ]);
 
   return h('div', {}, [
-    nav, title, presets, customRange, historyHint, stats,
+    nav, title, presets, customRange, rangeHint, stats,
     trendCard(rep.trend),
     prizeStatsCard(rep.prizeStats),
     recordsTableCard(rep)
