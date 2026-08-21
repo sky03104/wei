@@ -591,7 +591,7 @@ function viewLogin() {
     h('div', { class: 'card' }, form),
     h('p', { class: 'small muted center', style: 'margin-top:14px' },
       '帳號由管理員建立。忘記密碼請找管理員重設。'),
-    h('p', { class: 'small muted center', style: 'margin-top:6px', text: APP_VERSION })
+    h('p', { class: 'small muted center', style: 'margin-top:6px', text: '版本號 ' + APP_VERSION })
   ]);
 }
 
