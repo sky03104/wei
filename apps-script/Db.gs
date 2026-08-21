@@ -96,10 +96,28 @@ function _clearSheetCache() {
 }
 
 /**
- * 取得試算表。優先用 Script Property SPREADSHEET_ID，
- * 沒設就退回綁定的試算表（方便從試算表選單直接跑 setup）。
+ * 只在「這一次執行」裡生效的試算表覆寫，給 runSelfTest() 這種要暫時切到
+ * 別份試算表跑的情境用。**故意不透過 PropertiesService**：Apps Script
+ * 每次執行（不管是編輯器手動執行、或 Web App 的每一次請求）都是全新、
+ * 互相獨立的執行環境，一般變數本來就不會跨執行共用，只有 PropertiesService／
+ * CacheService／試算表本身才會跨執行持久。如果當初改成把 SPREADSHEET_ID
+ * 這個 Script Property 直接覆寫過去再用 finally 改回來，一旦這次執行被
+ * Apps Script 6 分鐘執行上限強制砍斷，finally 不會被執行，SPREADSHEET_ID
+ * 就會永久卡在暫時測試用的試算表上，讓正式站台跟著讀不到真實資料——
+ * 這正是「登入頁一直帳號密碼錯誤」這個問題實際發生過的原因。改用這個
+ * 執行期變數就不會有這個風險：就算 runSelfTest() 那次執行被砍斷，
+ * 也只有那一次執行的記憶體不見了，不會動到 SPREADSHEET_ID 這個持久設定，
+ * 其他請求（包含使用者登入）完全不受影響。
+ */
+let _spreadsheetOverride = null;
+
+/**
+ * 取得試算表。優先用本次執行的覆寫（見上方 _spreadsheetOverride），
+ * 其次用 Script Property SPREADSHEET_ID，沒設就退回綁定的試算表
+ * （方便從試算表選單直接跑 setup）。
  */
 function _spreadsheet() {
+  if (_spreadsheetOverride) return _spreadsheetOverride;
   const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
   if (id) return SpreadsheetApp.openById(id);
   const active = SpreadsheetApp.getActive();

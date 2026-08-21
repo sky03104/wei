@@ -10,20 +10,21 @@
  */
 
 function runSelfTest() {
-  const props = PropertiesService.getScriptProperties();
-  const original = props.getProperty('SPREADSHEET_ID');
   const temp = SpreadsheetApp.create('【自我測試】娃娃機管理系統 ' + nowIso());
   const results = [];
 
+  // 切到暫時試算表用的是執行期變數（_spreadsheetOverride），不是
+  // Script Property——就算這次執行跑到一半被 Apps Script 6 分鐘執行
+  // 上限砍斷，也不會讓正式站台的 SPREADSHEET_ID 卡在這份暫時試算表上。
+  // 詳見 Db.gs 的 _spreadsheetOverride 註解。
+  _spreadsheetOverride = temp;
   try {
-    props.setProperty('SPREADSHEET_ID', temp.getId());
     _clearSheetCache();
     _selfTestBody(results);
   } catch (err) {
     results.push({ ok: false, name: '測試流程本身中斷', err: err.message });
   } finally {
-    if (original) props.setProperty('SPREADSHEET_ID', original);
-    else props.deleteProperty('SPREADSHEET_ID');
+    _spreadsheetOverride = null;
     _clearSheetCache();
     try { DriveApp.getFileById(temp.getId()).setTrashed(true); } catch (e) { /* 清不掉就算了 */ }
   }
