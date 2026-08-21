@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v24';
+const APP_VERSION = 'v25';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1554,7 +1554,7 @@ function viewReport() {
     ? h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
       statBox('開分', money(s.chipIn), 'net pos'),
       statBox('洗分', money(s.chipOut)),
-      statBox('淨收益', money(s.chipNet), 'net ' + netClass(s.chipNet))
+      statBox('盈虧金額', money(s.chipNet), 'net ' + netClass(s.chipNet))
     ])
     : h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
       statBox('入幣', money(s.in), 'net pos'),
