@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v27';
+const APP_VERSION = 'v28';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -651,10 +651,15 @@ function viewHome() {
     list = ledgerCard(data);
   } else {
     const t = data.diceTotal;
-    summary = h('div', { class: 'summary-strip' }, [
+    // 骰台這排是 6 張卡片，跟其他分頁籤（電子/加總各 3 張）不一樣，桌機版
+    // 用專屬的 summary-strip-6 排成 3 欄 2 排，不是共用 4 欄（6 張塞進 4 欄
+    // 會變成「4+2」，最後一排看起來缺兩塊）。
+    summary = h('div', { class: 'summary-strip summary-strip-6' }, [
       statBox('今日入幣', money(t.in), 'net pos'),
       statBox('今日出幣', money(t.out), ''),
       statBox('今日432數量', String(data.today432Count || 0), ''),
+      statBox('今日441數量', String(data.today441Count || 0), ''),
+      statBox('今日活動金額', money(t.prize), ''),
       statBox('今日淨收益', money(t.net), 'net ' + netClass(t.net))
     ]);
     const machines = data.machines.filter((m) => m.category !== 'electronic');

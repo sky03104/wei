@@ -791,6 +791,21 @@ function _selfTestBody(results) {
     _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
   });
 
+  _t(results, '今日441數量：只算獎型名稱剛好是441的次數，不算金額，其他獎型不算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '441數量測試台', sortOrder: 94 }).machineId;
+    const prize441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 50, sortOrder: 1 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他', amount: 20, sortOrder: 2 }).prizeId;
+
+    const before = _ok({ action: 'dashboard', token: adminTok }).today441Count;
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize441, count: 3 }, { prizeId: otherPrize, count: 5 }],
+      clientToken: newId('ct')
+    });
+    const after = _ok({ action: 'dashboard', token: adminTok }).today441Count;
+    _assertEq(after - before, 3, '今日441數量應該只增加 441 獎型的次數（3），不算其他獎型，也不算金額');
+  });
+
   _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額－手動活動支出432/441＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({

@@ -605,6 +605,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 @media (min-width: 760px) {
   .app { padding-left: 24px; padding-right: 24px; }
   .summary-strip { grid-template-columns: repeat(4, 1fr); }
+  /* 骰台分頁籤是 6 張卡片，塞進共用的 4 欄會變成「4+2」，最後一排缺兩塊——
+     改成 3 欄 2 排剛好排滿，不影響電子/加總分頁籤（各 3 張）的排法。 */
+  .summary-strip-6 { grid-template-columns: repeat(3, 1fr); }
   .report-stats { grid-template-columns: repeat(4, 1fr); }
   .filter-row { grid-template-columns: repeat(4, 1fr); }
   .dialog-backdrop { align-items: center; }

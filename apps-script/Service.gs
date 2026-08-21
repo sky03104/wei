@@ -483,6 +483,7 @@ function getDashboard(user) {
 
   let today432Count = 0;
   let today432Amount = 0;
+  let today441Count = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
@@ -493,6 +494,8 @@ function getDashboard(user) {
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
         today432Count += toNumber(r.count);
         today432Amount += toNumber(r.amount);
+      } else if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME_2) {
+        today441Count += toNumber(r.count);
       }
     }
   });
@@ -561,6 +564,7 @@ function getDashboard(user) {
     electronicTotal: electronicTotal,
     today432Count: today432Count,
     today432Amount: today432Amount,
+    today441Count: today441Count,
     ledger: ledger,
     ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,

@@ -262,13 +262,15 @@ async function main() {
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.summary-strip');
 
+    // 骰台分頁籤現在是 6 張卡片（入幣/出幣/432數量/441數量/活動金額/淨收益），
+    // 淨收益是最後一張（index 5），不是原本 4 張卡片時代的 index 3。
     await page.waitForFunction(() => {
       const stats = document.querySelectorAll('.summary-strip .stat');
-      const el = stats[3] && stats[3].querySelector('.stat-value');
+      const el = stats[5] && stats[5].querySelector('.stat-value');
       return !!el && el.textContent.indexOf('$') >= 0;
     }, null, { timeout: 8000 });
 
-    const netBox = page.locator('.summary-strip .stat').nth(3).locator('.stat-value');
+    const netBox = page.locator('.summary-strip .stat').nth(5).locator('.stat-value');
     const height = (await netBox.boundingBox()).height;
     assert(height <= 26, '淨收益數字的高度看起來像被拆成兩行了：' + height + 'px');
 
@@ -604,7 +606,9 @@ async function main() {
     assert(await page.locator('.home-sticky .seg button:has-text("骰台")').count() === 1, '首頁應該有骰台分頁籤');
     assert(await page.locator('.machine-card').count() === 3, '骰台分頁籤預設不該顯示電子機台');
     const diceLabels = await page.locator('.summary-strip .stat-label').allTextContents();
-    assert(diceLabels.some((t) => t.indexOf('432數量') >= 0), '骰台分頁籤應該顯示今日432數量卡片，取代原本的今日開獎');
+    for (const label of ['今日入幣', '今日出幣', '今日432數量', '今日441數量', '今日活動金額', '今日淨收益']) {
+      assert(diceLabels.indexOf(label) >= 0, '骰台分頁籤應該顯示「' + label + '」卡片，實際 ' + JSON.stringify(diceLabels));
+    }
 
     await page.click('.home-sticky .seg button:has-text("電子")');
     await page.waitForSelector('.machine-card');
