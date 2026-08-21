@@ -231,21 +231,32 @@ function _machineCategory(machineId) {
   return (m && m.category) || MACHINE_CATEGORY_DICE;
 }
 
-// ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
+// ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場／手動活動支出）──
 //
-// 這五項是整間店當天的現金調度，不屬於任何一台機台，每個「營業日 session」
-// 只設定一個數字（像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、
+// 這些是整間店當天的現金調度，不屬於任何一台機台，每個「營業日 session」
+// 只設定一組（像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、
 // 台主領本來就是現金流出，操作人直接輸入平常認知的正數金額即可，系統加總
 // 時自動幫這兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓
 // 使用者輸入正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場
 // 則直接加回總結餘。同一個 session 裡重複儲存是覆蓋，不是疊加。
 //
+// 台主給／台主領可能不只一筆（不只一位台主），各自可以命名，存成 JSON
+// 陣列 [{name, amount}, ...]——跟 Records 那種「一直往下加很多筆」不一樣，
+// 這裡還是每個 session 存一組（一次覆蓋整份清單），只是清單裡的項目數
+// 不再固定是 1 筆。手動活動支出 432／441 是額外的兩個支出欄位，給「自動
+// 算出來的 432 活動之外，另外辦的活動」用，跟自動算的 today432Amount 分開
+// 各自扣一次，不會互相取代。
+//
 // 每一列額外存一個 biz_id，snapshot 當時是哪一個營業日 session 存的——
 // 跟「今日」紀錄要照 _isTodayRecord() 的開始時間切一樣的道理：按一次
-// 「今日營業開始」就是開一個新 session，這五項也該跟著歸零重新輸入，
+// 「今日營業開始」就是開一個新 session，這些也該跟著歸零重新輸入，
 // 不能沿用同一個日期裡「上一個 session」（忘記結單被自動結掉、或這次
 // 開始之前）存的舊數字。舊那一列完全不會被刪或改，只是新 session 找
-// 不到自己的列時當作沒設定過（都是 0），資料本身沒有被動過。
+// 不到自己的列時當作沒設定過（都是 0／空清單），資料本身沒有被動過。
+//
+// given_to_owner／taken_by_owner 兩個舊欄位（單一數字）留著只是為了讀
+// 這個功能上線前存的舊資料；新的寫入一律用 *_items 這兩個 JSON 欄位，
+// 並且會把舊欄位清空，避免兩邊同時有值造成混淆。
 
 /**
  * 某個營業日的手動帳目原始列，沒設定過就是 null。
@@ -269,14 +280,51 @@ function _dailyLedgerRow(businessDate) {
   return rows[0];
 }
 
-/** 轉成前端要的形狀，沒設定過的營業日五項都當 0，不是回傳 null 讓前端自己判斷。 */
+/** 解析台主給／台主領明細的 JSON 陣列，格式不對或空白一律當沒有資料。 */
+function _parseLedgerItems(json) {
+  if (!json) return [];
+  let arr;
+  try {
+    arr = JSON.parse(json);
+  } catch (e) {
+    return [];
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map(function (it) {
+    return { name: String((it && it.name) || '').trim(), amount: toNumber(it && it.amount) };
+  }).filter(function (it) { return it.amount !== 0; });
+}
+
+/**
+ * 新欄位（*_items）沒有資料時，退回舊欄位（單一數字）給一個預設名稱，
+ * 讓這個功能上線前就存在的舊資料還看得到——只是顯示用，不會把舊欄位
+ * 寫回新格式，下次使用者自己重新儲存才會真的搬過去。
+ */
+function _ledgerItemsOrLegacy(itemsJson, legacyAmount, legacyName) {
+  const items = _parseLedgerItems(itemsJson);
+  if (items.length) return items;
+  const amt = toNumber(legacyAmount);
+  return amt ? [{ name: legacyName, amount: amt }] : [];
+}
+
+function _sumLedgerItems(items) {
+  return items.reduce(function (s, it) { return s + toNumber(it.amount); }, 0);
+}
+
+/** 轉成前端要的形狀，沒設定過的營業日各項都當 0／空清單，不是回傳 null 讓前端自己判斷。 */
 function _publicDailyLedger(row) {
+  const givenToOwnerItems = row ? _ledgerItemsOrLegacy(row.given_to_owner_items, row.given_to_owner, '台主給') : [];
+  const takenByOwnerItems = row ? _ledgerItemsOrLegacy(row.taken_by_owner_items, row.taken_by_owner, '台主領') : [];
   return {
     turnover: row ? toNumber(row.turnover) : 0,
     transport: row ? toNumber(row.transport) : 0,
-    givenToOwner: row ? toNumber(row.given_to_owner) : 0,
-    takenByOwner: row ? toNumber(row.taken_by_owner) : 0,
+    givenToOwnerItems: givenToOwnerItems,
+    givenToOwner: _sumLedgerItems(givenToOwnerItems),
+    takenByOwnerItems: takenByOwnerItems,
+    takenByOwner: _sumLedgerItems(takenByOwnerItems),
     returnedToHouse: row ? toNumber(row.returned_to_house) : 0,
+    manual432: row ? toNumber(row.manual_432) : 0,
+    manual441: row ? toNumber(row.manual_441) : 0,
     updatedAt: row ? row.updated_at : ''
   };
 }
@@ -289,24 +337,47 @@ function _validSignedAmount(raw) {
   return Math.round(n * 100) / 100;
 }
 
-/** 運拿／台主領這兩項一律是現金流出，輸入平常認知的正數金額就好，加總時系統自動扣除。 */
+/** 運拿／台主領／手動活動支出這幾項一律是現金流出，輸入平常認知的正數金額就好，加總時系統自動扣除。 */
 function _validOutflowAmount(raw) {
-  const n = Number(raw);
+  const n = Number(raw || 0);
   if (!isFinite(n)) throw new Error('金額必須是數字');
   if (n < 0) throw new Error('這項請輸入正數金額，系統會自動從總結餘扣除');
   if (n > MAX_AMOUNT) throw new Error('金額超出上限');
   return Math.round(n * 100) / 100;
 }
 
-/** 設定今天（目前營業日）的週轉金／運拿／台主給／台主領／還內場。 */
+const MAX_LEDGER_ITEMS = 30;
+
+/**
+ * 整理台主給／台主領的清單：每筆驗證金額（用 validateAmount，兩邊規則不同——
+ * 台主給可正可負，台主領一律正數自動扣除）、名稱沒填就用預設名稱頂著、
+ * 金額是 0（含沒填）的那幾筆直接丟掉，不用留著佔位子。
+ */
+function _sanitizeLedgerItems(raw, validateAmount, defaultName) {
+  if (!raw) return [];
+  if (!Array.isArray(raw)) throw new Error('清單格式不正確');
+  if (raw.length > MAX_LEDGER_ITEMS) throw new Error('筆數超出上限');
+  const items = [];
+  raw.forEach(function (it) {
+    const amount = validateAmount(it && it.amount);
+    if (!amount) return;
+    const name = String((it && it.name) || '').trim().slice(0, 30);
+    items.push({ name: name || defaultName, amount: amount });
+  });
+  return items;
+}
+
+/** 設定今天（目前營業日）的週轉金／運拿／台主給／台主領／還內場／手動活動支出。 */
 function saveDailyLedger(user, payload) {
   if (!canRecord(user)) throw PermissionError('你的帳號沒有這個權限');
 
   const turnover = _validSignedAmount(payload.turnover);
   const transport = _validOutflowAmount(payload.transport);
-  const givenToOwner = _validSignedAmount(payload.givenToOwner);
-  const takenByOwner = _validOutflowAmount(payload.takenByOwner);
+  const givenToOwnerItems = _sanitizeLedgerItems(payload.givenToOwnerItems, _validSignedAmount, '台主給');
+  const takenByOwnerItems = _sanitizeLedgerItems(payload.takenByOwnerItems, _validOutflowAmount, '台主領');
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
+  const manual432 = _validOutflowAmount(payload.manual432);
+  const manual441 = _validOutflowAmount(payload.manual441);
 
   return withLock(function () {
     // 用跟 getDashboard() 讀取時同一套邊界（_relevantBizDayForToday()），
@@ -319,9 +390,15 @@ function saveDailyLedger(user, payload) {
     const patch = {
       turnover: turnover,
       transport: transport,
-      given_to_owner: givenToOwner,
-      taken_by_owner: takenByOwner,
+      // 舊的單一數字欄位清空——新的寫入一律走 *_items，兩邊同時有值會
+      // 讓 _ledgerItemsOrLegacy() 的退回邏輯搞不清楚該信哪一個。
+      given_to_owner: '',
+      taken_by_owner: '',
+      given_to_owner_items: JSON.stringify(givenToOwnerItems),
+      taken_by_owner_items: JSON.stringify(takenByOwnerItems),
       returned_to_house: returnedToHouse,
+      manual_432: manual432,
+      manual_441: manual441,
       updated_by: user.userId,
       updated_at: nowIso()
     };
@@ -467,11 +544,13 @@ function getDashboard(user) {
 
   const ledger = _publicDailyLedger(_dailyLedgerRow(today));
 
-  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（暫代「開銷+432獎」，
-  // 目前還沒有其他雜項開銷可以記）＋電子淨贏＋週轉金/運拿/台主給/台主領/
-  // 還內場這五個每天手動輸入的數字。運拿、台主領存的是使用者輸入的正數
-  // 現金流出金額，這裡要扣掉；週轉金、台主給、還內場是加回去。
-  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount
+  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（自動算的「開銷+432
+  // 獎」）− 手動活動支出432/441（自動算的之外，另外辦的活動）＋電子淨贏
+  // ＋週轉金/運拿/台主給/台主領/還內場這幾個每天手動輸入的數字。運拿、
+  // 台主領、手動活動支出存的是使用者輸入的正數現金流出金額，這裡要扣掉；
+  // 週轉金、台主給、還內場是加回去。台主給／台主領現在可能有好幾筆，
+  // 這裡用的是 _publicDailyLedger() 已經加總好的 givenToOwner／takenByOwner。
+  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount - ledger.manual432 - ledger.manual441
     + ledger.turnover - ledger.transport + ledger.givenToOwner
     + electronicTotal.chipNet - ledger.takenByOwner + ledger.returnedToHouse;
 

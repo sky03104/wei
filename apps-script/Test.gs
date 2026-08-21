@@ -700,55 +700,80 @@ function _selfTestBody(results) {
 
   // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
 
-  _t(results, '每日手動帳目：沒設定過的營業日，五項都是 0', function () {
+  _t(results, '每日手動帳目：沒設定過的營業日，各項都是 0／空清單', function () {
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(dash.ledger.turnover, 0, '週轉金預設 0');
     _assertEq(dash.ledger.transport, 0, '運拿預設 0');
     _assertEq(dash.ledger.givenToOwner, 0, '台主給預設 0');
+    _assertEq(dash.ledger.givenToOwnerItems.length, 0, '台主給明細預設空清單');
     _assertEq(dash.ledger.takenByOwner, 0, '台主領預設 0');
+    _assertEq(dash.ledger.takenByOwnerItems.length, 0, '台主領明細預設空清單');
     _assertEq(dash.ledger.returnedToHouse, 0, '還內場預設 0');
+    _assertEq(dash.ledger.manual432, 0, '手動活動支出432預設 0');
+    _assertEq(dash.ledger.manual441, 0, '手動活動支出441預設 0');
   });
 
   _t(results, '每日手動帳目：只有管理員跟巡邏人員能設定，台主不行', function () {
     _fails({
       action: 'saveDailyLedger', token: ownerTok,
-      turnover: 1, transport: 1, givenToOwner: 1, takenByOwner: 1, returnedToHouse: 1
+      turnover: 1, transport: 1, givenToOwnerItems: [{ name: '老王', amount: 1 }],
+      takenByOwnerItems: [{ name: '老王', amount: 1 }], returnedToHouse: 1
     }, 'PERMISSION');
   });
 
-  _t(results, '每日手動帳目：運拿／台主領輸入負數會被擋（這兩項一律當正數的現金流出，系統自動扣除）', function () {
+  _t(results, '每日手動帳目：運拿／台主領／手動活動支出輸入負數會被擋（這幾項一律當正數的現金流出，系統自動扣除）', function () {
+    _fails({ action: 'saveDailyLedger', token: patrolTok, turnover: 0, transport: -1, returnedToHouse: 0 });
     _fails({
-      action: 'saveDailyLedger', token: patrolTok,
-      turnover: 0, transport: -1, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+      action: 'saveDailyLedger', token: patrolTok, turnover: 0, transport: 0,
+      takenByOwnerItems: [{ name: '老王', amount: -1 }], returnedToHouse: 0
     });
-    _fails({
-      action: 'saveDailyLedger', token: patrolTok,
-      turnover: 0, transport: 0, givenToOwner: 0, takenByOwner: -1, returnedToHouse: 0
-    });
+    _fails({ action: 'saveDailyLedger', token: patrolTok, turnover: 0, transport: 0, returnedToHouse: 0, manual432: -1 });
+    _fails({ action: 'saveDailyLedger', token: patrolTok, turnover: 0, transport: 0, returnedToHouse: 0, manual441: -1 });
   });
 
-  _t(results, '每日手動帳目：輸入正數金額，儲存後 dashboard 會反映最新值', function () {
+  _t(results, '每日手動帳目：台主給／台主領可以存好幾筆、各自命名，輸入正數金額儲存後 dashboard 會反映最新值', function () {
     const saved = _ok({
       action: 'saveDailyLedger', token: patrolTok,
-      turnover: 416000, transport: 250000, givenToOwner: 60200, takenByOwner: 172600, returnedToHouse: 13000
+      turnover: 416000, transport: 250000,
+      givenToOwnerItems: [{ name: '老王', amount: 40000 }, { name: '老李', amount: 20200 }],
+      takenByOwnerItems: [{ name: '老王', amount: 172600 }],
+      returnedToHouse: 13000, manual432: 3000, manual441: 2000
     });
     _assertEq(saved.transport, 250000, '應該原封不動存正數，不做正負號轉換');
+    _assertEq(saved.givenToOwner, 60200, '台主給應該是這幾筆的總和（40000+20200）');
+    _assertEq(saved.givenToOwnerItems.length, 2, '台主給應該存了 2 筆，各自的名字要留著');
+    _assert(saved.givenToOwnerItems.some(function (it) { return it.name === '老王' && it.amount === 40000; }), '應該找得到「老王 40000」這一筆');
+    _assert(saved.givenToOwnerItems.some(function (it) { return it.name === '老李' && it.amount === 20200; }), '應該找得到「老李 20200」這一筆');
 
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(dash.ledger.turnover, 416000, '週轉金應該是剛存的值');
     _assertEq(dash.ledger.transport, 250000, '運拿應該是剛存的正數');
-    _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的值');
+    _assertEq(dash.ledger.givenToOwner, 60200, '台主給應該是剛存的總和');
     _assertEq(dash.ledger.takenByOwner, 172600, '台主領應該是剛存的正數');
+    _assertEq(dash.ledger.takenByOwnerItems[0].name, '老王', '台主領明細的名字應該存下來');
     _assertEq(dash.ledger.returnedToHouse, 13000, '還內場應該是剛存的值');
+    _assertEq(dash.ledger.manual432, 3000, '手動活動支出432應該是剛存的值');
+    _assertEq(dash.ledger.manual441, 2000, '手動活動支出441應該是剛存的值');
   });
 
-  _t(results, '每日手動帳目：同一個營業日重複儲存是覆蓋，不是疊加', function () {
-    _ok({
-      action: 'saveDailyLedger', token: adminTok,
-      turnover: 1000, transport: 0, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+  _t(results, '每日手動帳目：台主給／台主領沒填名字會用預設名稱，金額是 0 或沒填的那幾筆直接不存', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: adminTok, turnover: 0, transport: 0, returnedToHouse: 0,
+      givenToOwnerItems: [{ name: '', amount: 500 }, { name: '有名字但沒填金額', amount: '' }, { name: '', amount: 0 }],
+      takenByOwnerItems: []
     });
+    _assertEq(saved.givenToOwnerItems.length, 1, '金額是 0 或空白的那幾筆應該直接被濾掉，只留下真的有金額的那筆');
+    _assertEq(saved.givenToOwnerItems[0].name, '台主給', '名字沒填的話應該用預設名稱「台主給」頂著');
+    _assertEq(saved.givenToOwnerItems[0].amount, 500, '有填的那筆金額要對');
+  });
+
+  _t(results, '每日手動帳目：手動活動支出432/441 沒填當 0，同一個營業日重複儲存是覆蓋，不是疊加', function () {
+    const saved = _ok({ action: 'saveDailyLedger', token: adminTok, turnover: 1000, transport: 0, returnedToHouse: 0 });
+    _assertEq(saved.manual432, 0, '手動活動支出432沒填應該存成 0');
+    _assertEq(saved.manual441, 0, '手動活動支出441沒填應該存成 0');
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(dash.ledger.turnover, 1000, '第二次儲存應該覆蓋掉第一次的值，不是疊加成 417000');
+    _assertEq(dash.ledger.givenToOwner, 0, '這次沒帶台主給，應該覆蓋成空清單，不是留著上次的兩筆');
   });
 
   _t(results, '今日432獎金額：只算獎型名稱剛好是432的活動金額，其他獎型不算', function () {
@@ -766,7 +791,7 @@ function _selfTestBody(results) {
     _assertEq(after - before, 140, '今日432獎金額應該只增加 432 獎型的部分（70×2＝140），其他獎型不算進去');
   });
 
-  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
+  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額－手動活動支出432/441＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({
       action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
@@ -779,14 +804,19 @@ function _selfTestBody(results) {
 
     _ok({
       action: 'saveDailyLedger', token: adminTok,
-      turnover: 10, transport: 20, givenToOwner: 30, takenByOwner: 40, returnedToHouse: 5
+      turnover: 10, transport: 20,
+      givenToOwnerItems: [{ name: '老王', amount: 18 }, { name: '老李', amount: 12 }],
+      takenByOwnerItems: [{ name: '老王', amount: 40 }],
+      returnedToHouse: 5, manual432: 7, manual441: 3
     });
 
     const after = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(after.ledger.givenToOwner, 30, '台主給應該是「老王 18」＋「老李 12」的總和');
     const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
+      - after.ledger.manual432 - after.ledger.manual441
       + after.ledger.turnover - after.ledger.transport + after.ledger.givenToOwner
       + after.electronicTotal.chipNet - after.ledger.takenByOwner + after.ledger.returnedToHouse;
-    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領扣除、其餘七項加總後的結果');
+    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領／手動活動支出扣除、其餘加總後的結果');
   });
 
   _t(results, '按下「今日營業開始」：所有機台的今日數字跟加總分頁的手動帳目都歸零，但紀錄跟累計都沒被動過', function () {

@@ -673,36 +673,72 @@ async function main() {
     await shot('16-home-total-tab');
   });
 
-  await check('加總分頁顯示今日現金結餘明細（九行＋總結餘），且可以設定週轉金等五項數字', async () => {
+  await check('加總分頁顯示今日現金結餘明細，可以設定週轉金/432/441/運拿/還內場，台主給／台主領可以命名多筆', async () => {
     await page.waitForSelector('.ledger-row');
     const rowLabels = await page.locator('.ledger-row .ledger-label').allTextContents();
-    for (const label of ['開銷+432獎', '入幣', '出幣', '週轉金', '運拿', '台主給', '電子贏', '台主領', '還內場', '總結餘']) {
+    for (const label of ['開銷+432獎', '432(手動)', '441(手動)', '入幣', '出幣', '週轉金', '運拿', '台主給', '電子贏', '台主領', '還內場', '總結餘']) {
       assert(rowLabels.indexOf(label) >= 0, '結餘明細缺少「' + label + '」這一行');
     }
 
     const totalBefore = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
 
+    // 用欄位的 label 文字定位對應的輸入框／清單編輯器，不依賴 input 的
+    // 固定順序——台主給／台主領現在是可以增減筆數的清單，順序不再固定。
+    const fieldOf = (labelSubstr) => page.locator('.dialog .field').filter({ has: page.locator('label', { hasText: labelSubstr }) });
+    const inputOf = (labelSubstr) => fieldOf(labelSubstr).locator('input');
+    async function fillItems(labelSubstr, items) {
+      const editor = fieldOf(labelSubstr).locator('.ledger-items-editor');
+      const rowsLoc = () => editor.locator('.ledger-item-row');
+      let count = await rowsLoc().count();
+      while (count < items.length) {
+        await editor.locator('button:has-text("+ 新增一筆")').click();
+        count++;
+      }
+      for (let i = 0; i < items.length; i++) {
+        const row = rowsLoc().nth(i);
+        await row.locator('input[type="text"]').fill(items[i].name);
+        await row.locator('input[type="number"]').fill(String(items[i].amount));
+      }
+    }
+    async function readItems(labelSubstr) {
+      const rows = fieldOf(labelSubstr).locator('.ledger-items-editor .ledger-item-row');
+      const n = await rows.count();
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        out.push({
+          name: await rows.nth(i).locator('input[type="text"]').inputValue(),
+          amount: await rows.nth(i).locator('input[type="number"]').inputValue()
+        });
+      }
+      return out;
+    }
+
     // 今天還沒設定過的話，週轉金要預先帶入常用的固定金額（省掉每次都要
-    // 手動刪掉「0」再重打），其他四項則留白（不是「0」），這樣手動輸入時
-    // 不用先清掉預設值。
+    // 手動刪掉「0」再重打），其他項目則留白（不是「0」），台主給／台主領
+    // 各自預設只有一列空白（名字、金額都留白），這樣手動輸入時不用先
+    // 清掉預設值或自己按「+」才有地方打字。
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
-    let inputs = page.locator('.dialog input');
-    assert(await inputs.nth(0).inputValue() === '416000', '今天還沒設定過時，週轉金應該預帶 416000');
-    for (let i = 1; i < 5; i++) {
-      assert(await inputs.nth(i).inputValue() === '', '今天還沒設定過時，第 ' + (i + 1) + ' 個輸入框應該留白，不是 0');
-    }
+    assert(await inputOf('週轉金').inputValue() === '416000', '今天還沒設定過時，週轉金應該預帶 416000');
+    assert(await inputOf('432').inputValue() === '', '今天還沒設定過時，432 應該留白，不是 0');
+    assert(await inputOf('441').inputValue() === '', '今天還沒設定過時，441 應該留白，不是 0');
+    assert(await inputOf('運拿').inputValue() === '', '今天還沒設定過時，運拿應該留白，不是 0');
+    assert(await inputOf('還內場').inputValue() === '', '今天還沒設定過時，還內場應該留白，不是 0');
+    const givenBefore = await readItems('台主給');
+    assert(givenBefore.length === 1 && givenBefore[0].name === '' && givenBefore[0].amount === '',
+      '今天還沒設定過時，台主給應該只有一列空白，實際 ' + JSON.stringify(givenBefore));
     await page.click('.dialog button:has-text("取消")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
-    inputs = page.locator('.dialog input');
-    await inputs.nth(0).fill('100');
-    await inputs.nth(1).fill('40'); // 運拿：輸入正數，系統會自動扣除
-    await inputs.nth(2).fill('20');
-    await inputs.nth(3).fill('15'); // 台主領：輸入正數，系統會自動扣除
-    await inputs.nth(4).fill('5');
+    await inputOf('週轉金').fill('100');
+    await inputOf('432').fill('8'); // 手動活動支出：輸入正數，系統會自動扣除
+    await inputOf('441').fill('3');
+    await inputOf('運拿').fill('40'); // 運拿：輸入正數，系統會自動扣除
+    await fillItems('台主給', [{ name: '老王', amount: 12 }, { name: '老李', amount: 8 }]); // 按 + 新增第二筆，兩位台主各自命名
+    await fillItems('台主領', [{ name: '老陳', amount: 15 }]); // 台主領：輸入正數，系統會自動扣除
+    await inputOf('還內場').fill('5');
     await page.click('.dialog button:has-text("儲存")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
@@ -712,26 +748,44 @@ async function main() {
     }, totalBefore, { timeout: 8000 });
 
     const totalAfter = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
-    assert(totalAfter - totalBefore === 70,
-      '儲存週轉金100－運拿40＋台主給20－台主領15＋還內場5＝70 之後，總結餘應該增加 70，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
+    assert(totalAfter - totalBefore === 59,
+      '儲存週轉金100－432(8)－441(3)－運拿40＋台主給(12+8=20)－台主領15＋還內場5＝59 之後，總結餘應該增加 59，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
+    const rowLabelsAfter = await page.locator('.ledger-row .ledger-label').allTextContents();
+    assert(rowLabelsAfter.indexOf('老王') >= 0 && rowLabelsAfter.indexOf('老李') >= 0,
+      '結餘明細應該逐筆列出台主給的自訂名字，實際 ' + JSON.stringify(rowLabelsAfter));
+    assert(rowLabelsAfter.indexOf('老陳') >= 0, '結餘明細應該顯示台主領的自訂名字「老陳」，實際 ' + JSON.stringify(rowLabelsAfter));
     await shot('17-home-total-ledger');
 
-    // 今天已經設定過了，再打開應該顯示剛剛存的真實值，不能被預設值蓋掉。
+    // 今天已經設定過了，再打開應該顯示剛剛存的真實值（含台主給／台主領的
+    // 名字跟筆數），不能被預設值蓋掉。
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
-    const savedInputs = page.locator('.dialog input');
-    const savedValues = [];
-    for (let i = 0; i < 5; i++) savedValues.push(await savedInputs.nth(i).inputValue());
-    assert(JSON.stringify(savedValues) === JSON.stringify(['100', '40', '20', '15', '5']),
-      '今天已經設定過時，重新打開應該顯示剛存的實際值，不是預設值，實際 ' + JSON.stringify(savedValues));
+    assert(await inputOf('週轉金').inputValue() === '100', '重新打開應該顯示剛存的週轉金');
+    assert(await inputOf('432').inputValue() === '8', '重新打開應該顯示剛存的 432');
+    assert(await inputOf('441').inputValue() === '3', '重新打開應該顯示剛存的 441');
+    assert(await inputOf('運拿').inputValue() === '40', '重新打開應該顯示剛存的運拿');
+    assert(await inputOf('還內場').inputValue() === '5', '重新打開應該顯示剛存的還內場');
+    const givenSaved = await readItems('台主給');
+    assert(givenSaved.length === 2 && givenSaved.some((it) => it.name === '老王' && it.amount === '12')
+      && givenSaved.some((it) => it.name === '老李' && it.amount === '8'),
+      '重新打開應該看到剛存的兩筆台主給，實際 ' + JSON.stringify(givenSaved));
+    const takenSaved = await readItems('台主領');
+    assert(takenSaved.length === 1 && takenSaved[0].name === '老陳' && takenSaved[0].amount === '15',
+      '重新打開應該看到剛存的台主領，實際 ' + JSON.stringify(takenSaved));
     await page.click('.dialog button:has-text("取消")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
-    // 同一個營業日重複儲存應該是覆蓋，不是疊加——五項都改回 0，總結餘應該回到最初的值。
+    // 同一個營業日重複儲存應該是覆蓋，不是疊加——全部改回 0／清空，
+    // 總結餘應該回到最初的值。
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
-    inputs = page.locator('.dialog input');
-    for (let i = 0; i < 5; i++) await inputs.nth(i).fill('0');
+    await inputOf('週轉金').fill('0');
+    await inputOf('432').fill('0');
+    await inputOf('441').fill('0');
+    await inputOf('運拿').fill('0');
+    await fillItems('台主給', [{ name: '', amount: 0 }, { name: '', amount: 0 }]);
+    await fillItems('台主領', [{ name: '', amount: 0 }]);
+    await inputOf('還內場').fill('0');
     await page.click('.dialog button:has-text("儲存")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
@@ -742,7 +796,7 @@ async function main() {
 
     const totalReset = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
     assert(totalReset === totalBefore,
-      '五項都改回 0 之後，總結餘應該覆蓋回最初的值（不是疊加），實際 ' + totalReset + ' vs ' + totalBefore);
+      '全部改回 0／清空之後，總結餘應該覆蓋回最初的值（不是疊加），實際 ' + totalReset + ' vs ' + totalBefore);
 
     // 收尾切回骰台分頁、進一台骰台機台，後面的測試（巡邏人員角色）預期
     // 停在一個有「← 返回主畫面」可以按的頁面，且首頁分頁籤要留在預設值。

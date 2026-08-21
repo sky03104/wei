@@ -18,7 +18,8 @@ const SCHEMA = {
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
   Config: ['key', 'value'],
   BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
-  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at', 'biz_id']
+  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at', 'biz_id',
+    'manual_432', 'manual_441', 'given_to_owner_items', 'taken_by_owner_items']
 };
 
 /**
@@ -36,7 +37,8 @@ const SCHEMA = {
  * 這是入幣改版那次欄位錯位之外，另一種「忘記鎖格式」會踩到的坑，
  * 不要重蹈覆轍。
  */
-const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at', 'name', 'prize_name'];
+const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at', 'name', 'prize_name',
+  'given_to_owner_items', 'taken_by_owner_items'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -61,7 +63,8 @@ const HEADER_LABELS = {
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
   Config: ['設定鍵', '設定值'],
   BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
-  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給', '台主領', '還內場', '更新人', '更新時間', '所屬營業日編號']
+  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給（舊，已改用明細）', '台主領（舊，已改用明細）', '還內場', '更新人', '更新時間', '所屬營業日編號',
+    '手動活動支出432', '手動活動支出441', '台主給明細（JSON）', '台主領明細（JSON）']
 };
 
 /**

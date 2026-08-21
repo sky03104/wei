@@ -197,6 +197,14 @@ input[type="date"] { min-width: 0; }
 .field { display: grid; gap: 6px; margin-bottom: 14px; }
 .field label { font-size: 14px; color: var(--muted); font-weight: 600; }
 
+/* 台主給／台主領：可以「+ 新增一筆」的名字＋金額清單編輯器（設定今日數字對話框用）。 */
+.ledger-items-wrap { display: grid; gap: 8px; }
+.ledger-item-row { display: flex; gap: 8px; align-items: center; }
+.ledger-item-row input[type="text"] { flex: 1 1 40%; min-width: 0; }
+.ledger-item-row input[type="number"] { flex: 1 1 40%; min-width: 0; }
+.ledger-item-remove { flex: 0 0 auto; min-height: 0; padding: 6px 10px; }
+.ledger-items-editor .btn { margin-top: 8px; }
+
 .checkbox { display: flex; align-items: center; gap: 10px; cursor: pointer; user-select: none; }
 .checkbox input { width: 20px; height: 20px; min-height: 0; accent-color: var(--accent); }
 
