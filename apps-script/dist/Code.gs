@@ -854,37 +854,61 @@ function _currentBusinessDate() {
  * 的舊帳（忘記結單被自動結掉的上一個 session、或行事曆日期退回路徑記的）
  * 混在一起——要下次又按「今日營業開始」開新的 session，邊界才會再往前挪。
  *
- * 今天完全沒按過這個功能（今天沒有任何 BizDays 紀錄）才會真的回傳 null，
- * 退回沒有邊界的舊行為，跟這個功能上線前完全一樣。
+ * 找「今天結束的最後一個」看的是**結束時間**的行事曆日期，不是 business_date——
+ * 晚上開始、跨過午夜才打烊的營業日，business_date 存的是「昨天」（開始那天），
+ * 用 business_date 對今天的行事曆日期會永遠對不上，結單那一刻反而立刻「失憶」，
+ * 剛好是整個跨夜設計最需要它記得的時候。改用結束時間才對得起來：不管這個
+ * session 是哪天開始的，只要是今天結的，今天查「今日」就該看得到它。
+ *
+ * 結單後這個邊界一路維持到「今天」過完（下一個行事曆日到來會自然找不到
+ * 符合的 session，退回沒有邊界）或下次又按「今日營業開始」為止——同一天
+ * 開始又結束的一般情況，business_date 本來就是今天，退回路徑記的帳一樣
+ * 對得起來；跨夜營業日結單後（business_date 是昨天），如果沒開新 session
+ * 又繼續用退回路徑記帳，那些新紀錄「今天的行事曆日期」對不上這裡的邊界，
+ * 靠 _isTodayRecord() 另外處理（見那支函式的說明），不會被卡住看不到。
+ *
+ * 今天完全沒按過這個功能、或今天沒有任何相關的營業日紀錄，才會真的回傳
+ * null，退回沒有邊界的舊行為，跟這個功能上線前完全一樣。
  */
 function _relevantBizDayForToday() {
   const open = _openBizDay();
   if (open) return open;
+
   const today = todayKey();
-  const rows = dbReadAll('BizDays').filter(function (r) {
-    return String(r.business_date) === today && r.closed_at;
+  const closedToday = dbReadAll('BizDays').filter(function (r) {
+    return r.closed_at && localDateKey(r.closed_at) === today;
   });
-  if (!rows.length) return null;
-  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
-  return rows[0];
+  if (!closedToday.length) return null;
+  closedToday.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return closedToday[0];
 }
 
 /**
  * 「今日」數字的重置邊界——按一次「今日營業開始」，所有機台跟加總分頁的
  * 手動帳目都該從那一刻重新歸零算，不能沿用同一個日期裡、這次開始「之前」
  * 記過的帳（不管是忘記結單被自動結掉的上一個 session，還是這個功能上線前
- * 用行事曆日期退回路徑記的）。判斷式只看「有沒有相關的營業日 session」跟
- * 「這筆紀錄的建立時間是不是在那個 session 開始之後」，紀錄本身完全不動，
- * 只是這次不把它算進「今日」而已——歷史查詢跟累計數字看到的還是全部。
+ * 用行事曆日期退回路徑記的）。紀錄本身完全不動，只是這次不把它算進「今日」
+ * 而已——歷史查詢跟累計數字看到的還是全部。
  *
  * bizDay 用 _relevantBizDayForToday() 算出來的，可能是進行中的、也可能是
- * 已經結單的——結單後這個邊界還是繼續生效，不會退回單純比對日期。真的
- * 沒有邊界（今天完全沒按過這個功能）bizDay 才會是 null。
+ * 已經結單的——結單後這個邊界還是繼續生效，不會退回單純比對日期。today 是
+ * 對應的顯示日期（bizDay.business_date，或沒有相關 session 時的行事曆日期）。
+ *
+ * 有兩種情況會算進「今日」：
+ *   ① 紀錄的日期跟 today 對得上，而且是在這個 session 開始之後記的
+ *      （這是主要邏輯，負責「按開始歸零」跟「結單後維持邊界」）。
+ *   ② today 其實是「昨天」（跨夜營業日結單後的顯示日期），但這筆紀錄剛好
+ *      是「今天的行事曆日期」——這是結單後、沒開新 session 又繼續記的帳，
+ *      不管什麼時候記的都算，不然這些新紀錄會因為日期對不上①而被排除在
+ *      「今日」之外，跨夜的舊總結反而變成「卡住」新帳看不到的陷阱。
+ *      同一天開始又結束的一般情況，today 本來就等於今天的行事曆日期，
+ *      跟①是同一組，不會多算兩次。
  */
 function _isTodayRecord(r, today, bizDay) {
-  if (_recordBusinessDate(r) !== today) return false;
-  if (!bizDay) return true;
-  return String(r.created_at) >= String(bizDay.opened_at);
+  const bd = _recordBusinessDate(r);
+  if (bd === today) return bizDay ? String(r.created_at) >= String(bizDay.opened_at) : true;
+  if (bizDay && String(bizDay.business_date) !== todayKey() && bd === todayKey()) return true;
+  return false;
 }
 
 /**
@@ -1061,7 +1085,12 @@ function saveDailyLedger(user, payload) {
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
 
   return withLock(function () {
-    const businessDate = _currentBusinessDate();
+    // 用跟 getDashboard() 讀取時同一套邊界（_relevantBizDayForToday()），
+    // 不是 _currentBusinessDate()——後者結單後會退回今天的行事曆日期，
+    // 兩邊算的「今天」對不起來的話，這裡存的那一列跟畫面讀的那一列會是
+    // 不同的 business_date／biz_id，變成存了卻讀不到、顯示 0。
+    const relevant = _relevantBizDayForToday();
+    const businessDate = relevant ? String(relevant.business_date) : todayKey();
     const existing = _dailyLedgerRow(businessDate);
     const patch = {
       turnover: turnover,
@@ -1075,7 +1104,6 @@ function saveDailyLedger(user, payload) {
     if (existing) {
       dbUpdate('DailyLedger', existing._row, patch);
     } else {
-      const relevant = _relevantBizDayForToday();
       dbInsert('DailyLedger', Object.assign({
         ledger_id: newId('ldg'),
         business_date: businessDate,
@@ -3603,9 +3631,13 @@ function _selfTestBody(results) {
     _ok({ action: 'endBusinessDay', token: adminTok });
     const afterEnd = _ok({ action: 'dashboard', token: adminTok });
     _assert(!afterEnd.businessDay.open, '結單後應該顯示沒有進行中的營業日');
-    _assertEq(afterEnd.today, todayKey(), '結單後「今天」應該退回行事曆日期');
+    // 結單後「今天」不會立刻退回行事曆日期——這個跨夜營業日是今天結的，
+    // 「今日」該繼續顯示它的日期（昨天），不然剛結束的那個晚上的總結
+    // 會憑空消失，見 _relevantBizDayForToday()。
+    _assertEq(afterEnd.today, yesterday, '結單後「今天」應該還是顯示這個跨夜營業日的日期，不會立刻退回行事曆日期');
 
-    // 結單之後再記一筆：沒有進行中的營業日了，退回今天的行事曆日期。
+    // 結單之後再記一筆：沒有進行中的營業日了，這筆新紀錄退回今天的行事曆日期
+    // （寫入邏輯 _currentBusinessDate() 不受「今日顯示邊界」影響，兩者是分開的）。
     _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: newId('ct') });
     const afterEndDetail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(afterEndDetail.records[0].businessDate, todayKey(), '結單後新記的帳應該用今天的行事曆日期，不是已經結束的營業日');
@@ -3788,7 +3820,11 @@ function _selfTestBody(results) {
     _assertEq(afterNewMine.today.out, 15, '這次開始之後才記的帳，應該正常算進今日');
     _assertEq(afterNew.ledger.turnover, 88, '這次開始之後新存的週轉金，應該正常顯示，不會被舊值覆蓋或疊加');
 
-    const ledgerRows = dbReadAll('DailyLedger').filter(function (r) { return r.business_date === todayKey(); });
+    // 存的時候用的是「相關營業日 session」的日期，不一定剛好是 todayKey()
+    // 這個字串（例如同一個測試流程裡前面剛好還有別的營業日 session 是用
+    // 模擬跨夜留下的「昨天」）——這裡不比對存進哪個日期桶，只確認兩筆
+    // 分別留著、都還查得到，這才是這項測試真正要驗的事。
+    const ledgerRows = dbReadAll('DailyLedger');
     _assert(ledgerRows.some(function (r) { return toNumber(r.turnover) === 999; }),
       '按開始之前存的那筆週轉金 999，應該還完整留在試算表裡，沒有被刪除或覆蓋');
     _assert(ledgerRows.some(function (r) { return toNumber(r.turnover) === 88; }),
@@ -3805,6 +3841,33 @@ function _selfTestBody(results) {
 
     const afterEndDetail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(afterEndDetail.today.out, 15, '機台詳細頁結單後的「今日出幣」也要跟首頁一致，維持 15');
+  });
+
+  _t(results, '跨夜營業日結單後：「今日」要繼續看得到那個晚上的總結，不會因為過了午夜就消失', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '跨夜結單測試台', sortOrder: 100 }).machineId;
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    // 模擬「晚上開始營業、跨過午夜才打烊」：把這個營業日的 business_date
+    // 手動改成昨天，代表它其實是昨晚開始的，還沒結束就跨到今天了。
+    const bizRow = _openBizDay();
+    const yesterday = _addDays(todayKey(), -1);
+    dbUpdate('BizDays', bizRow._row, { business_date: yesterday });
+    _clearSheetCache();
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 40, clientToken: newId('ct') });
+
+    // 結單（結束時間是「今天」，business_date 是「昨天」）。
+    _ok({ action: 'endBusinessDay', token: adminTok });
+
+    const afterEnd = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(afterEnd.today, yesterday,
+      '結單後「今日」應該還是顯示那個跨夜營業日的日期（昨天），不是今天的行事曆日期——' +
+      '不然剛結束的那個晚上的總結會憑空消失');
+    const mineAfterEnd = afterEnd.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(mineAfterEnd.today.out, 40, '結單後應該還看得到剛剛那個跨夜營業日記的 40，不會因為過了午夜就變 0');
+
+    const detailAfterEnd = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detailAfterEnd.today.out, 40, '機台詳細頁也要一致，結單後跨夜營業日的 40 還在「今日」裡');
   });
 
   // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──
