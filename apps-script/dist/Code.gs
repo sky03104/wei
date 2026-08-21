@@ -33,7 +33,7 @@ const SCHEMA = {
   Sessions: ['token', 'user_id', 'created_at', 'expires_at', 'remember'],
   Config: ['key', 'value'],
   BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
-  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at']
+  DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at', 'biz_id']
 };
 
 /**
@@ -76,7 +76,7 @@ const HEADER_LABELS = {
   Sessions: ['登入權杖', '帳號編號', '建立時間', '到期時間', '記住我'],
   Config: ['設定鍵', '設定值'],
   BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
-  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給', '台主領', '還內場', '更新人', '更新時間']
+  DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給', '台主領', '還內場', '更新人', '更新時間', '所屬營業日編號']
 };
 
 /**
@@ -848,6 +848,23 @@ function _currentBusinessDate() {
 }
 
 /**
+ * 「今日」數字的重置邊界——按一次「今日營業開始」，所有機台跟加總分頁的
+ * 手動帳目都該從那一刻重新歸零算，不能沿用同一個日期裡、這次開始「之前」
+ * 記過的帳（不管是忘記結單被自動結掉的上一個 session，還是這個功能上線前
+ * 用行事曆日期退回路徑記的）。判斷式只看「有沒有進行中的營業日」跟
+ * 「這筆紀錄的建立時間是不是在這次開始之後」，紀錄本身完全不動，
+ * 只是這次不把它算進「今日」而已——歷史查詢跟累計數字看到的還是全部。
+ *
+ * 沒有進行中的營業日（沒按過這個功能，或已經結單）就退回單純比對日期，
+ * 跟這個功能上線前完全一樣。
+ */
+function _isTodayRecord(r, today, openBiz) {
+  if (_recordBusinessDate(r) !== today) return false;
+  if (!openBiz) return true;
+  return String(r.created_at) >= String(openBiz.opened_at);
+}
+
+/**
  * 某一筆紀錄該算進哪一天。
  *
  * 新紀錄一律在寫入當下就把 business_date 快照進去（跟獎型單價、
@@ -945,18 +962,39 @@ function _machineCategory(machineId) {
 
 // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
 //
-// 這五項是整間店當天的現金調度，不屬於任何一台機台，每天只設定一個數字
-// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、台主領本來就是
-// 現金流出，操作人直接輸入平常認知的正數金額即可，系統加總時自動幫這
-// 兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓使用者輸入
-// 正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場則直接
-// 加回總結餘。同一個營業日重複儲存是覆蓋，不是疊加——DailyLedger 每個
-// business_date 最多一列。
+// 這五項是整間店當天的現金調度，不屬於任何一台機台，每個「營業日 session」
+// 只設定一個數字（像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、
+// 台主領本來就是現金流出，操作人直接輸入平常認知的正數金額即可，系統加總
+// 時自動幫這兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓
+// 使用者輸入正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場
+// 則直接加回總結餘。同一個 session 裡重複儲存是覆蓋，不是疊加。
+//
+// 每一列額外存一個 biz_id，snapshot 當時是哪一個營業日 session 存的——
+// 跟「今日」紀錄要照 _isTodayRecord() 的開始時間切一樣的道理：按一次
+// 「今日營業開始」就是開一個新 session，這五項也該跟著歸零重新輸入，
+// 不能沿用同一個日期裡「上一個 session」（忘記結單被自動結掉、或這次
+// 開始之前）存的舊數字。舊那一列完全不會被刪或改，只是新 session 找
+// 不到自己的列時當作沒設定過（都是 0），資料本身沒有被動過。
 
-/** 某個營業日的手動帳目原始列，沒設定過就是 null。 */
+/**
+ * 某個營業日的手動帳目原始列，沒設定過就是 null。
+ *
+ * 有進行中的營業日：只認這個 session 自己存的那一列（biz_id 要對得上），
+ * 上一個 session 存的舊列即使日期一樣也不算，這樣才會「看起來像歸零」。
+ * 沒有進行中的營業日（沒按過這個功能，或已經結單）：退回這個功能上線前
+ * 的行為，單純比對日期，取最新一列（防禦性地取列號最大的）——這是結單後
+ * 還想看「今天結算完的數字」的唯一入口，不該因為沒有 session 就看不到。
+ */
 function _dailyLedgerRow(businessDate) {
   const rows = dbFilter('DailyLedger', 'business_date', businessDate);
-  return rows.length ? rows[0] : null;
+  if (!rows.length) return null;
+  const openBiz = _openBizDay();
+  if (openBiz) {
+    const mine = rows.filter(function (r) { return String(r.biz_id || '') === String(openBiz.biz_id); });
+    return mine.length ? mine[0] : null;
+  }
+  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return rows[0];
 }
 
 /** 轉成前端要的形狀，沒設定過的營業日五項都當 0，不是回傳 null 讓前端自己判斷。 */
@@ -1013,9 +1051,11 @@ function saveDailyLedger(user, payload) {
     if (existing) {
       dbUpdate('DailyLedger', existing._row, patch);
     } else {
+      const openBiz = _openBizDay();
       dbInsert('DailyLedger', Object.assign({
         ledger_id: newId('ldg'),
-        business_date: businessDate
+        business_date: businessDate,
+        biz_id: openBiz ? openBiz.biz_id : ''
       }, patch));
     }
     return _publicDailyLedger(_dailyLedgerRow(businessDate));
@@ -1080,7 +1120,8 @@ function getDashboard(user) {
   const machineById = {};
   machines.forEach(function (m) { machineById[String(m.machine_id)] = m; });
 
-  const today = _currentBusinessDate();
+  const openBiz = _openBizDay();
+  const today = openBiz ? String(openBiz.business_date) : todayKey();
   const totals = {};
   const todays = {};
   // totals 是「累計」（全部歷史加總），要從封存前累計開始疊；
@@ -1093,7 +1134,7 @@ function getDashboard(user) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    const isToday = _recordBusinessDate(r) === today;
+    const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todays[mid], r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
@@ -1195,8 +1236,8 @@ function homeBootstrap(user) {
  * （一次算全部，見下方）共用同一份組裝邏輯，差別只在呼叫端怎麼把這台的
  * 紀錄篩出來，避免兩邊各寫一份、改一邊忘了改另一邊。
  */
-function _buildMachineDetail(m, records, recordLimit) {
-  const today = _currentBusinessDate();
+function _buildMachineDetail(m, records, recordLimit, openBiz) {
+  const today = openBiz ? String(openBiz.business_date) : todayKey();
   // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
   const total = _seedSummary(m);
   const todaySum = emptySummary();
@@ -1204,7 +1245,7 @@ function _buildMachineDetail(m, records, recordLimit) {
 
   records.forEach(function (r) {
     _accumulate(total, r);
-    const isToday = _recordBusinessDate(r) === today;
+    const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todaySum, r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
@@ -1256,7 +1297,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   if (!m) throw new Error('找不到這台機台');
 
   const mine = activeRecords().filter(function (r) { return String(r.machine_id) === String(machineId); });
-  return _buildMachineDetail(m, mine, recordLimit);
+  return _buildMachineDetail(m, mine, recordLimit, _openBizDay());
 }
 
 /**
@@ -1280,10 +1321,11 @@ function getAllMachineDetails(user, recordLimit) {
     if (byMachine[mid]) byMachine[mid].push(r);
   });
 
+  const openBiz = _openBizDay();
   const result = {};
   machines.forEach(function (m) {
     const id = String(m.machine_id);
-    result[id] = _buildMachineDetail(m, byMachine[id] || [], recordLimit);
+    result[id] = _buildMachineDetail(m, byMachine[id] || [], recordLimit, openBiz);
   });
   return result;
 }
@@ -3673,6 +3715,62 @@ function _selfTestBody(results) {
       + after.ledger.turnover - after.ledger.transport + after.ledger.givenToOwner
       + after.electronicTotal.chipNet - after.ledger.takenByOwner + after.ledger.returnedToHouse;
     _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領扣除、其餘七項加總後的結果');
+  });
+
+  _t(results, '按下「今日營業開始」：所有機台的今日數字跟加總分頁的手動帳目都歸零，但紀錄跟累計都沒被動過', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '按開始歸零測試台', sortOrder: 98 }).machineId;
+
+    // 目前沒有進行中的營業日（前面測試都有結單收尾）：用行事曆日期退回路徑記一筆，
+    // 模擬「使用者今天已經先記了一些帳，晚點才想到要按開始」的情境。
+    const beforeRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 70, clientToken: newId('ct') });
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 999, transport: 0, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    const before = _ok({ action: 'dashboard', token: adminTok });
+    const beforeMine = before.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(beforeMine.today.out, 70, '按開始之前，這筆退回行事曆日期記的帳應該正常算進今日');
+    _assertEq(before.ledger.turnover, 999, '按開始之前，剛存的週轉金應該正常顯示');
+
+    // 測試環境跑得很快，這筆紀錄跟接下來開始的營業日有可能落在同一毫秒，
+    // 時間字串就分不出先後（真實情境不會這麼巧，使用者按鈕不可能按這麼快）。
+    // 手動把「重置前」那筆紀錄的時間往回撥 5 秒，確定它一定算在開始之前——
+    // 不動接下來要記的「開始時間」跟「重置後」那筆，兩者都用真實的當下時間，
+    // 順序自然成立，不用賭測試執行速度。
+    const beforeRow = dbFind('Records', 'record_id', beforeRec.records[0].recordId);
+    dbUpdate('Records', beforeRow._row, { created_at: new Date(Date.now() - 5000).toISOString() });
+    _clearSheetCache();
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const afterStart = _ok({ action: 'dashboard', token: adminTok });
+    const afterStartMine = afterStart.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(afterStartMine.today.out, 0, '按下開始之後，這次開始之前記的帳不該再算進今日（就算日期一樣）');
+    _assertEq(afterStart.ledger.turnover, 0, '按下開始之後，加總分頁的週轉金等五項手動帳目應該歸零');
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.total.out, 70, '累計（全部歷史）不受這次開始影響，剛剛那 70 還在累計裡');
+    _assertEq(detail.records.length, 1, '紀錄本身完全沒被刪除或作廢');
+    _assertEq(detail.today.out, 0, '機台詳細頁的「今日」也要跟首頁一致，歸零');
+
+    // 這次開始之後才記的新帳，應該正常算進今日；舊的那筆（重置前）跟新存的
+    // 週轉金各自獨立，不會互相覆蓋（資料完全沒被動過，只是不再被算進「今日」）。
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 15, clientToken: newId('ct') });
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 88, transport: 0, givenToOwner: 0, takenByOwner: 0, returnedToHouse: 0
+    });
+    const afterNew = _ok({ action: 'dashboard', token: adminTok });
+    const afterNewMine = afterNew.machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(afterNewMine.today.out, 15, '這次開始之後才記的帳，應該正常算進今日');
+    _assertEq(afterNew.ledger.turnover, 88, '這次開始之後新存的週轉金，應該正常顯示，不會被舊值覆蓋或疊加');
+
+    const ledgerRows = dbReadAll('DailyLedger').filter(function (r) { return r.business_date === todayKey(); });
+    _assert(ledgerRows.some(function (r) { return toNumber(r.turnover) === 999; }),
+      '按開始之前存的那筆週轉金 999，應該還完整留在試算表裡，沒有被刪除或覆蓋');
+    _assert(ledgerRows.some(function (r) { return toNumber(r.turnover) === 88; }),
+      '按開始之後存的那筆週轉金 88，應該是獨立新增的一列，不是覆蓋掉舊的那筆');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
   });
 
   // ── 修正「舊分頁後來才加的欄位被 Sheets 自動轉成日期型別」──

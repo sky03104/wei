@@ -72,6 +72,23 @@ function _currentBusinessDate() {
 }
 
 /**
+ * 「今日」數字的重置邊界——按一次「今日營業開始」，所有機台跟加總分頁的
+ * 手動帳目都該從那一刻重新歸零算，不能沿用同一個日期裡、這次開始「之前」
+ * 記過的帳（不管是忘記結單被自動結掉的上一個 session，還是這個功能上線前
+ * 用行事曆日期退回路徑記的）。判斷式只看「有沒有進行中的營業日」跟
+ * 「這筆紀錄的建立時間是不是在這次開始之後」，紀錄本身完全不動，
+ * 只是這次不把它算進「今日」而已——歷史查詢跟累計數字看到的還是全部。
+ *
+ * 沒有進行中的營業日（沒按過這個功能，或已經結單）就退回單純比對日期，
+ * 跟這個功能上線前完全一樣。
+ */
+function _isTodayRecord(r, today, openBiz) {
+  if (_recordBusinessDate(r) !== today) return false;
+  if (!openBiz) return true;
+  return String(r.created_at) >= String(openBiz.opened_at);
+}
+
+/**
  * 某一筆紀錄該算進哪一天。
  *
  * 新紀錄一律在寫入當下就把 business_date 快照進去（跟獎型單價、
@@ -169,18 +186,39 @@ function _machineCategory(machineId) {
 
 // ── 每日手動帳目（週轉金／運拿／台主給／台主領／還內場）──
 //
-// 這五項是整間店當天的現金調度，不屬於任何一台機台，每天只設定一個數字
-// （像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、台主領本來就是
-// 現金流出，操作人直接輸入平常認知的正數金額即可，系統加總時自動幫這
-// 兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓使用者輸入
-// 正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場則直接
-// 加回總結餘。同一個營業日重複儲存是覆蓋，不是疊加——DailyLedger 每個
-// business_date 最多一列。
+// 這五項是整間店當天的現金調度，不屬於任何一台機台，每個「營業日 session」
+// 只設定一個數字（像餘額設定，不是像入幣/出幣那樣可以記很多筆）。運拿、
+// 台主領本來就是現金流出，操作人直接輸入平常認知的正數金額即可，系統加總
+// 時自動幫這兩項套上負號扣除，不用使用者自己記得帶負號（這件事之前讓
+// 使用者輸入正數卻被系統加回去，把總結餘算錯了）；週轉金、台主給、還內場
+// 則直接加回總結餘。同一個 session 裡重複儲存是覆蓋，不是疊加。
+//
+// 每一列額外存一個 biz_id，snapshot 當時是哪一個營業日 session 存的——
+// 跟「今日」紀錄要照 _isTodayRecord() 的開始時間切一樣的道理：按一次
+// 「今日營業開始」就是開一個新 session，這五項也該跟著歸零重新輸入，
+// 不能沿用同一個日期裡「上一個 session」（忘記結單被自動結掉、或這次
+// 開始之前）存的舊數字。舊那一列完全不會被刪或改，只是新 session 找
+// 不到自己的列時當作沒設定過（都是 0），資料本身沒有被動過。
 
-/** 某個營業日的手動帳目原始列，沒設定過就是 null。 */
+/**
+ * 某個營業日的手動帳目原始列，沒設定過就是 null。
+ *
+ * 有進行中的營業日：只認這個 session 自己存的那一列（biz_id 要對得上），
+ * 上一個 session 存的舊列即使日期一樣也不算，這樣才會「看起來像歸零」。
+ * 沒有進行中的營業日（沒按過這個功能，或已經結單）：退回這個功能上線前
+ * 的行為，單純比對日期，取最新一列（防禦性地取列號最大的）——這是結單後
+ * 還想看「今天結算完的數字」的唯一入口，不該因為沒有 session 就看不到。
+ */
 function _dailyLedgerRow(businessDate) {
   const rows = dbFilter('DailyLedger', 'business_date', businessDate);
-  return rows.length ? rows[0] : null;
+  if (!rows.length) return null;
+  const openBiz = _openBizDay();
+  if (openBiz) {
+    const mine = rows.filter(function (r) { return String(r.biz_id || '') === String(openBiz.biz_id); });
+    return mine.length ? mine[0] : null;
+  }
+  rows.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  return rows[0];
 }
 
 /** 轉成前端要的形狀，沒設定過的營業日五項都當 0，不是回傳 null 讓前端自己判斷。 */
@@ -237,9 +275,11 @@ function saveDailyLedger(user, payload) {
     if (existing) {
       dbUpdate('DailyLedger', existing._row, patch);
     } else {
+      const openBiz = _openBizDay();
       dbInsert('DailyLedger', Object.assign({
         ledger_id: newId('ldg'),
-        business_date: businessDate
+        business_date: businessDate,
+        biz_id: openBiz ? openBiz.biz_id : ''
       }, patch));
     }
     return _publicDailyLedger(_dailyLedgerRow(businessDate));
@@ -304,7 +344,8 @@ function getDashboard(user) {
   const machineById = {};
   machines.forEach(function (m) { machineById[String(m.machine_id)] = m; });
 
-  const today = _currentBusinessDate();
+  const openBiz = _openBizDay();
+  const today = openBiz ? String(openBiz.business_date) : todayKey();
   const totals = {};
   const todays = {};
   // totals 是「累計」（全部歷史加總），要從封存前累計開始疊；
@@ -317,7 +358,7 @@ function getDashboard(user) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
     _accumulate(totals[mid], r);
-    const isToday = _recordBusinessDate(r) === today;
+    const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todays[mid], r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
@@ -419,8 +460,8 @@ function homeBootstrap(user) {
  * （一次算全部，見下方）共用同一份組裝邏輯，差別只在呼叫端怎麼把這台的
  * 紀錄篩出來，避免兩邊各寫一份、改一邊忘了改另一邊。
  */
-function _buildMachineDetail(m, records, recordLimit) {
-  const today = _currentBusinessDate();
+function _buildMachineDetail(m, records, recordLimit, openBiz) {
+  const today = openBiz ? String(openBiz.business_date) : todayKey();
   // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
   const total = _seedSummary(m);
   const todaySum = emptySummary();
@@ -428,7 +469,7 @@ function _buildMachineDetail(m, records, recordLimit) {
 
   records.forEach(function (r) {
     _accumulate(total, r);
-    const isToday = _recordBusinessDate(r) === today;
+    const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todaySum, r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
@@ -480,7 +521,7 @@ function getMachineDetail(user, machineId, recordLimit) {
   if (!m) throw new Error('找不到這台機台');
 
   const mine = activeRecords().filter(function (r) { return String(r.machine_id) === String(machineId); });
-  return _buildMachineDetail(m, mine, recordLimit);
+  return _buildMachineDetail(m, mine, recordLimit, _openBizDay());
 }
 
 /**
@@ -504,10 +545,11 @@ function getAllMachineDetails(user, recordLimit) {
     if (byMachine[mid]) byMachine[mid].push(r);
   });
 
+  const openBiz = _openBizDay();
   const result = {};
   machines.forEach(function (m) {
     const id = String(m.machine_id);
-    result[id] = _buildMachineDetail(m, byMachine[id] || [], recordLimit);
+    result[id] = _buildMachineDetail(m, byMachine[id] || [], recordLimit, openBiz);
   });
   return result;
 }

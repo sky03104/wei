@@ -296,7 +296,9 @@ async function main() {
     await page.waitForSelector('.detail-hero');
   });
 
-  await check('營業日：管理員能按開始/結單，狀態文字會跟著變', async () => {
+  await check('營業日：管理員能按開始/結單，狀態文字會跟著變；按開始會把所有機台的今日數字歸零', async () => {
+    const num2 = (s) => Number(String(s).replace(/[^0-9.-]/g, ''));
+
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.bizday-bar');
 
@@ -306,6 +308,41 @@ async function main() {
     await page.click('button:has-text("今日營業開始")');
     await page.waitForSelector('.bizday-status:has-text("營業中")', { timeout: 8000 });
 
+    // 記一筆出幣，確認「今日」數字真的有變動，才有得測「再按一次開始會歸零」。
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    await page.click('.action-buttons button:has-text("出幣")');
+    await page.waitForSelector('.custom-amount input');
+    await page.fill('.custom-amount input', '321');
+    await page.click('.custom-amount button:has-text("送出")');
+    // 這台是首頁排第一張的機台，一開始（seed 資料）就有紀錄了，
+    // 不能用「等 .record-item 出現」判斷送出流程跑完——它老早就在了，
+    // 等不到「送出 → loadDetail 真的抓回最新資料」這個非同步流程結束，
+    // 讀到的可能還是送出前那一刻的舊畫面。改成直接等「今日出幣」的
+    // 數字真的變成 321 為止。
+    await page.waitForFunction(() => {
+      const stat = Array.from(document.querySelectorAll('.figures-panel .stat'))
+        .find((el) => el.textContent.indexOf('今日出幣') >= 0);
+      return !!stat && stat.textContent.indexOf('321') >= 0;
+    }, null, { timeout: 8000 });
+    const statsBefore = await page.locator('.figures-panel .stat').allTextContents();
+    const outBefore = statsBefore.find((t) => t.indexOf('今日出幣') >= 0);
+    assert(outBefore && num2(outBefore) >= 321, '記帳後「今日出幣」應該看得到剛剛那 321，實際「' + outBefore + '」');
+
+    // 再按一次「今日營業開始」（等於重新開一個 session）：這台機台的「今日」
+    // 數字應該歸零，就算日期還是同一天、剛剛那筆紀錄沒有被刪掉。
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
+    await page.click('button:has-text("今日營業開始")');
+    await page.waitForSelector('.bizday-status:has-text("營業中")', { timeout: 8000 });
+    await page.locator('.machine-card').first().click();
+    await page.waitForSelector('.detail-hero');
+    const statsAfter = await page.locator('.figures-panel .stat').allTextContents();
+    const outAfter = statsAfter.find((t) => t.indexOf('今日出幣') >= 0);
+    assert(outAfter && num2(outAfter) === 0, '按下「今日營業開始」之後，這台機台的今日出幣應該歸零，實際「' + outAfter + '」');
+
+    await page.click('button:has-text("← 返回主畫面")');
+    await page.waitForSelector('.machine-card');
     await page.click('button:has-text("今日營業結單")');
     await page.waitForSelector('.bizday-status:has-text("尚未開始")', { timeout: 8000 });
 
@@ -927,17 +964,36 @@ async function main() {
     await desktop.locator('.machine-card').first().click();
     await desktop.waitForSelector('.detail-hero');
 
+    // 先把面板打開、欄位填好——Playwright 的 click()/fill() 為了確保元素
+    // 真的看得到會自己捲動頁面，這不是我們要驗的東西。真正要驗的是
+    // 「送出之後背景重新整理那一下」會不會把捲動位置彈掉，所以捲動的
+    // 基準值要在「所有互動都做完、真的要送出的前一刻」才記錄，不能記
+    // 在打開面板之前——不然面板打開、輸入框被捲進畫面這些動作本身
+    // 造成的捲動變化，會被誤判成「背景重繪把畫面彈掉了」。
+    await desktop.click('.action-buttons button:has-text("出幣")');
+    await desktop.waitForSelector('.custom-amount input');
+    await desktop.fill('.custom-amount input', '30');
+
     await desktop.evaluate(() => window.scrollTo(0, 400));
     await desktop.waitForTimeout(50);
     const before = await desktop.evaluate(() => window.scrollY);
     assert(before > 0, '桌機版應該真的能往下捲動才對，實際 ' + before);
 
-    await desktop.click('.action-buttons button:has-text("出幣")');
-    await desktop.waitForSelector('.custom-amount input');
-    await desktop.fill('.custom-amount input', '30');
-    await desktop.click('.custom-amount button:has-text("送出")');
-    await desktop.waitForSelector('.record-item', { timeout: 8000 });
-    await desktop.waitForTimeout(300);
+    // 這台是首頁排第一張的機台，一開始（seed 資料）就有紀錄了，不能用
+    // 「等 .record-item 出現」判斷送出流程真的跑完——它老早就在了，等不到
+    // 「送出 → loadDetail 抓回最新資料 → 重繪」這個非同步流程結束，固定
+    // 等 300ms 在這台環境負載重的時候也不夠。改成等紀錄筆數真的變多。
+    const countBefore = await desktop.locator('.record-item').count();
+    // 這裡故意不用 click()——Playwright 的 click() 一樣會為了確保元素可視
+    // 而自動捲動，送出鈕這時候可能剛好在畫面外（我們手動捲到 400 之後，
+    // 面板不見得整個都在畫面裡）。改成直接呼叫 DOM 的 click()，單純觸發
+    // 送出邏輯，不會連帶把頁面捲走，才不會污染下面要驗的捲動位置。
+    await desktop.locator('.custom-amount button:has-text("送出")').evaluate((btn) => btn.click());
+    await desktop.waitForFunction(
+      (n) => document.querySelectorAll('.record-item').length > n,
+      countBefore, { timeout: 8000 }
+    );
+    await desktop.waitForTimeout(50);
 
     const after = await desktop.evaluate(() => window.scrollY);
     assert(Math.abs(after - before) < 5, '桌機版背景重繪不該把整頁的垂直捲動位置改掉，捲動前 ' + before + '、之後 ' + after);

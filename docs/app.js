@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v25';
+const APP_VERSION = 'v26';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -799,16 +799,31 @@ function businessDayBar(biz) {
   ]);
 }
 
+/**
+ * 開始/結單都會改變「今日」的計算邊界（哪些紀錄算今天），但機台詳細頁
+ * 的快取（detail:機台編號）是靠 CACHE_FRESH_MS（5 分鐘）判斷新不新鮮，
+ * 不知道營業日邊界剛剛換了——不清掉的話，剛按完「今日營業開始」馬上
+ * 點進某台機台，看到的還會是快取裡按下去之前的舊「今日」數字，最多要
+ * 等快取自然過期（5 分鐘）才會更新，等於「重置」沒有立刻生效。
+ */
+function _clearMachineDetailCache() {
+  Object.keys(state.cache).forEach((k) => {
+    if (k.indexOf('detail:') === 0) delete state.cache[k];
+  });
+}
+
 function doStartBusinessDay() {
   run(async () => {
     await api('startBusinessDay', {});
+    _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已開始今日營業' });
+  }, { success: '已開始今日營業，所有機台的今日數字已重置' });
 }
 
 function doEndBusinessDay() {
   run(async () => {
     await api('endBusinessDay', {});
+    _clearMachineDetailCache();
     await loadHome();
   }, { success: '已結算今日營業' });
 }
