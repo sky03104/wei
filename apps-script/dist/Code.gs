@@ -3065,6 +3065,60 @@ function setup() {
   return msg;
 }
 
+/**
+ * 手動執行：正式上線前，把測試期間累積的交易資料清空，機台本身的設定不動。
+ *
+ * 只能在 GAS 編輯器裡手動執行——刻意不透過 App 任何按鈕或 API action 觸發，
+ * 避免有人在手機上不小心點到，把資料清掉。**這是不可逆的動作，執行前
+ * 建議先把整份試算表複製一份備份。**
+ *
+ * 會清空：
+ *   - Records（入幣／出幣／活動／開分／洗分紀錄）
+ *   - DailyLedger（每日手動帳目：週轉金／運拿／台主給／台主領／432／441）
+ *   - BizDays（今日營業開始／結單的歷史）
+ *   - 機台上的「封存前累計」欄位（carry_in／carry_out／carry_prize／
+ *     carry_chip_in／carry_chip_out）歸零——這幾個數字是封存機制銜接用的
+ *     累計基準，Records 清空後這幾個數字也該跟著歸零，不然機台的「累計」
+ *     淨收益會對不起來（還留著測試期間的假數字）
+ *
+ * 不會動：Machines 本身（名稱、位置、顏色、分類、圖案、狀態、排序）、
+ * Prizes／QuickAmounts／MeterRates（機台的按鈕設定）、Users／Permissions
+ * （帳號與授權）、Config、封存分頁（如果已經有封存過的舊資料，這支不會去
+ * 動它——那是「已經封存」的歷史，跟這裡要清的「測試期間交易資料」是兩回事）。
+ */
+function clearTestData() {
+  return withLock(function () {
+    const out = [];
+
+    const recordRows = dbReadAll('Records').map(function (r) { return r._row; });
+    dbDeleteRows('Records', recordRows);
+    out.push('已清空「紀錄」分頁：' + recordRows.length + ' 筆');
+
+    const ledgerRows = dbReadAll('DailyLedger').map(function (r) { return r._row; });
+    dbDeleteRows('DailyLedger', ledgerRows);
+    out.push('已清空「每日手動帳目」分頁：' + ledgerRows.length + ' 筆');
+
+    const bizRows = dbReadAll('BizDays').map(function (r) { return r._row; });
+    dbDeleteRows('BizDays', bizRows);
+    out.push('已清空「營業日」分頁：' + bizRows.length + ' 筆');
+
+    const machines = dbReadAll('Machines');
+    machines.forEach(function (m) {
+      dbUpdate('Machines', m._row, {
+        carry_in: 0, carry_out: 0, carry_prize: 0, carry_chip_in: 0, carry_chip_out: 0
+      });
+    });
+    out.push('已把 ' + machines.length + ' 台機台的「封存前累計」欄位歸零');
+
+    out.push('');
+    out.push('機台本身（名稱／位置／顏色／分類／圖案／排序）、快捷金額、獎型、入幣費率、帳號與授權都沒有被動過。');
+
+    const msg = out.join('\n');
+    Logger.log(msg);
+    return msg;
+  });
+}
+
 // ────────────────────────────────────────────────────────────
 // Test.gs
 // ────────────────────────────────────────────────────────────
@@ -4511,6 +4565,46 @@ function _selfTestBody(results) {
 
     // 舊 session 應該跟著真正的「重設密碼」行為一樣立刻失效
     _fails({ action: 'me', token: adminTok }, 'AUTH');
+  });
+
+  // 真的放最後：clearTestData() 會清空全部 Records／DailyLedger／BizDays，
+  // 後面不能再有任何測試依賴這些分頁還留著資料。
+  _t(results, 'clearTestData()：清空紀錄／每日手動帳目／營業日，機台本身跟其他設定不動，封存前累計欄位歸零', function () {
+    const beforeMachines = dbReadAll('Machines');
+    _assert(beforeMachines.length > 0, '清空前應該已經有機台資料（前面的測試建了很多台）');
+    _assert(dbReadAll('Records').length > 0, '清空前 Records 應該已經有很多筆測試資料');
+    _assert(dbReadAll('BizDays').length > 0, '清空前 BizDays 應該已經有測試留下的營業日紀錄');
+    const prizesCount = dbReadAll('Prizes').length;
+    const quickAmountsCount = dbReadAll('QuickAmounts').length;
+    const meterRatesCount = dbReadAll('MeterRates').length;
+    const usersCount = dbReadAll('Users').length;
+
+    // 模擬「測試期間曾經觸發過封存」：手動塞一個非零的封存前累計金額。
+    const sampleMachine = beforeMachines[0];
+    dbUpdate('Machines', sampleMachine._row, { carry_in: 12345, carry_out: 6789 });
+    _clearSheetCache();
+
+    const msg = clearTestData();
+    _clearSheetCache();
+
+    _assertEq(dbReadAll('Records').length, 0, 'Records 應該被清空');
+    _assertEq(dbReadAll('DailyLedger').length, 0, 'DailyLedger 應該被清空');
+    _assertEq(dbReadAll('BizDays').length, 0, 'BizDays 應該被清空');
+
+    const afterMachines = dbReadAll('Machines');
+    _assertEq(afterMachines.length, beforeMachines.length, '機台本身的筆數不該變，不會被清掉');
+    const sameMachine = dbFind('Machines', 'machine_id', sampleMachine.machine_id);
+    _assertEq(sameMachine.name, sampleMachine.name, '機台名稱應該原封不動');
+    _assertEq(toNumber(sameMachine.carry_in), 0, '封存前累計入幣應該被歸零');
+    _assertEq(toNumber(sameMachine.carry_out), 0, '封存前累計出幣應該被歸零');
+
+    _assertEq(dbReadAll('Prizes').length, prizesCount, '獎型設定不該被清掉');
+    _assertEq(dbReadAll('QuickAmounts').length, quickAmountsCount, '快捷金額設定不該被清掉');
+    _assertEq(dbReadAll('MeterRates').length, meterRatesCount, '入幣費率設定不該被清掉');
+    _assertEq(dbReadAll('Users').length, usersCount, '帳號不該被清掉');
+
+    _assert(msg.indexOf('紀錄') >= 0 && msg.indexOf('每日手動帳目') >= 0 && msg.indexOf('營業日') >= 0,
+      '訊息應該說明清空了哪些分頁');
   });
 }
 
