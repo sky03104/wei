@@ -66,6 +66,7 @@ class FakeRange {
   setNumberFormat() { return this; }
   setBackground() { return this; }
   setFontColor() { return this; }
+  setHorizontalAlignment() { return this; }
 }
 
 class FakeSheet {

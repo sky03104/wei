@@ -316,6 +316,7 @@ function exportLedgerXlsx(user, params) {
 
     sheet.getRange(1, 1, numRows, numCols).setValues(allRows);
     sheet.getRange(1, 1, 1, numCols).setFontWeight('bold');
+    sheet.getRange(1, 1, numRows, numCols).setHorizontalAlignment('center');
     sheet.setFrozenRows(1);
 
     sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
@@ -326,11 +327,10 @@ function exportLedgerXlsx(user, params) {
       sheet.getRange(sheetRow, numCols - 1, 1, 1).setBackground('#f8cbcb');
     });
 
-    sheet.autoResizeColumns(1, numCols);
-    // autoResizeColumns 對中文字的寬度估得偏窄，容易把「總出幣」「總入幣」
-    // 這種三個字的標籤切掉，兩個標籤欄額外給一個保底寬度蓋過去。
-    sheet.setColumnWidth(1, 90);
-    sheet.setColumnWidth(numCols - 1, 90);
+    // 不用 autoResizeColumns：它對中文字的寬度估得偏窄，「總出幣」「總入幣」
+    // 「8月21日」這種欄位常常被切字。改成每一欄都給同一個固定的保底寬度，
+    // 也比較貼近參考照片那種欄寬整齊劃一的紙本對帳表版面。
+    for (let c = 1; c <= numCols; c++) sheet.setColumnWidth(c, 90);
 
     // 一定要在打匯出網址之前 flush：剛套用的樣式（底色／字色／欄寬）是
     // 透過 Sheets service 排入佇列的操作，沒有 flush 過就直接打匯出網址，
