@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v21';
+const APP_VERSION = 'v22';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -960,7 +960,10 @@ function _chunk(arr, size) {
 /**
  * 單一排籤（某分類的其中一段，最多 SWITCHER_CHUNK_SIZE 台）。
  * rowKey 是這一排的獨立識別（分類＋第幾段），各自記自己的捲動位置；
- * showLabel 只有分類的第一段才會是 true，同分類換行的其他段不用重複標。
+ * showLabel 只有分類的第一段才會顯示文字，同分類換行的其他段不用重複標——
+ * 但標籤那個「位子」每一排都保留（寬度用 CSS 固定死，不是靠文字撐開），
+ * 沒文字的那幾排就是空白佔位，這樣每一排的第一顆機台籤才會對齊在同一個
+ * X 座標，不會因為有沒有文字而一排比一排凸出去。
  */
 function _machineSwitcherRow(machines, rowKey, category, showLabel, currentMachineId, isNavigation) {
   if (!machines.length) return null;
@@ -969,9 +972,10 @@ function _machineSwitcherRow(machines, rowKey, category, showLabel, currentMachi
   const prevScrollLeft = prevEl ? prevEl.scrollLeft : 0;
   const hasCurrent = machines.some(function (m) { return m.machineId === currentMachineId; });
 
-  const label = showLabel
-    ? h('span', { class: 'switcher-row-label', text: MACHINE_CATEGORY_LABELS[category] || category })
-    : null;
+  const label = h('span', {
+    class: 'switcher-row-label',
+    text: showLabel ? (MACHINE_CATEGORY_LABELS[category] || category) : ''
+  });
 
   const chips = [label].concat(machines.map(function (m) {
     const active = m.machineId === currentMachineId;

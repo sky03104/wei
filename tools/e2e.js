@@ -843,10 +843,18 @@ async function main() {
     const diceRows = await page.locator('.machine-switcher[data-row-key^="dice-"]').all();
     assert(diceRows.length === 2, '20 台骰台每排最多 10 台，應該分成 2 排，實際 ' + diceRows.length + ' 排');
 
-    const labelsByRow = await page.$$eval('.machine-switcher[data-row-key^="dice-"]', (rows) =>
-      rows.map((r) => !!r.querySelector('.switcher-row-label')));
-    assert(labelsByRow[0] === true && labelsByRow[1] === false,
-      '只有骰台第一排該顯示「骰台」標籤，第二排不用重複顯示，實際 ' + JSON.stringify(labelsByRow));
+    // 每一排都該有標籤「佔位」（寬度固定，不是靠文字撐開），只有第一排的
+    // 文字不是空的——不然第二排沒有標籤文字，第一顆機台籤會比第一排凸出去，
+    // 兩排對不齊。
+    const labelTextsByRow = await page.$$eval('.machine-switcher[data-row-key^="dice-"]', (rows) =>
+      rows.map((r) => (r.querySelector('.switcher-row-label') || {}).textContent || ''));
+    assert(labelTextsByRow[0] === '骰台' && labelTextsByRow[1] === '',
+      '只有骰台第一排該顯示「骰台」文字，第二排的標籤位子要在但文字要空，實際 ' + JSON.stringify(labelTextsByRow));
+
+    const firstChipX = await page.$$eval('.machine-switcher[data-row-key^="dice-"]', (rows) =>
+      rows.map((r) => r.querySelector('.machine-chip').getBoundingClientRect().x));
+    assert(Math.abs(firstChipX[0] - firstChipX[1]) < 2,
+      '兩排骰台籤的第一顆機台籤應該左邊切齊在同一個 X 座標，實際 ' + JSON.stringify(firstChipX));
 
     const firstRow = page.locator('.machine-switcher[data-row-key="dice-0"]');
     const labelBefore = await firstRow.locator('.switcher-row-label').boundingBox();

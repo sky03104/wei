@@ -351,10 +351,13 @@ input[type="date"] { min-width: 0; }
    position:sticky 對橫向捲動的 flex 子項目有效，貼著捲動容器（自己）
    的左緣。要蓋住底下捲過去的機台籤，所以背景補成跟頁面同色，不透明；
    z-index 確保疊在籤的上面；右邊一道漸層陰影提示「這裡開始能捲」，
-   不然標籤跟籤直接切齊看起來會像貼歪了。 */
+   不然標籤跟籤直接切齊看起來會像貼歪了。
+   寬度固定死（不是靠文字內容撐開）：同一個分類換行的其他排文字是空的
+   （見 _machineSwitcherRow），但寬度要跟第一排一樣，不然每一排的第一顆
+   機台籤 X 座標會對不齊，一排比一排凸出去。 */
 .switcher-row-label {
-  position: sticky; left: 0; z-index: 2;
-  flex: 0 0 auto; display: flex; align-items: center;
+  position: -webkit-sticky; position: sticky; left: 0; z-index: 2;
+  flex: 0 0 auto; width: 44px; display: flex; align-items: center;
   font-size: 12px; color: var(--muted); padding: 0 8px 0 2px;
   background: var(--bg);
   box-shadow: 6px 0 6px -6px rgba(0, 0, 0, 0.6);
