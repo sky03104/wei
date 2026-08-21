@@ -109,6 +109,7 @@ class FakeSheet {
   setFrozenRows() { return this; }
   setFrozenColumns() { return this; }
   autoResizeColumns() { return this; }
+  setColumnWidth() { return this; }
   deleteRow(rowIndex) { this.data.splice(rowIndex - 1, 1); }
 }
 

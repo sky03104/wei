@@ -294,19 +294,32 @@ function exportLedgerXlsx(user, params) {
   const dividerRow = new Array(numCols).fill('');
   const allRows = [grid.headerRow].concat(grid.outRows, [dividerRow], grid.summaryRows);
   const numRows = allRows.length;
+  const dividerRowIndex = 1 + grid.outRows.length + 1;
+  const summaryStartRow = dividerRowIndex + 1;
+  const SUMMARY_ROW_COUNT = 5; // 出幣/432/441/入幣/+/- 固定五列
 
   const ss = SpreadsheetApp.create(grid.filenameBase);
   const id = ss.getId();
   try {
     const sheet = ss.getSheets()[0] || ss.insertSheet('對帳表');
+
+    // 表頭列（圖數＋「8月21日」這種日期標籤）跟兩個標籤欄（出幣/432/441/
+    // 入幣/+/-、總出幣/432/441/總入幣/+/-）看起來像日期或純數字，Sheets
+    // 預設會在寫入當下自動幫忙轉型，「8月21日」會變成日期序號（例如
+    // 46255）、「432」會變成數字，顯示就跑掉了。一定要在 setValues() 之前
+    // 先把儲存格格式鎖成純文字，Sheets 才不會自動轉型——這個專案已經因為
+    // 同一種自動轉型的坑踩過好幾次（Db.gs 的 _fixTextColumnFormatting
+    // 就是在修同一類問題，只是那邊是事後補救既有資料，這裡是寫入前預防）。
+    sheet.getRange(1, 1, 1, numCols).setNumberFormat('@');
+    sheet.getRange(summaryStartRow, 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
+    sheet.getRange(summaryStartRow, numCols - 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
+
     sheet.getRange(1, 1, numRows, numCols).setValues(allRows);
     sheet.getRange(1, 1, 1, numCols).setFontWeight('bold');
     sheet.setFrozenRows(1);
 
-    const dividerRowIndex = 1 + grid.outRows.length + 1;
     sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
 
-    const summaryStartRow = dividerRowIndex + 1;
     grid.summaryRows.forEach(function (row, i) {
       const sheetRow = summaryStartRow + i;
       if (row[0] === '+/-') sheet.getRange(sheetRow, 1, 1, numCols).setFontColor('#c00000');
@@ -314,11 +327,15 @@ function exportLedgerXlsx(user, params) {
     });
 
     sheet.autoResizeColumns(1, numCols);
+    // autoResizeColumns 對中文字的寬度估得偏窄，容易把「總出幣」「總入幣」
+    // 這種三個字的標籤切掉，兩個標籤欄額外給一個保底寬度蓋過去。
+    sheet.setColumnWidth(1, 90);
+    sheet.setColumnWidth(numCols - 1, 90);
 
-    // 一定要在打匯出網址之前 flush：剛套用的樣式（底色／字色）是透過
-    // Sheets service 排入佇列的操作，沒有 flush 過就直接打匯出網址，
-    // Google 後端有時候還沒把這些樣式真的寫進試算表，匯出抓到的會是
-    // 「數值都對，但底色/字色全部消失」的半套版本——這是已知的 GAS 陷阱。
+    // 一定要在打匯出網址之前 flush：剛套用的樣式（底色／字色／欄寬）是
+    // 透過 Sheets service 排入佇列的操作，沒有 flush 過就直接打匯出網址，
+    // Google 後端有時候還沒把這些操作真的寫進試算表，匯出抓到的會是
+    // 半套版本——這是已知的 GAS 陷阱。
     SpreadsheetApp.flush();
 
     const url = 'https://docs.google.com/spreadsheets/d/' + id + '/export?format=xlsx';
