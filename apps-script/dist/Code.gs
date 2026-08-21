@@ -2487,7 +2487,7 @@ function _buildLedgerGrid(user, params) {
   const days = _eachDay(range.from, range.to);
 
   const byDay = {};
-  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0 }; });
+  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0, amount432: 0, amount441: 0 }; });
 
   rows.forEach(function (r) {
     const bucket = byDay[_recordBusinessDate(r)];
@@ -2497,8 +2497,13 @@ function _buildLedgerGrid(user, params) {
     } else if (r.type === RECORD_IN) {
       bucket.inTotal += toNumber(r.amount);
     } else if (r.type === RECORD_PRIZE) {
-      if (r.prize_name === TRACKED_PRIZE_NAME) bucket.count432 += toNumber(r.count);
-      else if (r.prize_name === TRACKED_PRIZE_NAME_2) bucket.count441 += toNumber(r.count);
+      if (r.prize_name === TRACKED_PRIZE_NAME) {
+        bucket.count432 += toNumber(r.count);
+        bucket.amount432 += toNumber(r.amount);
+      } else if (r.prize_name === TRACKED_PRIZE_NAME_2) {
+        bucket.count441 += toNumber(r.count);
+        bucket.amount441 += toNumber(r.amount);
+      }
     }
   });
 
@@ -2531,14 +2536,19 @@ function _buildLedgerGrid(user, params) {
   const grand432 = sumDays(function (d) { return byDay[d].count432; });
   const grand441 = sumDays(function (d) { return byDay[d].count441; });
   const grandIn = sumDays(function (d) { return byDay[d].inTotal; });
-  const grandNet = grandIn - grandOut;
+  const grandAmount432 = sumDays(function (d) { return byDay[d].amount432; });
+  const grandAmount441 = sumDays(function (d) { return byDay[d].amount441; });
+  // +/- ＝ 入幣－出幣－432金額－441金額（432/441 用的是活動實際花費金額，
+  // 不是次數）。
+  const netOf = function (d) { return byDay[d].inTotal - outTotal(d) - byDay[d].amount432 - byDay[d].amount441; };
+  const grandNet = grandIn - grandOut - grandAmount432 - grandAmount441;
 
   const summaryRows = [
     ['出幣'].concat(days.map(outTotal)).concat(['總出幣', grandOut]),
     ['432'].concat(days.map(function (d) { return byDay[d].count432; })).concat(['432', grand432]),
     ['441'].concat(days.map(function (d) { return byDay[d].count441; })).concat(['441', grand441]),
     ['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).concat(['總入幣', grandIn]),
-    ['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).concat(['+/-', grandNet])
+    ['+/-'].concat(days.map(netOf)).concat(['+/-', grandNet])
   ];
 
   const label = scope.machineName || '全部機台';
@@ -4491,12 +4501,30 @@ function _selfTestBody(results) {
     _assertEq(grid.summaryRows[1].join(','), '432,2,432,2', '432 應該是計次（送出時 count=2），不是金額；總計欄也一樣');
     _assertEq(grid.summaryRows[2].join(','), '441,1,441,1', '441 應該是計次（送出時 count=1），不是金額；總計欄也一樣');
     _assertEq(grid.summaryRows[3].join(','), '入幣,500,總入幣,500', '入幣是當天總額，不逐筆列出；總計欄也一樣');
-    _assertEq(grid.summaryRows[4].join(','), '+/-,150,+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）；總計欄也一樣');
+    _assertEq(grid.summaryRows[4].join(','), '+/-,120,+/-,120', '淨額＝入幣 500－出幣 350－432金額(2×10=20)－441金額(1×10=10)＝120；總計欄也一樣');
 
     const xlsx = _ok({ action: 'exportLedgerXlsx', token: adminTok, machineId: mid, preset: 'day' });
     _assert(xlsx.filename.indexOf('.xlsx') > 0, '檔名應以 .xlsx 結尾');
     _assert(xlsx.base64 && xlsx.base64.length > 0, '應該回傳非空的 base64 內容');
     _assertEq(xlsx.rowCount, 6, 'rowCount 應該是這個區間的原始紀錄筆數：3 出幣+1 入幣+開獎批次各獎型各寫一列（432、441 共 2 列）');
+  });
+
+  _t(results, '對帳表：+/- 要扣 432 跟 441 的活動金額（次數×單價），不是只扣次數', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '對帳表淨額測試台', sortOrder: 96 }).machineId;
+    const p432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 15, sortOrder: 1 }).prizeId;
+    const p441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 25, sortOrder: 2 }).prizeId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 100, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 1000, clientToken: newId('ct') });
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: p432, count: 3 }, { prizeId: p441, count: 2 }],
+      clientToken: newId('ct')
+    });
+
+    const grid = _buildLedgerGrid(validateSession(adminTok), { machineId: mid, preset: 'day' });
+    // 432金額＝3×15＝45、441金額＝2×25＝50；+/-＝入幣1000－出幣100－45－50＝805
+    _assertEq(grid.summaryRows[4].join(','), '+/-,805,+/-,805', '432跟441用的單價不一樣，如果算金額時兩者對調了這裡就會算錯');
   });
 
   _t(results, '對帳表：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0，最右邊兩欄是整個區間的總計', function () {

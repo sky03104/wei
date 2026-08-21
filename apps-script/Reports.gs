@@ -215,7 +215,7 @@ function _buildLedgerGrid(user, params) {
   const days = _eachDay(range.from, range.to);
 
   const byDay = {};
-  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0 }; });
+  days.forEach(function (d) { byDay[d] = { outs: [], inTotal: 0, count432: 0, count441: 0, amount432: 0, amount441: 0 }; });
 
   rows.forEach(function (r) {
     const bucket = byDay[_recordBusinessDate(r)];
@@ -225,8 +225,13 @@ function _buildLedgerGrid(user, params) {
     } else if (r.type === RECORD_IN) {
       bucket.inTotal += toNumber(r.amount);
     } else if (r.type === RECORD_PRIZE) {
-      if (r.prize_name === TRACKED_PRIZE_NAME) bucket.count432 += toNumber(r.count);
-      else if (r.prize_name === TRACKED_PRIZE_NAME_2) bucket.count441 += toNumber(r.count);
+      if (r.prize_name === TRACKED_PRIZE_NAME) {
+        bucket.count432 += toNumber(r.count);
+        bucket.amount432 += toNumber(r.amount);
+      } else if (r.prize_name === TRACKED_PRIZE_NAME_2) {
+        bucket.count441 += toNumber(r.count);
+        bucket.amount441 += toNumber(r.amount);
+      }
     }
   });
 
@@ -259,14 +264,19 @@ function _buildLedgerGrid(user, params) {
   const grand432 = sumDays(function (d) { return byDay[d].count432; });
   const grand441 = sumDays(function (d) { return byDay[d].count441; });
   const grandIn = sumDays(function (d) { return byDay[d].inTotal; });
-  const grandNet = grandIn - grandOut;
+  const grandAmount432 = sumDays(function (d) { return byDay[d].amount432; });
+  const grandAmount441 = sumDays(function (d) { return byDay[d].amount441; });
+  // +/- ＝ 入幣－出幣－432金額－441金額（432/441 用的是活動實際花費金額，
+  // 不是次數）。
+  const netOf = function (d) { return byDay[d].inTotal - outTotal(d) - byDay[d].amount432 - byDay[d].amount441; };
+  const grandNet = grandIn - grandOut - grandAmount432 - grandAmount441;
 
   const summaryRows = [
     ['出幣'].concat(days.map(outTotal)).concat(['總出幣', grandOut]),
     ['432'].concat(days.map(function (d) { return byDay[d].count432; })).concat(['432', grand432]),
     ['441'].concat(days.map(function (d) { return byDay[d].count441; })).concat(['441', grand441]),
     ['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).concat(['總入幣', grandIn]),
-    ['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).concat(['+/-', grandNet])
+    ['+/-'].concat(days.map(netOf)).concat(['+/-', grandNet])
   ];
 
   const label = scope.machineName || '全部機台';
