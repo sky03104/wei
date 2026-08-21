@@ -14,6 +14,10 @@ const RECORD_CHIP_OUT = 'chip_out'; // 電子機台的「洗分」
 const MACHINE_CATEGORY_DICE = 'dice';
 const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
+/** 機台卡片用的像素風圖案款式，對應前端 docs/app.js 的 MACHINE_ICON_MAPS。 */
+const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall'];
+const DEFAULT_MACHINE_ICON = 'classic';
+
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
 const TRACKED_PRIZE_NAME = '432';
 /** CSV 匯出的「逐日對帳表」另外追蹤的第二個活動名稱次數，目前先寫死。 */
@@ -328,6 +332,7 @@ function getDashboard(user) {
       color: m.color || '#4F7BE8',
       sortOrder: toNumber(m.sort_order),
       category: m.category || MACHINE_CATEGORY_DICE,
+      icon: m.icon || DEFAULT_MACHINE_ICON,
       today: todays[id],
       total: totals[id]
     };
@@ -448,7 +453,8 @@ function _buildMachineDetail(m, records, recordLimit) {
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
       note: m.note || '',
-      category: m.category || MACHINE_CATEGORY_DICE
+      category: m.category || MACHINE_CATEGORY_DICE,
+      icon: m.icon || DEFAULT_MACHINE_ICON
     },
     today: todaySum,
     today432Count: today432Count,
@@ -1044,7 +1050,8 @@ function adminListMachines(user) {
         color: m.color || '#4F7BE8',
         sortOrder: toNumber(m.sort_order),
         note: m.note || '',
-        category: m.category || MACHINE_CATEGORY_DICE
+        category: m.category || MACHINE_CATEGORY_DICE,
+        icon: m.icon || DEFAULT_MACHINE_ICON
       };
     });
 }
@@ -1067,6 +1074,9 @@ function adminSaveMachine(user, payload) {
   let color = String(payload.color || '#4F7BE8');
   if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = '#4F7BE8';
 
+  // 圖案跟顏色一樣，隨時可以改，不像分類牽動歷史紀錄的型別。
+  const icon = MACHINE_ICONS.indexOf(payload.icon) >= 0 ? payload.icon : DEFAULT_MACHINE_ICON;
+
   return withLock(function () {
     if (payload.machineId) {
       const row = dbFind('Machines', 'machine_id', payload.machineId);
@@ -1077,7 +1087,8 @@ function adminSaveMachine(user, payload) {
         status: status,
         color: color,
         sort_order: toNumber(payload.sortOrder),
-        note: String(payload.note || '').substring(0, 200)
+        note: String(payload.note || '').substring(0, 200),
+        icon: icon
       });
       return { machineId: String(payload.machineId) };
     }
@@ -1091,7 +1102,8 @@ function adminSaveMachine(user, payload) {
       sort_order: toNumber(payload.sortOrder),
       note: String(payload.note || '').substring(0, 200),
       created_at: nowIso(),
-      category: category
+      category: category,
+      icon: icon
     };
     dbInsert('Machines', m);
     return { machineId: m.machine_id };

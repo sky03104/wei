@@ -8,7 +8,7 @@
 /** 每個分頁的欄位順序。setup() 會照這個建表頭。 */
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
-  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category'],
+  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category', 'icon'],
   Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
@@ -49,7 +49,7 @@ const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 
  */
 const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
-  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類', '圖案'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
     '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],

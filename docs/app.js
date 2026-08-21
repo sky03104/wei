@@ -30,6 +30,86 @@ const PIXEL_MACHINE = [
   '..KK........KK..'
 ];
 
+/**
+ * 其他款式的像素風娃娃機圖案，跟 PIXEL_MACHINE（經典款）並列——
+ * 只有經典款是 App 圖示（tools/pixel-machine.txt、tools/make-icons.py）的
+ * 權威版本，這幾款是額外的「機台圖案」選項，只用在畫面裡，不影響 App 圖示。
+ */
+const PIXEL_MACHINE_ROUND = [
+  '....KKKKKKKK....',
+  '..KKLLLLLLLLKK..',
+  '.KKLLLLLLLLLLKK.',
+  '.KLBBBBBBBBBBLK.',
+  'KKBBBBBBBBBBBBKK',
+  '.KBBBBBBBBBBBBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGCCCCCCCCGBK.',
+  '.KBGGGGCCGGGGBK.',
+  '.KBGGGCCCCGGGBK.',
+  '.KBGGGCGGCGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGYYYYYYGGBK.',
+  '.KBGGYYYYYYGGBK.',
+  '.KKKKKKKKKKKKKK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KBSSBBBBBBWWBK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KKKKKKKKKKKKKK.',
+  '..KK........KK..'
+];
+
+const PIXEL_MACHINE_TWIN = [
+  '.KKKKKKK.KK.KKKKKKK.',
+  '.KLLLLLK.KK.KLLLLLK.',
+  'KKKKKKKKKKKKKKKKKKKK',
+  'KBGGGGGBKKKKBGGGGGBK',
+  'KBGCCCGBKKKKBGCCCGBK',
+  'KBGGCGGBKKKKBGGCGGBK',
+  'KBGGCGGBKKKKBGGCGGBK',
+  'KBGPPGGBKKKKBGYYGGBK',
+  'KBGPPGGBKKKKBGYYGGBK',
+  'KKKKKKKKKKKKKKKKKKKK',
+  'KBBBBBBBKKKKBBBBBBBK',
+  'KBSBBBBBKKKKBSBBBBBK',
+  'KBBBBBBBKKKKBBBBBBBK',
+  'KKKKKKKKKKKKKKKKKKKK',
+  '.KK...KK.KK.KK...KK.'
+];
+
+const PIXEL_MACHINE_TALL = [
+  '..KKKKKKKKKKKK..',
+  '..KRRRRRRRRRRK..',
+  '..KOOOOOOOOOOK..',
+  '..KKKKKKKKKKKK..',
+  '.KKKKKKKKKKKKKK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGCCCCCCCCGBK.',
+  '.KBGGGGCCGGGGBK.',
+  '.KBGGGCCCCGGGBK.',
+  '.KBGGGCGGCGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGGGGGGGGGBK.',
+  '.KBGGPPGGYYGGBK.',
+  '.KBGPPPPGYYYYBK.',
+  '.KKKKKKKKKKKKKK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KBSSBBBBBBWWBK.',
+  '.KBBBBBBBBBBBBK.',
+  '.KKKKKKKKKKKKKK.',
+  '..KK........KK..'
+];
+
+/** 圖案鍵值 → 對應的像素圖陣列；經典款以外都是後來新增的機台圖案選項。 */
+const MACHINE_ICON_MAPS = {
+  classic: PIXEL_MACHINE,
+  round: PIXEL_MACHINE_ROUND,
+  twin: PIXEL_MACHINE_TWIN,
+  tall: PIXEL_MACHINE_TALL
+};
+const MACHINE_ICON_LABELS = { classic: '經典', round: '圓頂', twin: '雙爪', tall: '招牌' };
+const DEFAULT_MACHINE_ICON = 'classic';
+
 const STATUS_COLORS = { running: '#4ADE80', maintenance: '#FBBF24', offline: '#6B7488' };
 const STATUS_LABELS = { running: '營運中', maintenance: '維修中', offline: '停機' };
 const TYPE_LABELS = { in: '入幣', out: '出幣', prize: '活動', chip_in: '開分', chip_out: '洗分' };
@@ -160,13 +240,15 @@ function toast(message, kind) {
 // ── 像素娃娃機 SVG ──────────────────────────────────────
 
 /**
- * 把 PIXEL_MACHINE 展開成 SVG。
+ * 把某一款像素圖案展開成 SVG。icon 對應 MACHINE_ICON_MAPS 的鍵值，
+ * 沒給或給了不認得的鍵值就落回經典款。
  * 同一個函式供首頁小圖、詳細頁大圖、登入頁使用，只有一份圖案定義。
  * 相鄰同色的格子會合併成一個 rect，節點數少一半以上。
  */
-function machineSvg(height, bodyColor, status) {
-  const rows = PIXEL_MACHINE.length;
-  const cols = PIXEL_MACHINE[0].length;
+function machineSvg(height, bodyColor, status, icon) {
+  const map = MACHINE_ICON_MAPS[icon] || MACHINE_ICON_MAPS[DEFAULT_MACHINE_ICON];
+  const rows = map.length;
+  const cols = map[0].length;
   const unit = height / rows;
   const width = cols * unit;
 
@@ -179,7 +261,9 @@ function machineSvg(height, bodyColor, status) {
     W: '#FFFFFF',
     P: '#FF6FA5',
     Y: '#FFD34D',
-    S: STATUS_COLORS[status] || STATUS_COLORS.running
+    S: STATUS_COLORS[status] || STATUS_COLORS.running,
+    R: '#E8574F',
+    O: '#FBBF24'
   };
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -191,7 +275,7 @@ function machineSvg(height, bodyColor, status) {
   svg.setAttribute('aria-label', '娃娃機（' + (STATUS_LABELS[status] || '營運中') + '）');
 
   for (let y = 0; y < rows; y++) {
-    const line = PIXEL_MACHINE[y];
+    const line = map[y];
     let x = 0;
     while (x < cols) {
       const ch = line[x];
@@ -669,7 +753,7 @@ function machineCard(m) {
     type: 'button',
     onclick: () => goMachine(m.machineId)
   }, [
-    machineSvg(72, m.color, m.status),
+    machineSvg(72, m.color, m.status, m.icon),
     h('div', { class: 'info' }, [
       h('div', { class: 'name', text: m.name }),
       h('div', { class: 'loc' }, [
@@ -700,7 +784,7 @@ function viewMachine() {
   ]);
 
   const hero = h('div', { class: 'detail-hero' }, [
-    machineSvg(96, m.color, m.status),
+    machineSvg(96, m.color, m.status, m.icon),
     h('div', { class: 'title' }, [
       h('h2', { text: m.name }),
       h('div', { class: 'small muted', text: m.location || '—' }),
@@ -770,10 +854,14 @@ function viewElectronicMachine(d, nav, hero, switcher) {
 }
 
 /**
- * 一排可以橫向捲動的機台小按鈕，讓巡機時可以直接跳下一台，
- * 不用先按「返回主畫面」再從列表點一次。資料直接沿用 state.home
- * （首頁載入時就有了，不用為了這排按鈕多打一次 API）；
- * 只有一台機台或首頁資料還沒載入過時就不顯示，沒有意義。
+ * 兩排可以橫向捲動的機台小按鈕，讓巡機時可以直接跳下一台，不用先按
+ * 「返回主畫面」再從列表點一次。資料直接沿用 state.home（首頁載入時
+ * 就有了，不用為了這排按鈕多打一次 API）；只有一台機台或首頁資料還
+ * 沒載入過時就不顯示，沒有意義。
+ *
+ * 骰台跟電子機台分開各一排——併成一排的話機台一多（尤其兩種都有時）
+ * 那排籤會長到要一直滑，而且兩種機台的記帳方式完全不同（入幣/出幣/
+ * 活動 vs 開分/洗分），混在一起也容易點錯台。
  */
 /**
  * 記住上一次 machineSwitcher() 是幫哪一台機台畫的，用來分辨這次重畫
@@ -785,18 +873,17 @@ function viewElectronicMachine(d, nav, hero, switcher) {
  */
 let _switcherLastMachineId = null;
 
-function machineSwitcher(currentMachineId) {
-  const machines = state.home && state.home.machines;
-  if (!machines || machines.length < 2) return null;
+/** 單一分類（骰台或電子）那一排籤，兩排各自獨立記自己的捲動位置。 */
+function _machineSwitcherRow(machines, category, currentMachineId, isNavigation) {
+  if (!machines.length) return null;
 
-  const prevEl = document.querySelector('.machine-switcher');
-  // prevEl 不存在（剛進頁面／從別頁回來）也當成「新的」，理由同下面切換的情況：
-  // 都該把目前這台捲到看得到的地方，而不是沿用一個不存在的捲動位置。
-  const isNavigation = !prevEl || currentMachineId !== _switcherLastMachineId;
+  const prevEl = document.querySelector('.machine-switcher[data-category="' + category + '"]');
   const prevScrollLeft = prevEl ? prevEl.scrollLeft : 0;
-  _switcherLastMachineId = currentMachineId;
+  const hasCurrent = machines.some(function (m) { return m.machineId === currentMachineId; });
 
-  const chips = machines.map(function (m) {
+  const chips = [
+    h('span', { class: 'switcher-row-label', text: MACHINE_CATEGORY_LABELS[category] || category })
+  ].concat(machines.map(function (m) {
     const active = m.machineId === currentMachineId;
     return h('button', {
       class: 'machine-chip' + (active ? ' active' : ''),
@@ -807,20 +894,41 @@ function machineSwitcher(currentMachineId) {
       h('span', { class: 'chip-dot', style: 'background:' + (STATUS_COLORS[m.status] || STATUS_COLORS.running) }),
       m.name
     ]);
-  });
+  }));
 
-  const el = h('div', { class: 'machine-switcher' }, chips);
+  const el = h('div', { class: 'machine-switcher', 'data-category': category }, chips);
   requestAnimationFrame(() => {
-    if (isNavigation) {
-      // 真的切機台了：捲到看得到目前這台，機台一多、剛好在畫面外時不用自己找。
+    if (isNavigation && hasCurrent) {
+      // 真的切到這一排裡的機台了：捲到看得到目前這台，機台一多、剛好在畫面外時不用自己找。
       const activeChip = el.querySelector('.machine-chip.active');
       if (activeChip) activeChip.scrollIntoView({ inline: 'center', block: 'nearest' });
     } else {
-      // 同一台機台的背景重繪：把使用者手動滑到的位置還原回去，不要幫倒忙。
+      // 同一台機台的背景重繪，或目前這台不在這一排：把使用者手動滑到的位置還原回去，不要幫倒忙。
       el.scrollLeft = prevScrollLeft;
     }
   });
   return el;
+}
+
+function machineSwitcher(currentMachineId) {
+  const machines = state.home && state.home.machines;
+  if (!machines || machines.length < 2) return null;
+
+  // prevAny 不存在（剛進頁面／從別頁回來）也當成「新的」，理由同下面切換的情況：
+  // 都該把目前這台捲到看得到的地方，而不是沿用一個不存在的捲動位置。
+  const isNavigation = !document.querySelector('.machine-switcher') || currentMachineId !== _switcherLastMachineId;
+  _switcherLastMachineId = currentMachineId;
+
+  const dice = machines.filter(function (m) { return m.category !== 'electronic'; });
+  const electronic = machines.filter(function (m) { return m.category === 'electronic'; });
+
+  const rows = [
+    _machineSwitcherRow(dice, 'dice', currentMachineId, isNavigation),
+    _machineSwitcherRow(electronic, 'electronic', currentMachineId, isNavigation)
+  ].filter(Boolean);
+
+  if (rows.length < 2) return rows[0] || null; // 只有一種分類有機台時，不用多包一層容器
+  return h('div', { class: 'machine-switcher-group' }, rows);
 }
 
 function togglePanel(kind) {
@@ -1623,7 +1731,7 @@ const MACHINE_CATEGORY_LABELS = { dice: '骰台', electronic: '電子' };
 
 function adminMachines(data) {
   const items = data.machines.map((m) => h('div', { class: 'admin-item' }, [
-    machineSvg(40, m.color, m.status),
+    machineSvg(40, m.color, m.status, m.icon),
     h('div', { class: 'admin-main' }, [
       h('div', { class: 'admin-name' }, [
         m.name,
@@ -1657,6 +1765,10 @@ function editMachine(m, presetCategory) {
   const category = m ? (m.category || 'dice') : (presetCategory || 'dice');
 
   let color = m ? m.color : MACHINE_COLORS[0];
+  let icon = m ? (m.icon || DEFAULT_MACHINE_ICON) : DEFAULT_MACHINE_ICON;
+
+  const refreshPreview = () => preview.replaceChildren(machineSvg(72, color, status.value, icon));
+
   const swatches = h('div', { class: 'color-swatches' }, MACHINE_COLORS.map((c) => {
     const btn = h('button', {
       type: 'button',
@@ -1666,14 +1778,33 @@ function editMachine(m, presetCategory) {
         color = c;
         Array.prototype.forEach.call(swatches.children, (child) => child.classList.remove('active'));
         btn.classList.add('active');
-        preview.replaceChildren(machineSvg(72, color, status.value));
+        refreshPreview();
       }
     });
     return btn;
   }));
 
-  const preview = h('div', { class: 'center', style: 'margin-bottom:14px' }, machineSvg(72, color, m ? m.status : 'running'));
-  status.addEventListener('change', () => preview.replaceChildren(machineSvg(72, color, status.value)));
+  // 圖案縮圖固定用預設藍色畫，只是給使用者看形狀分辨款式，
+  // 不用跟著使用者現在選的機身顏色一起變，避免每次切顏色都要重畫一整排縮圖。
+  const iconSwatches = h('div', { class: 'icon-swatches' }, Object.keys(MACHINE_ICON_MAPS).map((key) => {
+    const btn = h('button', {
+      type: 'button',
+      class: key === icon ? 'active' : '',
+      onclick: () => {
+        icon = key;
+        Array.prototype.forEach.call(iconSwatches.children, (child) => child.classList.remove('active'));
+        btn.classList.add('active');
+        refreshPreview();
+      }
+    }, [
+      machineSvg(40, '#4F7BE8', 'running', key),
+      MACHINE_ICON_LABELS[key] || key
+    ]);
+    return btn;
+  }));
+
+  const preview = h('div', { class: 'center', style: 'margin-bottom:14px' }, machineSvg(72, color, m ? m.status : 'running', icon));
+  status.addEventListener('change', refreshPreview);
 
   const fields = [
     preview,
@@ -1682,6 +1813,7 @@ function editMachine(m, presetCategory) {
     dialogField('位置', location),
     dialogField('狀態', status),
     dialogField('機身顏色', swatches),
+    dialogField('機台圖案', iconSwatches),
     dialogField('排序', order)
   ];
 
@@ -1697,7 +1829,8 @@ function editMachine(m, presetCategory) {
           status: status.value,
           color: color,
           sortOrder: Number(order.value) || 0,
-          category: category
+          category: category,
+          icon: icon
         });
         closeDialog();
         await loadAdmin();
@@ -1799,7 +1932,7 @@ function adminPerms(data) {
               await loadAdmin();
             }
           }),
-          machineSvg(28, m.color, m.status),
+          machineSvg(28, m.color, m.status, m.icon),
           h('span', { class: 'grow', text: m.name }),
           h('span', { class: 'small muted', text: m.location || '' })
         ]);

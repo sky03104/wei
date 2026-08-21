@@ -437,6 +437,40 @@ function _selfTestBody(results) {
     _assertEq(found.category, 'electronic', '應該存成電子分類');
   });
 
+  // ── 機台圖案（icon）：不像分類，隨時可以改，也不需要新增時就決定 ──
+  _t(results, '機台圖案：沒指定時預設是 classic，dashboard／machineDetail／adminListMachines 都要帶到', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '沒填圖案台', sortOrder: 32 }).machineId;
+
+    const listed = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(listed.icon, 'classic', 'adminListMachines 未指定圖案應預設 classic');
+
+    const dashMachine = _ok({ action: 'dashboard', token: adminTok }).machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(dashMachine.icon, 'classic', 'dashboard 也應該預設 classic');
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.machine.icon, 'classic', 'machineDetail 也應該預設 classic');
+  });
+
+  _t(results, '機台圖案：可以指定成 round/twin/tall，之後編輯（不像分類）隨時能再改', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '圖案測試台', sortOrder: 33, icon: 'round' }).machineId;
+    let found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'round', '新增時指定的圖案應該存起來');
+
+    _ok({
+      action: 'adminSaveMachine', token: adminTok, machineId: mid,
+      name: found.name, location: found.location, status: found.status, color: found.color, sortOrder: found.sortOrder,
+      icon: 'twin'
+    });
+    found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'twin', '編輯時應該可以把圖案換成別款，不像分類會被鎖住');
+  });
+
+  _t(results, '機台圖案：給不認得的鍵值會落回 classic，不會整個請求失敗', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '亂填圖案台', sortOrder: 34, icon: '<script>' }).machineId;
+    const found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'classic', '不在白名單裡的圖案鍵值應該落回預設值 classic');
+  });
+
   _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分（今日與累計都要對）', function () {
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_in', amount: 500, clientToken: newId('ct') });
     _ok({ action: 'addRecord', token: adminTok, machineId: electronicMachine, type: 'chip_out', amount: 200, clientToken: newId('ct') });

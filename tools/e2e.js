@@ -493,6 +493,35 @@ async function main() {
     assert(apiCalls === 0, '切換系統管理分頁不該打任何 API，實際打了 ' + apiCalls + ' 次');
   });
 
+  await check('機台圖案：編輯機台可以選不同款式的像素圖，存檔後會記住', async () => {
+    await page.click('.tabs button:has-text("機台")');
+    await page.waitForSelector('.admin-item');
+    await page.locator('.admin-item').first().locator('button:has-text("編輯")').click();
+    await page.waitForSelector('.dialog');
+
+    const iconLabels = await page.locator('.icon-swatches button').allTextContents();
+    assert(['經典', '圓頂', '雙爪', '招牌'].every((l) => iconLabels.some((t) => t.indexOf(l) >= 0)),
+      '應該有經典/圓頂/雙爪/招牌四種圖案可以選，實際 ' + JSON.stringify(iconLabels));
+    assert(await page.locator('.icon-swatches button.active').count() === 1, '預設應該有剛好一款被標成選中');
+
+    const previewBefore = await page.locator('.dialog svg.pixel-machine').first().getAttribute('viewBox');
+    await page.locator('.icon-swatches button:has-text("圓頂")').click();
+    assert((await page.locator('.icon-swatches button:has-text("圓頂")').getAttribute('class') || '').includes('active'),
+      '點選「圓頂」後那顆應該變成選中狀態');
+    const previewAfter = await page.locator('.dialog svg.pixel-machine').first().getAttribute('viewBox');
+    assert(previewAfter !== previewBefore, '換款式後上面的大預覽圖應該跟著換，viewBox 應該不一樣（' + previewBefore + ' → ' + previewAfter + '）');
+
+    await page.click('.dialog button:has-text("儲存")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+
+    await page.locator('.admin-item').first().locator('button:has-text("編輯")').click();
+    await page.waitForSelector('.dialog');
+    assert((await page.locator('.icon-swatches button:has-text("圓頂")').getAttribute('class') || '').includes('active'),
+      '重新打開編輯應該還記得剛存的「圓頂」，不是又跳回經典');
+    await page.click('.dialog button:has-text("取消")');
+    await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
+  });
+
   await check('首頁分頁籤（骰台／電子／加總）＋新增電子機台並記錄開分/洗分', async () => {
     await page.click('.tabs button:has-text("機台")');
     await page.waitForSelector('.admin-item');
@@ -520,6 +549,13 @@ async function main() {
 
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
+
+    // 現在骰台跟電子機台都有了，機台切換籤該分成兩排，不是全部擠在同一排。
+    await page.waitForSelector('.machine-switcher-group');
+    const switcherRows = await page.locator('.machine-switcher[data-category]').all();
+    assert(switcherRows.length === 2, '骰台跟電子都有機台時，切換籤應該分成兩排，實際 ' + switcherRows.length + ' 排');
+    const rowLabels = await page.locator('.switcher-row-label').allTextContents();
+    assert(rowLabels.includes('骰台') && rowLabels.includes('電子'), '兩排應該各自標示「骰台」「電子」，實際 ' + JSON.stringify(rowLabels));
 
     const actionLabels = await page.locator('.action-buttons button').allTextContents();
     assert(actionLabels.length === 2, '電子機台應該只有開分/洗分兩顆按鈕，實際 ' + actionLabels.length);

@@ -23,7 +23,7 @@
 /** 每個分頁的欄位順序。setup() 會照這個建表頭。 */
 const SCHEMA = {
   Users: ['user_id', 'username', 'display_name', 'password_hash', 'salt', 'role', 'status', 'created_at', 'last_login_at'],
-  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category'],
+  Machines: ['machine_id', 'name', 'location', 'status', 'color', 'sort_order', 'note', 'created_at', 'category', 'icon'],
   Records: ['record_id', 'machine_id', 'type', 'amount', 'prize_id', 'prize_name', 'unit_amount', 'count', 'user_id', 'created_at', 'note', 'voided', 'voided_by', 'voided_at', 'client_token', 'meter_start', 'meter_end', 'business_date'],
   Prizes: ['prize_id', 'machine_id', 'name', 'amount', 'sort_order', 'active'],
   QuickAmounts: ['qa_id', 'machine_id', 'type', 'amount', 'label', 'sort_order'],
@@ -64,7 +64,7 @@ const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 
  */
 const HEADER_LABELS = {
   Users: ['帳號編號', '帳號', '顯示名稱', '密碼雜湊', '密碼鹽', '角色', '狀態', '建立時間', '最後登入時間'],
-  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類'],
+  Machines: ['機台編號', '名稱', '位置', '狀態', '顏色', '排序', '備註', '建立時間', '分類', '圖案'],
   Records: ['紀錄編號', '機台編號', '類型', '金額', '獎型編號', '獎型名稱', '單價', '次數',
     '操作人編號', '建立時間', '備註', '已作廢', '作廢人', '作廢時間', '防重複權杖', '上班表', '下班表', '營業日期'],
   Prizes: ['獎型編號', '機台編號', '名稱', '金額', '排序', '啟用中'],
@@ -788,6 +788,10 @@ const RECORD_CHIP_OUT = 'chip_out'; // 電子機台的「洗分」
 const MACHINE_CATEGORY_DICE = 'dice';
 const MACHINE_CATEGORY_ELECTRONIC = 'electronic';
 
+/** 機台卡片用的像素風圖案款式，對應前端 docs/app.js 的 MACHINE_ICON_MAPS。 */
+const MACHINE_ICONS = ['classic', 'round', 'twin', 'tall'];
+const DEFAULT_MACHINE_ICON = 'classic';
+
 /** 首頁「今日 OO 數量」卡片專門追蹤的活動名稱，目前先寫死。 */
 const TRACKED_PRIZE_NAME = '432';
 /** CSV 匯出的「逐日對帳表」另外追蹤的第二個活動名稱次數，目前先寫死。 */
@@ -1102,6 +1106,7 @@ function getDashboard(user) {
       color: m.color || '#4F7BE8',
       sortOrder: toNumber(m.sort_order),
       category: m.category || MACHINE_CATEGORY_DICE,
+      icon: m.icon || DEFAULT_MACHINE_ICON,
       today: todays[id],
       total: totals[id]
     };
@@ -1222,7 +1227,8 @@ function _buildMachineDetail(m, records, recordLimit) {
       status: m.status || 'running',
       color: m.color || '#4F7BE8',
       note: m.note || '',
-      category: m.category || MACHINE_CATEGORY_DICE
+      category: m.category || MACHINE_CATEGORY_DICE,
+      icon: m.icon || DEFAULT_MACHINE_ICON
     },
     today: todaySum,
     today432Count: today432Count,
@@ -1818,7 +1824,8 @@ function adminListMachines(user) {
         color: m.color || '#4F7BE8',
         sortOrder: toNumber(m.sort_order),
         note: m.note || '',
-        category: m.category || MACHINE_CATEGORY_DICE
+        category: m.category || MACHINE_CATEGORY_DICE,
+        icon: m.icon || DEFAULT_MACHINE_ICON
       };
     });
 }
@@ -1841,6 +1848,9 @@ function adminSaveMachine(user, payload) {
   let color = String(payload.color || '#4F7BE8');
   if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = '#4F7BE8';
 
+  // 圖案跟顏色一樣，隨時可以改，不像分類牽動歷史紀錄的型別。
+  const icon = MACHINE_ICONS.indexOf(payload.icon) >= 0 ? payload.icon : DEFAULT_MACHINE_ICON;
+
   return withLock(function () {
     if (payload.machineId) {
       const row = dbFind('Machines', 'machine_id', payload.machineId);
@@ -1851,7 +1861,8 @@ function adminSaveMachine(user, payload) {
         status: status,
         color: color,
         sort_order: toNumber(payload.sortOrder),
-        note: String(payload.note || '').substring(0, 200)
+        note: String(payload.note || '').substring(0, 200),
+        icon: icon
       });
       return { machineId: String(payload.machineId) };
     }
@@ -1865,7 +1876,8 @@ function adminSaveMachine(user, payload) {
       sort_order: toNumber(payload.sortOrder),
       note: String(payload.note || '').substring(0, 200),
       created_at: nowIso(),
-      category: category
+      category: category,
+      icon: icon
     };
     dbInsert('Machines', m);
     return { machineId: m.machine_id };
@@ -3045,6 +3057,40 @@ function _selfTestBody(results) {
     const list = _ok({ action: 'adminListMachines', token: adminTok });
     const found = list.filter(function (m) { return m.machineId === electronicMachine; })[0];
     _assertEq(found.category, 'electronic', '應該存成電子分類');
+  });
+
+  // ── 機台圖案（icon）：不像分類，隨時可以改，也不需要新增時就決定 ──
+  _t(results, '機台圖案：沒指定時預設是 classic，dashboard／machineDetail／adminListMachines 都要帶到', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '沒填圖案台', sortOrder: 32 }).machineId;
+
+    const listed = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(listed.icon, 'classic', 'adminListMachines 未指定圖案應預設 classic');
+
+    const dashMachine = _ok({ action: 'dashboard', token: adminTok }).machines.filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(dashMachine.icon, 'classic', 'dashboard 也應該預設 classic');
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.machine.icon, 'classic', 'machineDetail 也應該預設 classic');
+  });
+
+  _t(results, '機台圖案：可以指定成 round/twin/tall，之後編輯（不像分類）隨時能再改', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '圖案測試台', sortOrder: 33, icon: 'round' }).machineId;
+    let found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'round', '新增時指定的圖案應該存起來');
+
+    _ok({
+      action: 'adminSaveMachine', token: adminTok, machineId: mid,
+      name: found.name, location: found.location, status: found.status, color: found.color, sortOrder: found.sortOrder,
+      icon: 'twin'
+    });
+    found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'twin', '編輯時應該可以把圖案換成別款，不像分類會被鎖住');
+  });
+
+  _t(results, '機台圖案：給不認得的鍵值會落回 classic，不會整個請求失敗', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '亂填圖案台', sortOrder: 34, icon: '<script>' }).machineId;
+    const found = _ok({ action: 'adminListMachines', token: adminTok }).filter(function (m) { return m.machineId === mid; })[0];
+    _assertEq(found.icon, 'classic', '不在白名單裡的圖案鍵值應該落回預設值 classic');
   });
 
   _t(results, '電子機台：開分/洗分累加，盈虧＝開分－洗分（今日與累計都要對）', function () {

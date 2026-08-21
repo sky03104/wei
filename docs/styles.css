@@ -345,6 +345,12 @@ input[type="date"] { min-width: 0; }
   scrollbar-width: none;
 }
 .machine-switcher::-webkit-scrollbar { display: none; }
+/* 骰台／電子各一排時的外層容器，純粹讓兩排上下疊，不影響各排自己的橫向捲動。 */
+.machine-switcher-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.switcher-row-label {
+  flex: 0 0 auto; display: flex; align-items: center;
+  font-size: 12px; color: var(--muted); padding: 0 2px;
+}
 .machine-chip {
   flex: 0 0 auto; display: flex; align-items: center; gap: 6px;
   padding: 7px 12px; border-radius: 999px;
@@ -514,6 +520,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 }
 .color-swatches button.active { border-color: #fff; }
 
+.icon-swatches { display: flex; gap: 8px; flex-wrap: wrap; }
+.icon-swatches button {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 10px; border-radius: 10px;
+  background: var(--surface-2); border: 2px solid transparent;
+  color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.icon-swatches button.active { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+
 .dialog-backdrop {
   position: fixed; inset: 0; z-index: 200;
   background: rgba(4, 6, 10, 0.72);
@@ -576,11 +591,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .detail-top .action-buttons { grid-column: 3; grid-row: 1; grid-template-columns: 1fr; }
   .detail-top .action-buttons .btn { min-height: 58px; }
   /* 只用 grid-column 不指定 row：第一列已經被上面三個佔滿，
-     這排會自動落到第二列，且沒有機台切換列時（只有一台機台）
-     不會留下多餘的空列。
+     這排（或骰台/電子各一排的外層容器）會自動落到第二列，且沒有
+     機台切換列時（只有一台機台）不會留下多餘的空列。
      桌機版機台一多（例如 20 台）改成自動換行，不要橫向捲動——
      桌機畫面夠寬，一次看到全部機台籤、換行找比左右滑更快。
      手機版維持橫向捲動（見 .machine-switcher 基本定義），螢幕窄，
-     換行會佔太多垂直高度。 */
-  .detail-top .machine-switcher { grid-column: 1 / -1; flex-wrap: wrap; overflow-x: visible; }
+     換行會佔太多垂直高度。
+     grid-column 只對「直接的 grid 子項目」有效：只有一種分類時
+     .machine-switcher 自己就是子項目；骰台/電子都有時，子項目變成
+     外層的 .machine-switcher-group，裡面兩排 .machine-switcher
+     不再是直接子項目，所以 grid-column 對它們不生效也沒關係——
+     它們只需要 flex-wrap/overflow 這兩條，跟是不是 grid 子項目無關。 */
+  .detail-top .machine-switcher,
+  .detail-top .machine-switcher-group { grid-column: 1 / -1; }
+  .detail-top .machine-switcher { flex-wrap: wrap; overflow-x: visible; }
 }
