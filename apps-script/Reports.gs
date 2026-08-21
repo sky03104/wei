@@ -43,10 +43,13 @@ function _isValidKey(key) {
 function resolveRange(preset, from, to) {
   const today = _currentBusinessDate();
 
-  if (preset === 'custom') {
+  // 'history'（歷史分頁）跟 'custom' 的日期解析完全一樣，差別只在
+  // getReport/exportCsv 會不會去讀封存分頁、要不要擋已封存的區間，
+  // 不屬於這裡的事，所以這裡兩個 preset 共用同一段邏輯。
+  if (preset === 'custom' || preset === 'history') {
     if (!_isValidKey(from) || !_isValidKey(to)) throw new Error('日期格式不正確');
     if (from > to) throw new Error('起始日期不能晚於結束日期');
-    return { from: from, to: to, preset: 'custom' };
+    return { from: from, to: to, preset: preset };
   }
   if (preset === 'week') {
     const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日
@@ -80,8 +83,11 @@ function _eachDay(from, to) {
 function getReport(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
-  _assertRangeNotArchived(range);
-  const rows = _reportRows(scope.ids, range, params);
+  // 「歷史」分頁明確願意讀封存分頁，其餘 preset 一律只讀目前這一季，
+  // 選到已封存的區間要直接報錯，不要默默算出不完整的數字。
+  const includeArchive = params.preset === 'history';
+  if (!includeArchive) _assertRangeNotArchived(range);
+  const rows = _reportRows(scope.ids, range, params, includeArchive);
 
   const summary = emptySummary();
   const daily = {};
@@ -144,11 +150,12 @@ function _reportScope(user, params) {
   return { ids: visibleMachineIds(user), machineId: '', machineName: '' };
 }
 
-function _reportRows(machineIds, range, params) {
+function _reportRows(machineIds, range, params, includeArchive) {
   const idSet = {};
   machineIds.forEach(function (id) { idSet[id] = true; });
 
-  return activeRecords().filter(function (r) {
+  const source = includeArchive ? _historyRecords(range) : activeRecords();
+  return source.filter(function (r) {
     if (!idSet[String(r.machine_id)]) return false;
     const key = _recordBusinessDate(r);
     if (key < range.from || key > range.to) return false;
@@ -204,8 +211,9 @@ function _byCreatedAtAsc(a, b) {
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
-  _assertRangeNotArchived(range);
-  const rows = _reportRows(scope.ids, range, params);
+  const includeArchive = params.preset === 'history';
+  if (!includeArchive) _assertRangeNotArchived(range);
+  const rows = _reportRows(scope.ids, range, params, includeArchive);
   const days = _eachDay(range.from, range.to);
 
   const byDay = {};

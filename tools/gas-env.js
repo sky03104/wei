@@ -117,6 +117,7 @@ class FakeSpreadsheet {
   getId() { return this.id; }
   getName() { return this.name; }
   getSheetByName(name) { return this.sheets.get(name) || null; }
+  getSheets() { return Array.from(this.sheets.values()); }
   insertSheet(name) {
     const sh = new FakeSheet(name, this);
     this.sheets.set(name, sh);

@@ -185,7 +185,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v17';
+const APP_VERSION = 'v18';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -273,6 +273,13 @@ function formatTime(iso) {
 
 function todayInputValue() {
   const d = new Date();
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+
+/** 給「自訂」區間日期選擇器的下限用：n 個月前的今天，'yyyy-MM-dd'。 */
+function monthsAgoInputValue(months) {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
   return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
 }
 
@@ -1469,32 +1476,45 @@ function viewReport() {
   ]);
 
   const presets = h('div', { class: 'seg', style: 'margin-bottom:12px' },
-    [['day', '今日'], ['week', '本週'], ['month', '本月'], ['custom', '自訂']].map(([key, label]) =>
+    [['day', '今日'], ['week', '本週'], ['month', '本月'], ['custom', '自訂'], ['history', '歷史']].map(([key, label]) =>
       h('button', {
         class: p.preset === key ? 'active' : '',
         onclick: () => {
           p.preset = key;
-          if (key === 'custom' && !p.from) { p.from = todayInputValue(); p.to = todayInputValue(); }
+          if ((key === 'custom' || key === 'history') && !p.from) { p.from = todayInputValue(); p.to = todayInputValue(); }
           loadReport();
         }
       }, label)
     ));
 
-  const customRange = p.preset === 'custom'
+  // 「自訂」的日期選擇器鎖在近三個月內——一般查帳用不到更久以前，
+  // 選更早的區間本來就會被後端擋下來（那些資料已經封存走了），
+  // 選擇器直接鎖住比讓使用者選了才報錯更清楚。
+  // 「歷史」不設下限：後端會自動把封存分頁跟目前這一季合併查詢，
+  // 想看多久以前都能選（受限於試算表裡實際還留著哪些封存分頁）。
+  const customRange = (p.preset === 'custom' || p.preset === 'history')
     ? h('div', { class: 'filter-row', style: 'margin-bottom:12px' }, [
       dialogField('起始日期', h('input', {
         type: 'date', value: p.from,
+        min: p.preset === 'custom' ? monthsAgoInputValue(3) : null,
+        max: todayInputValue(),
         onchange: (e) => { p.from = e.target.value; loadReport(); }
       })),
       dialogField('結束日期', h('input', {
         type: 'date', value: p.to,
+        min: p.preset === 'custom' ? monthsAgoInputValue(3) : null,
+        max: todayInputValue(),
         onchange: (e) => { p.to = e.target.value; loadReport(); }
       }))
     ])
     : null;
 
+  const historyHint = p.preset === 'history'
+    ? h('p', { class: 'small muted', style: 'margin:-4px 0 12px' }, '會一併查詢已封存的歷史資料，區間拉太長可能要等一下。')
+    : null;
+
   if (!rep) {
-    return h('div', {}, [nav, presets, customRange, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+    return h('div', {}, [nav, presets, customRange, historyHint, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
   }
 
   const s = rep.summary;
@@ -1513,7 +1533,7 @@ function viewReport() {
   ]);
 
   return h('div', {}, [
-    nav, title, presets, customRange, stats,
+    nav, title, presets, customRange, historyHint, stats,
     trendCard(rep.trend),
     prizeStatsCard(rep.prizeStats),
     recordsTableCard(rep)

@@ -379,6 +379,17 @@ async function main() {
     await page.click('.seg button:has-text("自訂")');
     await page.waitForSelector('input[type="date"]');
     await shot('08-report-custom');
+
+    // 「自訂」的日期選擇器該鎖在近三個月內，不然選到已封存的舊區間只會白白等一次錯誤訊息。
+    const customMin = await page.locator('input[type="date"]').first().getAttribute('min');
+    assert(customMin, '「自訂」的日期選擇器應該有 min 下限');
+
+    // 「歷史」不該有這個下限——它是專門用來查更久以前、已經封存的資料的。
+    await page.click('.seg button:has-text("歷史")');
+    await page.waitForSelector('input[type="date"]');
+    const historyMin = await page.locator('input[type="date"]').first().getAttribute('min');
+    assert(!historyMin, '「歷史」的日期選擇器不該有 min 下限，實際 ' + historyMin);
+    assert(await page.locator('text=會一併查詢已封存的歷史資料').count() === 1, '「歷史」分頁應該顯示提示文字');
   });
 
   await check('背景預取：登入後就先把全部機台抓好，第一次進哪一台都秒開', async () => {

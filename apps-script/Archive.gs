@@ -182,3 +182,43 @@ function _assertRangeNotArchived(range) {
     + '系統只查得到封存之後的資料，更早的部分請到試算表「' + _archiveTabName(_quarterKey(range.from)) + '」等封存分頁查看。'
   );
 }
+
+// ── 歷史查詢（報表頁「歷史」分頁專用）──────────────────
+//
+// 平常的報表／匯出 CSV 刻意只讀 Records（見上面的 _assertRangeNotArchived），
+// 這樣才能保持「只讀目前這一季」的效能優勢。但使用者偶爾就是需要回頭看
+// 更久以前的資料，所以另外開一條路：「歷史」分頁明確願意多付一點效能
+// 代價，把 Records 加上所有涵蓋到查詢區間的封存分頁一起讀出來、合併查詢。
+//
+// 封存分頁是動態新增的（每季一張，例如「封存_2026Q1」），不維護一份
+// 寫死的清單——直接掃試算表目前實際存在的分頁名稱，季度會隨著繼續
+// 開店、繼續封存自動增加，不用改程式碼。
+
+/** 掃試算表目前實際存在的封存分頁，回傳季度清單（由舊到新排序）。 */
+function _listArchiveQuarters() {
+  const re = /^封存_(\d{4}Q[1-4])$/;
+  return _spreadsheet().getSheets()
+    .map(function (sh) {
+      const m = re.exec(sh.getName());
+      return m ? m[1] : null;
+    })
+    .filter(Boolean)
+    .sort();
+}
+
+/**
+ * 「歷史」查詢用的紀錄來源：目前這一季（Records）＋所有跟查詢區間
+ * 有重疊、目前實際存在的封存分頁，合併成一份紀錄陣列。
+ */
+function _historyRecords(range) {
+  const fromQ = _quarterKey(range.from);
+  const toQ = _quarterKey(range.to);
+  const quarters = _listArchiveQuarters().filter(function (q) { return q >= fromQ && q <= toQ; });
+
+  let all = activeRecords();
+  quarters.forEach(function (q) {
+    const key = _registerArchiveSheet(q);
+    all = all.concat(dbReadAll(key).filter(function (r) { return !toBool(r.voided); }));
+  });
+  return all;
+}

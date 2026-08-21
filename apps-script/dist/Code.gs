@@ -2117,10 +2117,13 @@ function _isValidKey(key) {
 function resolveRange(preset, from, to) {
   const today = _currentBusinessDate();
 
-  if (preset === 'custom') {
+  // 'history'（歷史分頁）跟 'custom' 的日期解析完全一樣，差別只在
+  // getReport/exportCsv 會不會去讀封存分頁、要不要擋已封存的區間，
+  // 不屬於這裡的事，所以這裡兩個 preset 共用同一段邏輯。
+  if (preset === 'custom' || preset === 'history') {
     if (!_isValidKey(from) || !_isValidKey(to)) throw new Error('日期格式不正確');
     if (from > to) throw new Error('起始日期不能晚於結束日期');
-    return { from: from, to: to, preset: 'custom' };
+    return { from: from, to: to, preset: preset };
   }
   if (preset === 'week') {
     const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日
@@ -2154,8 +2157,11 @@ function _eachDay(from, to) {
 function getReport(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
-  _assertRangeNotArchived(range);
-  const rows = _reportRows(scope.ids, range, params);
+  // 「歷史」分頁明確願意讀封存分頁，其餘 preset 一律只讀目前這一季，
+  // 選到已封存的區間要直接報錯，不要默默算出不完整的數字。
+  const includeArchive = params.preset === 'history';
+  if (!includeArchive) _assertRangeNotArchived(range);
+  const rows = _reportRows(scope.ids, range, params, includeArchive);
 
   const summary = emptySummary();
   const daily = {};
@@ -2218,11 +2224,12 @@ function _reportScope(user, params) {
   return { ids: visibleMachineIds(user), machineId: '', machineName: '' };
 }
 
-function _reportRows(machineIds, range, params) {
+function _reportRows(machineIds, range, params, includeArchive) {
   const idSet = {};
   machineIds.forEach(function (id) { idSet[id] = true; });
 
-  return activeRecords().filter(function (r) {
+  const source = includeArchive ? _historyRecords(range) : activeRecords();
+  return source.filter(function (r) {
     if (!idSet[String(r.machine_id)]) return false;
     const key = _recordBusinessDate(r);
     if (key < range.from || key > range.to) return false;
@@ -2278,8 +2285,9 @@ function _byCreatedAtAsc(a, b) {
 function exportCsv(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
-  _assertRangeNotArchived(range);
-  const rows = _reportRows(scope.ids, range, params);
+  const includeArchive = params.preset === 'history';
+  if (!includeArchive) _assertRangeNotArchived(range);
+  const rows = _reportRows(scope.ids, range, params, includeArchive);
   const days = _eachDay(range.from, range.to);
 
   const byDay = {};
@@ -2517,6 +2525,46 @@ function _assertRangeNotArchived(range) {
     '查詢區間包含已封存的舊資料（' + lastArchived + ' 以前，含）。'
     + '系統只查得到封存之後的資料，更早的部分請到試算表「' + _archiveTabName(_quarterKey(range.from)) + '」等封存分頁查看。'
   );
+}
+
+// ── 歷史查詢（報表頁「歷史」分頁專用）──────────────────
+//
+// 平常的報表／匯出 CSV 刻意只讀 Records（見上面的 _assertRangeNotArchived），
+// 這樣才能保持「只讀目前這一季」的效能優勢。但使用者偶爾就是需要回頭看
+// 更久以前的資料，所以另外開一條路：「歷史」分頁明確願意多付一點效能
+// 代價，把 Records 加上所有涵蓋到查詢區間的封存分頁一起讀出來、合併查詢。
+//
+// 封存分頁是動態新增的（每季一張，例如「封存_2026Q1」），不維護一份
+// 寫死的清單——直接掃試算表目前實際存在的分頁名稱，季度會隨著繼續
+// 開店、繼續封存自動增加，不用改程式碼。
+
+/** 掃試算表目前實際存在的封存分頁，回傳季度清單（由舊到新排序）。 */
+function _listArchiveQuarters() {
+  const re = /^封存_(\d{4}Q[1-4])$/;
+  return _spreadsheet().getSheets()
+    .map(function (sh) {
+      const m = re.exec(sh.getName());
+      return m ? m[1] : null;
+    })
+    .filter(Boolean)
+    .sort();
+}
+
+/**
+ * 「歷史」查詢用的紀錄來源：目前這一季（Records）＋所有跟查詢區間
+ * 有重疊、目前實際存在的封存分頁，合併成一份紀錄陣列。
+ */
+function _historyRecords(range) {
+  const fromQ = _quarterKey(range.from);
+  const toQ = _quarterKey(range.to);
+  const quarters = _listArchiveQuarters().filter(function (q) { return q >= fromQ && q <= toQ; });
+
+  let all = activeRecords();
+  quarters.forEach(function (q) {
+    const key = _registerArchiveSheet(q);
+    all = all.concat(dbReadAll(key).filter(function (r) { return !toBool(r.voided); }));
+  });
+  return all;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -4001,6 +4049,33 @@ function _selfTestBody(results) {
     _assert(rep, '查詢今天的報表不該被封存區間擋下來');
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
     _assert(csv, '匯出今天的 CSV 不該被封存區間擋下來');
+  });
+
+  _t(results, '歷史：preset=history 會自動合併封存分頁跟目前這一季的資料，其他 preset 仍然維持擋已封存區間', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '歷史查詢測試台', sortOrder: 94 }).machineId;
+    const oldDate = _addDays(todayKey(), -300);
+
+    const oldRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 700, clientToken: newId('ct') }).records[0];
+    dbUpdate('Records', dbFind('Records', 'record_id', oldRec.recordId)._row, { business_date: oldDate });
+    _clearSheetCache();
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+
+    const oldQ = _quarterKey(oldDate);
+    archiveOldRecords();
+    _assert(_listArchiveQuarters().indexOf(oldQ) >= 0, '_listArchiveQuarters 應該掃得到剛剛封存的季度');
+
+    // preset=custom 選到封存區間還是要被擋（跟前一項測試邏輯一致，這裡換一台機台驗證不衝突）。
+    _fails({ action: 'report', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: todayKey() });
+
+    // preset=history 選同一段區間，應該自動把封存分頁跟目前這一季合併，兩筆都算得到。
+    const histRep = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
+    _assertEq(histRep.summary.out, 900, '歷史報表應該把封存分頁的 700 跟目前這一季的 200 加起來');
+    _assertEq(histRep.recordCount, 2, '歷史報表應該看得到兩筆紀錄');
+
+    const histCsv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
+    const outLine = histCsv.content.split('\r\n').find(function (l) { return l.indexOf('出幣,') === 0; });
+    const outTotal = outLine.split(',').reduce(function (s, v, i) { return i === 0 ? s : s + (Number(v) || 0); }, 0);
+    _assertEq(outTotal, 900, '歷史匯出的 CSV 出幣小計加總也應該是 700+200=900');
   });
 
   // ── 雜項 ──

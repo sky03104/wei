@@ -1178,6 +1178,33 @@ function _selfTestBody(results) {
     _assert(csv, '匯出今天的 CSV 不該被封存區間擋下來');
   });
 
+  _t(results, '歷史：preset=history 會自動合併封存分頁跟目前這一季的資料，其他 preset 仍然維持擋已封存區間', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '歷史查詢測試台', sortOrder: 94 }).machineId;
+    const oldDate = _addDays(todayKey(), -300);
+
+    const oldRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 700, clientToken: newId('ct') }).records[0];
+    dbUpdate('Records', dbFind('Records', 'record_id', oldRec.recordId)._row, { business_date: oldDate });
+    _clearSheetCache();
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+
+    const oldQ = _quarterKey(oldDate);
+    archiveOldRecords();
+    _assert(_listArchiveQuarters().indexOf(oldQ) >= 0, '_listArchiveQuarters 應該掃得到剛剛封存的季度');
+
+    // preset=custom 選到封存區間還是要被擋（跟前一項測試邏輯一致，這裡換一台機台驗證不衝突）。
+    _fails({ action: 'report', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: todayKey() });
+
+    // preset=history 選同一段區間，應該自動把封存分頁跟目前這一季合併，兩筆都算得到。
+    const histRep = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
+    _assertEq(histRep.summary.out, 900, '歷史報表應該把封存分頁的 700 跟目前這一季的 200 加起來');
+    _assertEq(histRep.recordCount, 2, '歷史報表應該看得到兩筆紀錄');
+
+    const histCsv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
+    const outLine = histCsv.content.split('\r\n').find(function (l) { return l.indexOf('出幣,') === 0; });
+    const outTotal = outLine.split(',').reduce(function (s, v, i) { return i === 0 ? s : s + (Number(v) || 0); }, 0);
+    _assertEq(outTotal, 900, '歷史匯出的 CSV 出幣小計加總也應該是 700+200=900');
+  });
+
   // ── 雜項 ──
   _t(results, '不支援的 action 會被拒絕', function () {
     _fails({ action: 'dropAllTables', token: adminTok });
