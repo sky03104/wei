@@ -64,6 +64,8 @@ class FakeRange {
   }
   setFontWeight() { return this; }
   setNumberFormat() { return this; }
+  setBackground() { return this; }
+  setFontColor() { return this; }
 }
 
 class FakeSheet {
@@ -105,6 +107,8 @@ class FakeSheet {
   }
   getMaxRows() { return Math.max(this.data.length, 1000); }
   setFrozenRows() { return this; }
+  setFrozenColumns() { return this; }
+  autoResizeColumns() { return this; }
   deleteRow(rowIndex) { this.data.splice(rowIndex - 1, 1); }
 }
 
@@ -146,6 +150,20 @@ const SpreadsheetApp = {
 const DriveApp = {
   getFileById(id) {
     return { setTrashed() { spreadsheets.delete(id); } };
+  }
+};
+
+// UrlFetchApp.fetch() 在本機當然打不到真的 docs.google.com 匯出網址，
+// 這裡只回一段假的 bytes，讓程式流程（base64 編碼、回傳 filename/base64/rowCount）
+// 能被跑到跟驗證，實際 xlsx 的視覺格式仍然只能在真的 GAS 上部署後打開來看。
+const UrlFetchApp = {
+  fetch(url, options) {
+    return {
+      getResponseCode() { return 200; },
+      getBlob() {
+        return { getBytes() { return Buffer.from('fake-xlsx-bytes:' + url); } };
+      }
+    };
   }
 };
 
@@ -209,7 +227,10 @@ const Utilities = {
     return Array.from(buf).map((b) => (b > 127 ? b - 256 : b));
   },
   getUuid() { return crypto.randomUUID(); },
-  formatDate
+  formatDate,
+  base64Encode(bytes) {
+    return Buffer.from(bytes).toString('base64');
+  }
 };
 
 const LockService = {
@@ -232,6 +253,7 @@ const _triggers = [];
 let _triggerSeq = 0;
 
 const ScriptApp = {
+  getOAuthToken() { return 'fake-oauth-token'; },
   getProjectTriggers() {
     return _triggers.map((t) => ({
       getHandlerFunction: () => t.handlerFunction,
@@ -294,7 +316,7 @@ function createGasSandbox(options) {
   }
 
   const sandbox = {
-    SpreadsheetApp, DriveApp, PropertiesService, CacheService,
+    SpreadsheetApp, DriveApp, UrlFetchApp, PropertiesService, CacheService,
     Utilities, LockService, Session, ScriptApp, ContentService, Logger,
     console, Date, JSON, Math, Object, Array, String, Number,
     RegExp, Error, isNaN, isFinite, Intl, Promise

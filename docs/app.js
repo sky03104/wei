@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v28';
+const APP_VERSION = 'v29';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1569,8 +1569,8 @@ function viewReport() {
     h('button', {
       class: 'btn btn-sm',
       disabled: !rep,
-      onclick: downloadCsv
-    }, '⬇ 匯出 CSV')
+      onclick: downloadLedgerXlsx
+    }, '⬇ 匯出 Excel')
   ]);
 
   const presets = h('div', { class: 'seg', style: 'margin-bottom:12px' },
@@ -1764,7 +1764,7 @@ function recordsTableCard(rep) {
     h('div', { class: 'filter-row', style: 'margin-bottom:12px' }, [typeSel, userSel]),
     rep.truncated
       ? h('p', { class: 'small muted', style: 'margin-bottom:8px' },
-        '畫面只顯示最新 ' + rep.records.length + ' 筆，完整資料請匯出 CSV。')
+        '畫面只顯示最新 ' + rep.records.length + ' 筆，完整資料請匯出 Excel。')
       : null,
     rows.length
       ? h('div', { class: 'table-wrap' }, [
@@ -1781,21 +1781,23 @@ function recordsTableCard(rep) {
 }
 
 /**
- * 匯出 CSV。
- * 前面加 UTF-8 BOM，否則 Excel 打開中文會變亂碼。
+ * 匯出對帳表 .xlsx（後端回 base64，這裡解碼成二進位再包成 Blob 下載）。
  */
-function downloadCsv() {
+function downloadLedgerXlsx() {
   run(async () => {
     const p = state.reportParams;
-    const csv = await api('exportCsv', p);
-    const blob = new Blob(['\uFEFF' + csv.content], { type: 'text/csv;charset=utf-8' });
+    const xlsx = await api('exportLedgerXlsx', p);
+    const binary = atob(xlsx.base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
-    const a = h('a', { href: url, download: csv.filename });
+    const a = h('a', { href: url, download: xlsx.filename });
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-    toast('已匯出 ' + csv.rowCount + ' 筆', 'success');
+    toast('已匯出 ' + xlsx.rowCount + ' 筆', 'success');
   });
 }
 

@@ -184,13 +184,7 @@ function _operatorOptions(machineIds) {
     .map(function (u) { return { userId: String(u.user_id), name: u.display_name || u.username }; });
 }
 
-// ── CSV ─────────────────────────────────────────────────
-
-function _csvCell(v) {
-  const s = (v === undefined || v === null) ? '' : String(v);
-  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
-  return s;
-}
+// ── 對帳表匯出（xlsx）───────────────────────────────────
 
 /** 'yyyy-MM-dd' → 「8月9日」，跟現場原本手記的逐日對帳表同一種寫法（不補零）。 */
 function _dayKeyToLabel(key) {
@@ -206,13 +200,13 @@ function _byCreatedAtAsc(a, b) {
 }
 
 /**
- * 匯出區間的「逐日對帳表」（不受畫面 500 筆上限影響）：橫向一欄一天，
- * 直向把當天每一筆出幣依發生順序列出來，底下再接出幣/432/441/入幣/
- * 淨額五列小計——現場原本就是這樣手記在紙本試算表上對帳，匯出照抄
- * 同一種版面，不是系統原本「一筆一列」的流水帳格式。
- * BOM 由前端加，這裡只回純 CSV 內容。
+ * 組出區間的「逐日對帳表」格線資料（不受畫面 500 筆上限影響）：橫向一欄
+ * 一天，直向把當天每一筆出幣依發生順序列出來，底下再接出幣/432/441/入幣/
+ * 淨額五列小計——現場原本就是這樣手記在紙本試算表上對帳，匯出照抄同一種
+ * 版面，不是系統原本「一筆一列」的流水帳格式。純資料，不含任何樣式，
+ * 樣式（粗體/底色/紅字）由 exportLedgerXlsx 依這份格線套用。
  */
-function exportCsv(user, params) {
+function _buildLedgerGrid(user, params) {
   const scope = _reportScope(user, params);
   const range = resolveRange(params.preset, params.from, params.to);
   const includeArchive = params.preset === 'history';
@@ -245,18 +239,17 @@ function exportCsv(user, params) {
   // 最右邊再加兩欄（標籤＋數字）當整個區間的總計——現場原本手記的紙本
   // 對帳表就是這樣排的，五列小計每一列右邊多兩格看「這幾天總共」多少，
   // 不用自己橫向加總。圖數列（逐筆出幣）不需要總計，兩欄留空。
-  const blank2 = ['', ''];
+  const headerRow = ['圖數'].concat(days.map(_dayKeyToLabel)).concat(['', '']);
 
-  const lines = [];
-  lines.push(['圖數'].concat(days.map(_dayKeyToLabel)).concat(blank2).map(_csvCell).join(','));
-
+  const outRows = [];
   for (let i = 0; i < maxOuts; i++) {
     const row = [String(i + 1)];
     days.forEach(function (d) {
       const rec = byDay[d].outs[i];
       row.push(rec ? toNumber(rec.amount) : '');
     });
-    lines.push(row.concat(blank2).map(_csvCell).join(','));
+    row.push('', '');
+    outRows.push(row);
   }
 
   const outTotal = function (d) { return byDay[d].outs.reduce(function (s, r) { return s + toNumber(r.amount); }, 0); };
@@ -268,16 +261,73 @@ function exportCsv(user, params) {
   const grandIn = sumDays(function (d) { return byDay[d].inTotal; });
   const grandNet = grandIn - grandOut;
 
-  lines.push(['出幣'].concat(days.map(outTotal)).concat(['總出幣', grandOut]).map(_csvCell).join(','));
-  lines.push(['432'].concat(days.map(function (d) { return byDay[d].count432; })).concat(['432', grand432]).map(_csvCell).join(','));
-  lines.push(['441'].concat(days.map(function (d) { return byDay[d].count441; })).concat(['441', grand441]).map(_csvCell).join(','));
-  lines.push(['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).concat(['總入幣', grandIn]).map(_csvCell).join(','));
-  lines.push(['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).concat(['+/-', grandNet]).map(_csvCell).join(','));
+  const summaryRows = [
+    ['出幣'].concat(days.map(outTotal)).concat(['總出幣', grandOut]),
+    ['432'].concat(days.map(function (d) { return byDay[d].count432; })).concat(['432', grand432]),
+    ['441'].concat(days.map(function (d) { return byDay[d].count441; })).concat(['441', grand441]),
+    ['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).concat(['總入幣', grandIn]),
+    ['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).concat(['+/-', grandNet])
+  ];
 
   const label = scope.machineName || '全部機台';
   return {
-    filename: '娃娃機對帳表_' + label + '_' + range.from + '_' + range.to + '.csv',
-    content: lines.join('\r\n'),
-    rowCount: rows.length
+    filenameBase: '娃娃機對帳表_' + label + '_' + range.from + '_' + range.to,
+    rowCount: rows.length,
+    colCount: headerRow.length,
+    headerRow: headerRow,
+    outRows: outRows,
+    summaryRows: summaryRows
   };
+}
+
+/**
+ * 把 _buildLedgerGrid() 的格線資料做成一份有格式的 .xlsx：表頭粗體、
+ * 出幣逐筆列跟五列小計中間隔一條黑底分隔列、「+/-」列紅字、五列小計
+ * 最右邊的標籤欄（總出幣/432/441/總入幣/+/-）粉紅底——排版照現場原本
+ * 手記在紙本試算表上的樣子。做法是先建一份暫時的 Google 試算表套版，
+ * 再用 UrlFetchApp 打 Google 內建的匯出網址轉成 .xlsx bytes，最後把暫時
+ * 試算表丟進垃圾桶（不留在雲端硬碟裡）。
+ */
+function exportLedgerXlsx(user, params) {
+  const grid = _buildLedgerGrid(user, params);
+  const numCols = grid.colCount;
+  const dividerRow = new Array(numCols).fill('');
+  const allRows = [grid.headerRow].concat(grid.outRows, [dividerRow], grid.summaryRows);
+  const numRows = allRows.length;
+
+  const ss = SpreadsheetApp.create(grid.filenameBase);
+  const id = ss.getId();
+  try {
+    const sheet = ss.getSheets()[0] || ss.insertSheet('對帳表');
+    sheet.getRange(1, 1, numRows, numCols).setValues(allRows);
+    sheet.getRange(1, 1, 1, numCols).setFontWeight('bold');
+    sheet.setFrozenRows(1);
+
+    const dividerRowIndex = 1 + grid.outRows.length + 1;
+    sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
+
+    const summaryStartRow = dividerRowIndex + 1;
+    grid.summaryRows.forEach(function (row, i) {
+      const sheetRow = summaryStartRow + i;
+      if (row[0] === '+/-') sheet.getRange(sheetRow, 1, 1, numCols).setFontColor('#c00000');
+      sheet.getRange(sheetRow, numCols - 1, 1, 1).setBackground('#f8cbcb');
+    });
+
+    sheet.autoResizeColumns(1, numCols);
+
+    const url = 'https://docs.google.com/spreadsheets/d/' + id + '/export?format=xlsx';
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    const base64 = Utilities.base64Encode(resp.getBlob().getBytes());
+
+    return {
+      filename: grid.filenameBase + '.xlsx',
+      base64: base64,
+      rowCount: grid.rowCount
+    };
+  } finally {
+    DriveApp.getFileById(id).setTrashed(true);
+  }
 }

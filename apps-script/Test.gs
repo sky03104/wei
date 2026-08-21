@@ -259,7 +259,7 @@ function _selfTestBody(results) {
   _t(results, '台主拿別台 id 直接打 API 會被擋', function () {
     _fails({ action: 'machineDetail', token: ownerTok, machineId: machineB }, 'PERMISSION');
     _fails({ action: 'report', token: ownerTok, machineId: machineB, preset: 'day' }, 'PERMISSION');
-    _fails({ action: 'exportCsv', token: ownerTok, machineId: machineB, preset: 'day' }, 'PERMISSION');
+    _fails({ action: 'exportLedgerXlsx', token: ownerTok, machineId: machineB, preset: 'day' }, 'PERMISSION');
   });
 
   _t(results, '新增機台後管理員與巡邏人員立刻看得到，台主看不到', function () {
@@ -692,8 +692,8 @@ function _selfTestBody(results) {
     _assertEq(report.range.from, yesterday, '報表「日」區間應該用進行中的營業日期，不是今天的行事曆日期');
     _assertEq(report.summary.out, 30, '報表彙總應該把這筆算進去');
 
-    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
-    _assert(csv.content.indexOf(_dayKeyToLabel(yesterday)) >= 0, 'CSV 的欄位應該顯示營業日期（昨天），不是行事曆日期');
+    const grid = _buildLedgerGrid(validateSession(adminTok), { machineId: mid, preset: 'day' });
+    _assert(grid.headerRow.indexOf(_dayKeyToLabel(yesterday)) >= 0, '對帳表的欄位應該顯示營業日期（昨天），不是行事曆日期');
 
     _ok({ action: 'endBusinessDay', token: adminTok });
   });
@@ -1216,8 +1216,8 @@ function _selfTestBody(results) {
     _fails({ action: 'report', token: adminTok, preset: 'custom', from: 'bad', to: '2026-05-01' });
   });
 
-  _t(results, 'CSV：匯出的是逐日對帳表——出幣逐筆列出、432/441 計次、入幣與淨額都對得起來', function () {
-    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV對帳表測試台', sortOrder: 97 }).machineId;
+  _t(results, '對帳表：逐日對帳表格線——出幣逐筆列出、432/441 計次、入幣與淨額都對得起來', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '對帳表測試台', sortOrder: 97 }).machineId;
     const p432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 10, sortOrder: 1 }).prizeId;
     const p441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 10, sortOrder: 2 }).prizeId;
 
@@ -1231,35 +1231,36 @@ function _selfTestBody(results) {
       clientToken: newId('ct')
     });
 
-    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
-    const lines = csv.content.split('\r\n');
-    _assertEq(lines[0], '圖數,' + _dayKeyToLabel(todayKey()) + ',,', '表頭第一列應該是「圖數」＋今天的日期標籤，最後兩欄（總計欄）留空');
-    _assertEq(lines[1], '1,100,,', '第 1 筆出幣應該依發生順序排在第一列，圖數列的總計欄留空');
-    _assertEq(lines[2], '2,200,,', '第 2 筆出幣應該排在第二列');
-    _assertEq(lines[3], '3,50,,', '第 3 筆出幣應該排在第三列');
-    _assertEq(lines[4], '出幣,350,總出幣,350', '出幣小計應該是三筆加總 100+200+50，最右邊總計欄（只有一天）應該一樣是 350');
-    _assertEq(lines[5], '432,2,432,2', '432 應該是計次（送出時 count=2），不是金額；總計欄也一樣');
-    _assertEq(lines[6], '441,1,441,1', '441 應該是計次（送出時 count=1），不是金額；總計欄也一樣');
-    _assertEq(lines[7], '入幣,500,總入幣,500', '入幣是當天總額，不逐筆列出；總計欄也一樣');
-    _assertEq(lines[8], '+/-,150,+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）；總計欄也一樣');
-    _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
+    const grid = _buildLedgerGrid(validateSession(adminTok), { machineId: mid, preset: 'day' });
+    _assertEq(grid.headerRow.join(','), '圖數,' + _dayKeyToLabel(todayKey()) + ',,', '表頭第一列應該是「圖數」＋今天的日期標籤，最後兩欄（總計欄）留空');
+    _assertEq(grid.outRows[0].join(','), '1,100,,', '第 1 筆出幣應該依發生順序排在第一列，圖數列的總計欄留空');
+    _assertEq(grid.outRows[1].join(','), '2,200,,', '第 2 筆出幣應該排在第二列');
+    _assertEq(grid.outRows[2].join(','), '3,50,,', '第 3 筆出幣應該排在第三列');
+    _assertEq(grid.summaryRows[0].join(','), '出幣,350,總出幣,350', '出幣小計應該是三筆加總 100+200+50，最右邊總計欄（只有一天）應該一樣是 350');
+    _assertEq(grid.summaryRows[1].join(','), '432,2,432,2', '432 應該是計次（送出時 count=2），不是金額；總計欄也一樣');
+    _assertEq(grid.summaryRows[2].join(','), '441,1,441,1', '441 應該是計次（送出時 count=1），不是金額；總計欄也一樣');
+    _assertEq(grid.summaryRows[3].join(','), '入幣,500,總入幣,500', '入幣是當天總額，不逐筆列出；總計欄也一樣');
+    _assertEq(grid.summaryRows[4].join(','), '+/-,150,+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）；總計欄也一樣');
+
+    const xlsx = _ok({ action: 'exportLedgerXlsx', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(xlsx.filename.indexOf('.xlsx') > 0, '檔名應以 .xlsx 結尾');
+    _assert(xlsx.base64 && xlsx.base64.length > 0, '應該回傳非空的 base64 內容');
+    _assertEq(xlsx.rowCount, 6, 'rowCount 應該是這個區間的原始紀錄筆數：3 出幣+1 入幣+開獎批次各獎型各寫一列（432、441 共 2 列）');
   });
 
-  _t(results, 'CSV：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0，最右邊兩欄是整個區間的總計', function () {
-    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV多日測試台', sortOrder: 98 }).machineId;
+  _t(results, '對帳表：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0，最右邊兩欄是整個區間的總計', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '對帳表多日測試台', sortOrder: 98 }).machineId;
     _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
     _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 20, clientToken: newId('ct') });
 
-    const csv = _ok({
-      action: 'exportCsv', token: adminTok, machineId: mid,
-      preset: 'custom', from: _addDays(todayKey(), -2), to: todayKey()
+    const grid = _buildLedgerGrid(validateSession(adminTok), {
+      machineId: mid, preset: 'custom', from: _addDays(todayKey(), -2), to: todayKey()
     });
-    const lines = csv.content.split('\r\n');
-    _assertEq(lines[0], '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(',') + ',,',
+    _assertEq(grid.headerRow.join(','), '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(',') + ',,',
       '三天區間應該有三欄，由舊到新排列，最後兩欄（總計欄）留空');
-    _assertEq(lines[1], '1,,,30,,', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料，圖數列的總計欄留空');
-    _assertEq(lines[2], '出幣,0,0,30,總出幣,30', '出幣小計：沒紀錄的兩天是 0，今天是 30，總計欄＝三天加總 30');
-    _assertEq(lines[6], '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
+    _assertEq(grid.outRows[0].join(','), '1,,,30,,', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料，圖數列的總計欄留空');
+    _assertEq(grid.summaryRows[0].join(','), '出幣,0,0,30,總出幣,30', '出幣小計：沒紀錄的兩天是 0，今天是 30，總計欄＝三天加總 30');
+    _assertEq(grid.summaryRows[4].join(','), '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
   });
 
   // ── 按季自動封存舊資料 ──
@@ -1323,7 +1324,7 @@ function _selfTestBody(results) {
     _assert(msg.indexOf('每月自動封存檢查已經設定過，略過') >= 0, 'setup() 訊息應該說明觸發器已經裝過，不是又裝一個');
   });
 
-  _t(results, '封存：報表／匯出CSV 選到已封存的舊區間會明確報錯，選現在這一季不受影響', function () {
+  _t(results, '封存：報表／匯出對帳表 選到已封存的舊區間會明確報錯，選現在這一季不受影響', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存區間測試台', sortOrder: 95 }).machineId;
     const oldDate = _addDays(todayKey(), -300);
     const rec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 10, clientToken: newId('ct') }).records[0];
@@ -1332,13 +1333,13 @@ function _selfTestBody(results) {
     archiveOldRecords();
 
     _fails({ action: 'report', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
-    _fails({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
+    _fails({ action: 'exportLedgerXlsx', token: adminTok, machineId: mid, preset: 'custom', from: oldDate, to: oldDate });
 
     // 選現在這一季（今天）不該被誤擋
     const rep = _ok({ action: 'report', token: adminTok, machineId: mid, preset: 'day' });
     _assert(rep, '查詢今天的報表不該被封存區間擋下來');
-    const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
-    _assert(csv, '匯出今天的 CSV 不該被封存區間擋下來');
+    const xlsx = _ok({ action: 'exportLedgerXlsx', token: adminTok, machineId: mid, preset: 'day' });
+    _assert(xlsx, '匯出今天的對帳表不該被封存區間擋下來');
   });
 
   _t(results, '歷史：preset=history 會自動合併封存分頁跟目前這一季的資料，其他 preset 仍然維持擋已封存區間', function () {
@@ -1362,9 +1363,9 @@ function _selfTestBody(results) {
     _assertEq(histRep.summary.out, 900, '歷史報表應該把封存分頁的 700 跟目前這一季的 200 加起來');
     _assertEq(histRep.recordCount, 2, '歷史報表應該看得到兩筆紀錄');
 
-    const histCsv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
-    const outCells = histCsv.content.split('\r\n').find(function (l) { return l.indexOf('出幣,') === 0; }).split(',');
-    _assertEq(Number(outCells[outCells.length - 1]), 900, '歷史匯出的 CSV 出幣列最右邊的總計欄應該是 700+200=900');
+    const histGrid = _buildLedgerGrid(validateSession(adminTok), { machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
+    const outRow = histGrid.summaryRows.find(function (row) { return row[0] === '出幣'; });
+    _assertEq(outRow[outRow.length - 1], 900, '歷史匯出的對帳表出幣列最右邊的總計欄應該是 700+200=900');
   });
 
   // ── 雜項 ──
