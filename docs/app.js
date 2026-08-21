@@ -185,7 +185,7 @@ const POLL_MS = 20000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v18';
+const APP_VERSION = 'v19';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -205,6 +205,7 @@ const state = {
   prizeCounts: {},
   reportParams: { machineId: '', preset: 'day', from: '', to: '', type: '', userId: '' },
   adminTab: 'users',
+  permExpanded: {}, // 台主授權頁每個台主的卡片是否展開，key 是 userId
   busy: false,
   // 導覽用的「先秒開、背景再刷新」快取（stale-while-revalidate）。
   // 純記憶體、關頁就沒了，而且每次進畫面一定會立刻再打一次 API 確認最新資料，
@@ -1995,14 +1996,25 @@ function adminPerms(data) {
     ]);
   }
 
+  // 每個台主的機台清單預設收合——機台一多（例如 28 台）沒有要編輯的
+  // 台主也要跟著捲一長串核取方塊，收合後標題列的「2/28 台」就看得到
+  // 重點，要改權限再點開特定那位台主就好。
   const blocks = perms.owners.map((o) => {
     const granted = perms.grants[o.userId] || [];
+    const open = !!state.permExpanded[o.userId];
     return h('div', { class: 'card', style: 'margin-bottom:12px' }, [
-      h('div', { class: 'panel-head' }, [
+      h('button', {
+        type: 'button',
+        class: 'panel-head perm-head',
+        onclick: () => { state.permExpanded[o.userId] = !open; render(); }
+      }, [
         h('h3', {}, [o.displayName, h('span', { class: 'muted small', text: ' @' + o.username })]),
-        h('span', { class: 'small muted', text: granted.length + ' / ' + perms.machines.length + ' 台' })
+        h('div', { class: 'row', style: 'gap:8px;align-items:center' }, [
+          h('span', { class: 'small muted', text: granted.length + ' / ' + perms.machines.length + ' 台' }),
+          h('span', { class: 'perm-chevron', text: open ? '▲' : '▼' })
+        ])
       ]),
-      h('div', {}, perms.machines.map((m) => {
+      open ? h('div', {}, perms.machines.map((m) => {
         const checked = granted.indexOf(m.machineId) >= 0;
         return h('label', { class: 'perm-machine' }, [
           h('input', {
@@ -2022,7 +2034,7 @@ function adminPerms(data) {
           h('span', { class: 'grow', text: m.name }),
           h('span', { class: 'small muted', text: m.location || '' })
         ]);
-      }))
+      })) : null
     ]);
   });
 

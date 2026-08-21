@@ -238,8 +238,13 @@ function exportCsv(user, params) {
     maxOuts = Math.max(maxOuts, byDay[d].outs.length);
   });
 
+  // 最右邊再加兩欄（標籤＋數字）當整個區間的總計——現場原本手記的紙本
+  // 對帳表就是這樣排的，五列小計每一列右邊多兩格看「這幾天總共」多少，
+  // 不用自己橫向加總。圖數列（逐筆出幣）不需要總計，兩欄留空。
+  const blank2 = ['', ''];
+
   const lines = [];
-  lines.push(['圖數'].concat(days.map(_dayKeyToLabel)).map(_csvCell).join(','));
+  lines.push(['圖數'].concat(days.map(_dayKeyToLabel)).concat(blank2).map(_csvCell).join(','));
 
   for (let i = 0; i < maxOuts; i++) {
     const row = [String(i + 1)];
@@ -247,15 +252,23 @@ function exportCsv(user, params) {
       const rec = byDay[d].outs[i];
       row.push(rec ? toNumber(rec.amount) : '');
     });
-    lines.push(row.map(_csvCell).join(','));
+    lines.push(row.concat(blank2).map(_csvCell).join(','));
   }
 
   const outTotal = function (d) { return byDay[d].outs.reduce(function (s, r) { return s + toNumber(r.amount); }, 0); };
-  lines.push(['出幣'].concat(days.map(outTotal)).map(_csvCell).join(','));
-  lines.push(['432'].concat(days.map(function (d) { return byDay[d].count432; })).map(_csvCell).join(','));
-  lines.push(['441'].concat(days.map(function (d) { return byDay[d].count441; })).map(_csvCell).join(','));
-  lines.push(['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).map(_csvCell).join(','));
-  lines.push(['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).map(_csvCell).join(','));
+  const sumDays = function (fn) { return days.reduce(function (s, d) { return s + fn(d); }, 0); };
+
+  const grandOut = sumDays(outTotal);
+  const grand432 = sumDays(function (d) { return byDay[d].count432; });
+  const grand441 = sumDays(function (d) { return byDay[d].count441; });
+  const grandIn = sumDays(function (d) { return byDay[d].inTotal; });
+  const grandNet = grandIn - grandOut;
+
+  lines.push(['出幣'].concat(days.map(outTotal)).concat(['總出幣', grandOut]).map(_csvCell).join(','));
+  lines.push(['432'].concat(days.map(function (d) { return byDay[d].count432; })).concat(['432', grand432]).map(_csvCell).join(','));
+  lines.push(['441'].concat(days.map(function (d) { return byDay[d].count441; })).concat(['441', grand441]).map(_csvCell).join(','));
+  lines.push(['入幣'].concat(days.map(function (d) { return byDay[d].inTotal; })).concat(['總入幣', grandIn]).map(_csvCell).join(','));
+  lines.push(['+/-'].concat(days.map(function (d) { return byDay[d].inTotal - outTotal(d); })).concat(['+/-', grandNet]).map(_csvCell).join(','));
 
   const label = scope.machineName || '全部機台';
   return {

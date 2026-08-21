@@ -1072,31 +1072,33 @@ function _selfTestBody(results) {
 
     const csv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'day' });
     const lines = csv.content.split('\r\n');
-    _assertEq(lines[0], '圖數,' + _dayKeyToLabel(todayKey()), '表頭第一列應該是「圖數」＋今天的日期標籤（例如 8月20日）');
-    _assertEq(lines[1], '1,100', '第 1 筆出幣應該依發生順序排在第一列');
-    _assertEq(lines[2], '2,200', '第 2 筆出幣應該排在第二列');
-    _assertEq(lines[3], '3,50', '第 3 筆出幣應該排在第三列');
-    _assertEq(lines[4], '出幣,350', '出幣小計應該是三筆加總 100+200+50');
-    _assertEq(lines[5], '432,2', '432 應該是計次（送出時 count=2），不是金額');
-    _assertEq(lines[6], '441,1', '441 應該是計次（送出時 count=1），不是金額');
-    _assertEq(lines[7], '入幣,500', '入幣是當天總額，不逐筆列出');
-    _assertEq(lines[8], '+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）');
+    _assertEq(lines[0], '圖數,' + _dayKeyToLabel(todayKey()) + ',,', '表頭第一列應該是「圖數」＋今天的日期標籤，最後兩欄（總計欄）留空');
+    _assertEq(lines[1], '1,100,,', '第 1 筆出幣應該依發生順序排在第一列，圖數列的總計欄留空');
+    _assertEq(lines[2], '2,200,,', '第 2 筆出幣應該排在第二列');
+    _assertEq(lines[3], '3,50,,', '第 3 筆出幣應該排在第三列');
+    _assertEq(lines[4], '出幣,350,總出幣,350', '出幣小計應該是三筆加總 100+200+50，最右邊總計欄（只有一天）應該一樣是 350');
+    _assertEq(lines[5], '432,2,432,2', '432 應該是計次（送出時 count=2），不是金額；總計欄也一樣');
+    _assertEq(lines[6], '441,1,441,1', '441 應該是計次（送出時 count=1），不是金額；總計欄也一樣');
+    _assertEq(lines[7], '入幣,500,總入幣,500', '入幣是當天總額，不逐筆列出；總計欄也一樣');
+    _assertEq(lines[8], '+/-,150,+/-,150', '淨額＝入幣 500－出幣 350＝150（跟現場手記的算法一致，不扣活動成本）；總計欄也一樣');
     _assert(csv.filename.indexOf('.csv') > 0, '檔名應以 .csv 結尾');
   });
 
-  _t(results, 'CSV：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0', function () {
+  _t(results, 'CSV：區間跨好幾天時，每天各自一欄，沒有出幣的那天出幣欄留空、小計是 0，最右邊兩欄是整個區間的總計', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: 'CSV多日測試台', sortOrder: 98 }).machineId;
     _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 20, clientToken: newId('ct') });
 
     const csv = _ok({
       action: 'exportCsv', token: adminTok, machineId: mid,
       preset: 'custom', from: _addDays(todayKey(), -2), to: todayKey()
     });
     const lines = csv.content.split('\r\n');
-    _assertEq(lines[0], '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(','),
-      '三天區間應該有三欄，由舊到新排列');
-    _assertEq(lines[1], '1,,,30', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料');
-    _assertEq(lines[2], '出幣,0,0,30', '出幣小計：沒紀錄的兩天是 0，今天是 30');
+    _assertEq(lines[0], '圖數,' + [_addDays(todayKey(), -2), _addDays(todayKey(), -1), todayKey()].map(_dayKeyToLabel).join(',') + ',,',
+      '三天區間應該有三欄，由舊到新排列，最後兩欄（總計欄）留空');
+    _assertEq(lines[1], '1,,,30,,', '前兩天沒有出幣紀錄，那兩欄該留空，只有今天有資料，圖數列的總計欄留空');
+    _assertEq(lines[2], '出幣,0,0,30,總出幣,30', '出幣小計：沒紀錄的兩天是 0，今天是 30，總計欄＝三天加總 30');
+    _assertEq(lines[6], '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
   });
 
   // ── 按季自動封存舊資料 ──
@@ -1200,9 +1202,8 @@ function _selfTestBody(results) {
     _assertEq(histRep.recordCount, 2, '歷史報表應該看得到兩筆紀錄');
 
     const histCsv = _ok({ action: 'exportCsv', token: adminTok, machineId: mid, preset: 'history', from: oldDate, to: todayKey() });
-    const outLine = histCsv.content.split('\r\n').find(function (l) { return l.indexOf('出幣,') === 0; });
-    const outTotal = outLine.split(',').reduce(function (s, v, i) { return i === 0 ? s : s + (Number(v) || 0); }, 0);
-    _assertEq(outTotal, 900, '歷史匯出的 CSV 出幣小計加總也應該是 700+200=900');
+    const outCells = histCsv.content.split('\r\n').find(function (l) { return l.indexOf('出幣,') === 0; }).split(',');
+    _assertEq(Number(outCells[outCells.length - 1]), 900, '歷史匯出的 CSV 出幣列最右邊的總計欄應該是 700+200=900');
   });
 
   // ── 雜項 ──

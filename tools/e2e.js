@@ -504,6 +504,21 @@ async function main() {
     assert(apiCalls === 0, '切換系統管理分頁不該打任何 API，實際打了 ' + apiCalls + ' 次');
   });
 
+  await check('台主授權：每個台主的機台清單預設收合，點標題列可以展開/收合', async () => {
+    await page.click('.tabs button:has-text("台主授權")');
+    await page.waitForSelector('.perm-note');
+    await page.waitForSelector('.perm-head');
+
+    assert(await page.locator('.perm-machine').count() === 0, '預設應該是收合的，看不到任何機台核取方塊');
+
+    await page.click('.perm-head');
+    await page.waitForSelector('.perm-machine');
+    assert(await page.locator('.perm-machine').count() > 0, '點一下標題列應該展開，看得到機台核取方塊');
+
+    await page.click('.perm-head');
+    await page.waitForFunction(() => document.querySelectorAll('.perm-machine').length === 0, null, { timeout: 4000 });
+  });
+
   await check('機台圖案：編輯機台可以選不同款式的像素圖，存檔後會記住', async () => {
     await page.click('.tabs button:has-text("機台")');
     await page.waitForSelector('.admin-item');
