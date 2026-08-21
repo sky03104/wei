@@ -3169,6 +3169,41 @@ function clearTestData() {
   });
 }
 
+/**
+ * 手動執行：只用來讓「匯出對帳表 Excel」需要的新權限（建立/刪除暫存試算表、
+ * 對外發出 HTTP 請求）第一次跳出 Google 授權畫面。
+ *
+ * 部署成 Web App 之後，App 端按「匯出 Excel」是背景呼叫，沒有互動介面可以
+ * 顯示授權視窗，第一次遇到還沒授權過的權限只會直接失敗，不會跳出「允許」
+ * 畫面——授權畫面只有在編輯器裡手動執行函式時才會出現。這支函式故意只做
+ * 最少的事（建一份空試算表、打一次匯出網址、刪掉），跑幾秒鐘就結束，
+ * 不用像 runSelfTest 那樣跑完整套測試（在真正的試算表上跑 90 幾項測試，
+ * 常常會超過 Apps Script 6 分鐘的執行上限，反而還沒跑到會用到這個權限的
+ * 測試就先逾時了）。
+ *
+ * 用法：編輯器上方函式下拉選單選這支 → 執行 → 跳出畫面就照著「進階」→
+ * 「前往（不安全）」→「允許」點下去。跑完看執行紀錄確認印出「授權沒問題」，
+ * 之後 App 上的「匯出 Excel」就能正常用了。
+ */
+function authorizeExportXlsx() {
+  const ss = SpreadsheetApp.create('授權測試_可刪除');
+  const id = ss.getId();
+  try {
+    const url = 'https://docs.google.com/spreadsheets/d/' + id + '/export?format=xlsx';
+    const resp = UrlFetchApp.fetch(url, {
+      headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+      muteHttpExceptions: true
+    });
+    const code = resp.getResponseCode();
+    if (code !== 200) {
+      throw new Error('匯出網址回傳 HTTP ' + code + '，預期 200。');
+    }
+    Logger.log('授權沒問題，「匯出 Excel」現在可以正常用了。');
+  } finally {
+    DriveApp.getFileById(id).setTrashed(true);
+  }
+}
+
 // ────────────────────────────────────────────────────────────
 // Test.gs
 // ────────────────────────────────────────────────────────────
