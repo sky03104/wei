@@ -114,7 +114,10 @@ function getReport(user, params) {
       in: daily[d].in,
       out: daily[d].out,
       prize: daily[d].prize,
-      net: daily[d].net
+      net: daily[d].net,
+      chipIn: daily[d].chipIn,
+      chipOut: daily[d].chipOut,
+      chipNet: daily[d].chipNet
     };
   });
 
@@ -125,7 +128,7 @@ function getReport(user, params) {
 
   return {
     range: range,
-    scope: { machineId: scope.machineId, machineName: scope.machineName, machineCount: scope.ids.length },
+    scope: { machineId: scope.machineId, machineName: scope.machineName, machineCount: scope.ids.length, category: scope.category },
     summary: summary,
     trend: trend,
     prizeStats: stats,
@@ -144,10 +147,11 @@ function _reportScope(user, params) {
     return {
       ids: [String(params.machineId)],
       machineId: String(params.machineId),
-      machineName: m ? m.name : ''
+      machineName: m ? m.name : '',
+      category: m ? (m.category || 'dice') : ''
     };
   }
-  return { ids: visibleMachineIds(user), machineId: '', machineName: '' };
+  return { ids: visibleMachineIds(user), machineId: '', machineName: '', category: '' };
 }
 
 function _reportRows(machineIds, range, params, includeArchive) {

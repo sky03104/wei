@@ -1050,6 +1050,21 @@ function _selfTestBody(results) {
     _assertEq(rep.scope.machineCount, 1, '台主的報表只該涵蓋 1 台');
   });
 
+  _t(results, '報表：電子機台的 scope.category 會標成 electronic，淨收益改用 chipIn/chipOut 算', function () {
+    const rep = _ok({ action: 'report', token: adminTok, machineId: electronicMachine, preset: 'day' });
+    _assertEq(rep.scope.category, 'electronic', '電子機台的報表 scope 應該標出分類');
+    _assertEq(rep.summary.in, 0, '電子機台不會有入幣紀錄，骰台欄位應該是 0');
+    _assertEq(rep.summary.net, 0, '電子機台用骰台算式的淨收益必然是 0（沒有 in/out/prize 紀錄）');
+    _assertEq(rep.summary.chipIn, 500, '電子機台的報表彙總要看得到開分總額');
+    _assertEq(rep.summary.chipOut, 200, '電子機台的報表彙總要看得到洗分總額');
+    _assertEq(rep.summary.chipNet, 300, '電子機台真正的淨收益要用 chipIn－chipOut 算');
+    _assert(rep.trend.length >= 1, '電子機台的趨勢陣列也該有資料');
+    _assertEq(rep.trend[0].chipNet, 300, '趨勢陣列的每一天也要帶 chipNet，不然圖表畫不出電子機台的走勢');
+
+    const dice = _ok({ action: 'report', token: adminTok, machineId: prizeMachine, preset: 'day' });
+    _assertEq(dice.scope.category, 'dice', '骰台的報表 scope.category 應該是 dice');
+  });
+
   _t(results, '自訂區間：起始晚於結束會被擋', function () {
     _fails({ action: 'report', token: adminTok, preset: 'custom', from: '2026-05-10', to: '2026-05-01' });
     _fails({ action: 'report', token: adminTok, preset: 'custom', from: 'bad', to: '2026-05-01' });

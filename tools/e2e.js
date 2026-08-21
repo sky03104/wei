@@ -608,6 +608,20 @@ async function main() {
     assert(netText && num(netText) === 300, '盈虧金額應該是開分500－洗分200＝300，實際「' + netText + '」');
     await shot('15-electronic-machine-detail');
 
+    // 電子機台的查詢報表頁：入幣/出幣要換成開分/洗分、沒有活動成本卡片，
+    // 淨收益要用開分－洗分算（不是骰台那套 in/out/prize，那套對電子機台永遠是 0）。
+    await page.click('button:has-text("📊 查詢報表")');
+    await page.waitForSelector('.report-stats');
+    const reportLabels = await page.locator('.report-stats .stat-label').allTextContents();
+    assert(reportLabels.includes('開分') && reportLabels.includes('洗分'), '電子機台報表頁應該顯示開分/洗分，實際 ' + JSON.stringify(reportLabels));
+    assert(!reportLabels.includes('入幣') && !reportLabels.includes('出幣') && !reportLabels.includes('活動成本'),
+      '電子機台報表頁不該出現入幣/出幣/活動成本，實際 ' + JSON.stringify(reportLabels));
+    const reportStats = await page.locator('.report-stats .stat').allTextContents();
+    const reportNet = reportStats.find((t) => t.indexOf('淨收益') >= 0);
+    assert(reportNet && num(reportNet) === 300, '電子機台報表頁的淨收益應該是開分500－洗分200＝300，實際「' + reportNet + '」');
+    await page.click('button:has-text("← 返回")');
+    await page.waitForSelector('.detail-hero');
+
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
     await page.click('.home-sticky .seg button:has-text("加總")');

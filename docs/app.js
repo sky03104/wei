@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v23';
+const APP_VERSION = 'v24';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1546,12 +1546,22 @@ function viewReport() {
   }
 
   const s = rep.summary;
-  const stats = h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
-    statBox('入幣', money(s.in), 'net pos'),
-    statBox('出幣', money(s.out)),
-    statBox('活動成本', money(s.prize)),
-    statBox('淨收益', money(s.net), 'net ' + netClass(s.net))
-  ]);
+  // 電子機台只有開分／洗分紀錄，沒有入幣/出幣/活動——
+  // 用骰台那套（in/out/prize/net）算出來的淨收益永遠是 0，
+  // 要改用 chipIn/chipOut/chipNet。
+  const isElectronic = rep.scope.category === 'electronic';
+  const stats = isElectronic
+    ? h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
+      statBox('開分', money(s.chipIn), 'net pos'),
+      statBox('洗分', money(s.chipOut)),
+      statBox('淨收益', money(s.chipNet), 'net ' + netClass(s.chipNet))
+    ])
+    : h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
+      statBox('入幣', money(s.in), 'net pos'),
+      statBox('出幣', money(s.out)),
+      statBox('活動成本', money(s.prize)),
+      statBox('淨收益', money(s.net), 'net ' + netClass(s.net))
+    ]);
 
   const title = h('div', { class: 'topbar' }, [
     h('div', {}, [
@@ -1562,14 +1572,14 @@ function viewReport() {
 
   return h('div', {}, [
     nav, title, presets, customRange, rangeHint, stats,
-    trendCard(rep.trend),
+    trendCard(rep.trend, isElectronic),
     prizeStatsCard(rep.prizeStats),
     recordsTableCard(rep)
   ]);
 }
 
-/** 純手繪 SVG 長條圖：每日淨收益，正值綠、負值紅。 */
-function trendCard(trend) {
+/** 純手繪 SVG 長條圖：每日淨收益，正值綠、負值紅。電子機台用 chipNet 而不是 net。 */
+function trendCard(trend, isElectronic) {
   // width 只是給下面算長條間距、字型密度用的「邏輯座標」，不是真的畫面像素寬——
   // 不管 trend 有幾天，viewBox 都會用這個邏輯寬度，但透過 preserveAspectRatio="none"
   // 硬拉伸成卡片實際的寬度，所以不管幾天的資料都會直接塞進卡片裡，不會橫向捲動。
@@ -1578,9 +1588,10 @@ function trendCard(trend) {
   const padTop = 12;
   const padBottom = 26;
   const plot = height - padTop - padBottom;
+  const netOf = (d) => isElectronic ? d.chipNet : d.net;
 
   let max = 1;
-  trend.forEach((d) => { max = Math.max(max, Math.abs(d.net)); });
+  trend.forEach((d) => { max = Math.max(max, Math.abs(netOf(d))); });
 
   const svgNs = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNs, 'svg');
@@ -1599,18 +1610,19 @@ function trendCard(trend) {
   const barW = Math.max(6, Math.min(44, step * 0.6));  // 只有一兩天時別讓長條胖到佔滿整張圖
 
   trend.forEach((d, i) => {
-    const ratio = Math.abs(d.net) / max;
-    const barH = Math.max(d.net === 0 ? 0 : 2, ratio * (plot / 2));
+    const net = netOf(d);
+    const ratio = Math.abs(net) / max;
+    const barH = Math.max(net === 0 ? 0 : 2, ratio * (plot / 2));
     const x = i * step + (step - barW) / 2;
-    const y = d.net >= 0 ? zeroY - barH : zeroY;
+    const y = net >= 0 ? zeroY - barH : zeroY;
 
     const rect = document.createElementNS(svgNs, 'rect');
-    rect.setAttribute('class', d.net >= 0 ? 'bar-pos' : 'bar-neg');
+    rect.setAttribute('class', net >= 0 ? 'bar-pos' : 'bar-neg');
     rect.setAttribute('x', String(x)); rect.setAttribute('y', String(y));
     rect.setAttribute('width', String(barW)); rect.setAttribute('height', String(barH));
     rect.setAttribute('rx', '2');
     const t = document.createElementNS(svgNs, 'title');
-    t.textContent = d.date + '：' + money(d.net);
+    t.textContent = d.date + '：' + money(net);
     rect.appendChild(t);
     svg.appendChild(rect);
 
