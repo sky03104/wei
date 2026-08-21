@@ -1176,19 +1176,18 @@ function homeBootstrap(user) {
 
 // ── 機台詳細頁 ──────────────────────────────────────────
 
-function getMachineDetail(user, machineId, recordLimit) {
-  assertMachineAccess(user, machineId);
-  const m = dbFind('Machines', 'machine_id', machineId);
-  if (!m) throw new Error('找不到這台機台');
-
+/**
+ * 單一機台的詳細頁資料——getMachineDetail（單台）跟 getAllMachineDetails
+ * （一次算全部，見下方）共用同一份組裝邏輯，差別只在呼叫端怎麼把這台的
+ * 紀錄篩出來，避免兩邊各寫一份、改一邊忘了改另一邊。
+ */
+function _buildMachineDetail(m, records, recordLimit) {
   const today = _currentBusinessDate();
   const total = emptySummary();
   const todaySum = emptySummary();
-  const mine = [];
   let today432Count = 0;
 
-  activeRecords().forEach(function (r) {
-    if (String(r.machine_id) !== String(machineId)) return;
+  records.forEach(function (r) {
     _accumulate(total, r);
     const isToday = _recordBusinessDate(r) === today;
     if (isToday) {
@@ -1197,10 +1196,9 @@ function getMachineDetail(user, machineId, recordLimit) {
         today432Count += toNumber(r.count);
       }
     }
-    mine.push(r);
   });
 
-  mine.sort(_byCreatedAtDesc);
+  const mine = records.slice().sort(_byCreatedAtDesc);
   const limit = recordLimit || 50;
 
   // 上次入幣紀錄的下班表讀數，前端拿來自動帶入這次的上班表——
@@ -1213,9 +1211,10 @@ function getMachineDetail(user, machineId, recordLimit) {
     }
   }
 
+  const machineId = String(m.machine_id);
   return {
     machine: {
-      machineId: String(m.machine_id),
+      machineId: machineId,
       name: m.name,
       location: m.location || '',
       status: m.status || 'running',
@@ -1233,6 +1232,44 @@ function getMachineDetail(user, machineId, recordLimit) {
     meterRate: _resolveMeterRate(machineId),
     lastMeterReading: lastMeterReading
   };
+}
+
+function getMachineDetail(user, machineId, recordLimit) {
+  assertMachineAccess(user, machineId);
+  const m = dbFind('Machines', 'machine_id', machineId);
+  if (!m) throw new Error('找不到這台機台');
+
+  const mine = activeRecords().filter(function (r) { return String(r.machine_id) === String(machineId); });
+  return _buildMachineDetail(m, mine, recordLimit);
+}
+
+/**
+ * 一次算出使用者看得到的每一台機台的完整詳細頁資料（跟 getMachineDetail
+ * 同一個形狀，用 machineId 當 key），登入後前端只要打這一支就能讓
+ * 「切機台秒切」的背景預取從原本 N 台各打一次 machineDetail（N 次網路
+ * 來回、每次都重新讀一次整張 Records）縮成一次網路來回、一次 Records
+ * 讀取——dbReadAll 在同一次執行內本來就會快取，真正貴的是「跨執行」
+ * 那 N 趟 Sheets API 讀取，這裡直接省掉。
+ */
+function getAllMachineDetails(user, recordLimit) {
+  const ids = visibleMachineIds(user);
+  const machines = dbReadAll('Machines').filter(function (m) {
+    return ids.indexOf(String(m.machine_id)) >= 0;
+  });
+
+  const byMachine = {};
+  ids.forEach(function (id) { byMachine[id] = []; });
+  activeRecords().forEach(function (r) {
+    const mid = String(r.machine_id);
+    if (byMachine[mid]) byMachine[mid].push(r);
+  });
+
+  const result = {};
+  machines.forEach(function (m) {
+    const id = String(m.machine_id);
+    result[id] = _buildMachineDetail(m, byMachine[id] || [], recordLimit);
+  });
+  return result;
 }
 
 function _publicRecord(r) {
@@ -2271,6 +2308,7 @@ const ACTION_ROLES = {
   logout: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   dashboard: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   machineDetail: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  allMachineDetails: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   report: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   exportCsv: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -2375,6 +2413,8 @@ function _dispatch(action, p, user) {
       return homeBootstrap(user);
     case 'machineDetail':
       return getMachineDetail(user, p.machineId, p.recordLimit);
+    case 'allMachineDetails':
+      return getAllMachineDetails(user, p.recordLimit);
     case 'report':
       return getReport(user, p);
     case 'exportCsv':
@@ -2859,6 +2899,21 @@ function _selfTestBody(results) {
       _assertEq(combined.dashboard.machines.length, dashboard.machines.length, 'dashboard.machines 筆數應一致');
       _assertEq(JSON.stringify(combined.dashboard.todayTotal), JSON.stringify(dashboard.todayTotal), 'dashboard.todayTotal 應一致');
     });
+  });
+
+  _t(results, 'allMachineDetails 一次回傳的每台機台內容，要跟各自打一次 machineDetail 完全一致；台主只拿得到自己看得到的機台', function () {
+    [adminTok, patrolTok].forEach(function (tok) {
+      const all = _ok({ action: 'allMachineDetails', token: tok });
+      [machineA, machineB].forEach(function (mid) {
+        const single = _ok({ action: 'machineDetail', token: tok, machineId: mid });
+        _assert(all[mid], 'allMachineDetails 應該包含機台 ' + mid);
+        _assertEq(JSON.stringify(all[mid]), JSON.stringify(single), 'allMachineDetails[' + mid + '] 應該跟單獨打 machineDetail 一致');
+      });
+    });
+
+    const ownerAll = _ok({ action: 'allMachineDetails', token: ownerTok });
+    _assert(ownerAll[machineA], '台主應該拿得到自己被授權的機台A');
+    _assert(!ownerAll[machineB], '台主不該拿到沒被授權的機台B');
   });
 
   // ── 收益計算 ──

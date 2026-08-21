@@ -18,6 +18,7 @@ const ACTION_ROLES = {
   logout: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   dashboard: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   machineDetail: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  allMachineDetails: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   report: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   exportCsv: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -122,6 +123,8 @@ function _dispatch(action, p, user) {
       return homeBootstrap(user);
     case 'machineDetail':
       return getMachineDetail(user, p.machineId, p.recordLimit);
+    case 'allMachineDetails':
+      return getAllMachineDetails(user, p.recordLimit);
     case 'report':
       return getReport(user, p);
     case 'exportCsv':

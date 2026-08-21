@@ -315,6 +315,21 @@ function _selfTestBody(results) {
     });
   });
 
+  _t(results, 'allMachineDetails 一次回傳的每台機台內容，要跟各自打一次 machineDetail 完全一致；台主只拿得到自己看得到的機台', function () {
+    [adminTok, patrolTok].forEach(function (tok) {
+      const all = _ok({ action: 'allMachineDetails', token: tok });
+      [machineA, machineB].forEach(function (mid) {
+        const single = _ok({ action: 'machineDetail', token: tok, machineId: mid });
+        _assert(all[mid], 'allMachineDetails 應該包含機台 ' + mid);
+        _assertEq(JSON.stringify(all[mid]), JSON.stringify(single), 'allMachineDetails[' + mid + '] 應該跟單獨打 machineDetail 一致');
+      });
+    });
+
+    const ownerAll = _ok({ action: 'allMachineDetails', token: ownerTok });
+    _assert(ownerAll[machineA], '台主應該拿得到自己被授權的機台A');
+    _assert(!ownerAll[machineB], '台主不該拿到沒被授權的機台B');
+  });
+
   // ── 收益計算 ──
   _t(results, '入幣 100、出幣 30 → 淨收益 70；作廢出幣後 → 100', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '計算測試台', sortOrder: 9 }).machineId;

@@ -1851,12 +1851,15 @@ async function loadHome(opts) {
  * 用機台切換籤跳來跳去時大多是「第一次」進某一台，本來一定要
  * 等一趟 GAS 來回；預先抓好之後不管跳去哪一台都秒開。
  *
+ * 原本是每台機台各打一次 machineDetail、用 3 個併發跑掉（機台一多，
+ * 還是要跑好幾輪，每一輪都是一趟完整的「/exec 轉址＋GAS 執行＋讀
+ * 試算表」來回）。現在改成呼叫後端合併好的 allMachineDetails，一次
+ * 網路來回就把全部機台的詳細資料一起讀回來、後端也只讀一次 Records，
+ * 不是每台各讀一次——這才是真的「登入後一次讀完，切換時秒切」。
+ *
  * 不走 run()：這是背景低優先度的事，不該讓 state.busy 卡住、
  * 影響到使用者正在做的事情或每 20 秒的輪詢；失敗也靜靜略過，
  * 使用者真的點進去時 loadDetail 會照正常流程重新抓一次。
- * 用小併發（3 個一批）避免機台一多時一次炸出二三十個請求。
- * 不用旗標擋重複呼叫——內部本來就會先看快取，已經抓過的機台
- * 直接跳過，同一批 id 被叫第二次也只是白檢查一次，沒有副作用。
  */
 let _prefetchInFlight = false;
 async function prefetchMachineDetails() {
@@ -1868,19 +1871,10 @@ async function prefetchMachineDetails() {
 
   _prefetchInFlight = true;
   try {
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < ids.length) {
-        const id = ids[cursor++];
-        if (state.cache['detail:' + id]) continue;
-        try {
-          cacheWrite('detail:' + id, await api('machineDetail', { machineId: id }));
-        } catch (err) {
-          // 背景預取失敗不用理，使用者真的點進去時走正常流程會重新抓一次
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: Math.min(3, ids.length) }, worker));
+    const all = await api('allMachineDetails');
+    Object.keys(all).forEach((id) => cacheWrite('detail:' + id, all[id]));
+  } catch (err) {
+    // 背景預取失敗不用理，使用者真的點進去時走正常流程會重新抓一次
   } finally {
     _prefetchInFlight = false;
   }

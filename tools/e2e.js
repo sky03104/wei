@@ -100,24 +100,29 @@ async function main() {
 
     // 登入當下就掛上監聽，才不會錯過登入完成那一刻馬上觸發的背景預取——
     // 這個監聽故意留到下一個 check 才拆掉，給背景預取一點時間真的跑完。
+    // 背景預取現在是「一次網路來回」拿全部機台的詳細資料（allMachineDetails），
+    // 不是每台機台各打一次 machineDetail。
+    let allDetailsCalls = 0;
     let machineDetailCalls = 0;
     const trackPrefetch = (req) => {
       if (req.url().includes('/api') && req.method() === 'POST') {
         const body = decodeURIComponent(req.postData() || '');
+        if (body.includes('"action":"allMachineDetails"')) allDetailsCalls++;
         if (body.includes('"action":"machineDetail"')) machineDetailCalls++;
       }
     };
     page.on('request', trackPrefetch);
-    page.__machineDetailCallCounter = () => machineDetailCalls;
+    page.__prefetchCallCounters = () => ({ all: allDetailsCalls, single: machineDetailCalls });
 
     await login('admin', 'admin123', true);
   });
 
-  await check('登入後背景會先把全部機台的詳細資料抓好，不用等進去才抓', async () => {
-    await page.waitForTimeout(1200); // 給背景預取一點時間跑完（3 台機台，併發 3，應該很快）
-    const count = page.__machineDetailCallCounter();
+  await check('登入後背景會一次把全部機台的詳細資料抓好，不用等進去才抓、也不用每台各打一次', async () => {
+    await page.waitForTimeout(1200); // 給背景預取一點時間跑完
+    const counts = page.__prefetchCallCounters();
     page.removeAllListeners('request');
-    assert(count === 3, '應該背景打 3 次 machineDetail（對應 3 台機台），實際 ' + count);
+    assert(counts.all === 1, '背景預取應該只打 1 次 allMachineDetails，實際 ' + counts.all);
+    assert(counts.single === 0, '背景預取不該再各別打 machineDetail，實際 ' + counts.single + ' 次');
   });
 
   await check('管理員首頁看得到全部 3 台機台', async () => {
