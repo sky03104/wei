@@ -181,11 +181,11 @@ const MACHINE_COLORS = ['#4F7BE8', '#E8574F', '#4ADE80', '#FBBF24', '#C084FC', '
 
 const STORAGE_TOKEN = 'claw_token';
 const STORAGE_REMEMBER = 'claw_remember';
-const POLL_MS = 20000;
+const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v20';
+const APP_VERSION = 'v21';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -435,14 +435,14 @@ async function run(fn, opts) {
   runDepth++;
   state.busy = true;
   // 背景輪詢（silent）不顯示讀取動畫，只有按鈕按下去這種使用者主動觸發的
-  // 才顯示，不然每 20 秒的背景刷新也會跳一下，反而更干擾。
+  // 才顯示，不然每次背景刷新也會跳一下，反而更干擾。
   if (!options.silent && ++visibleRunDepth === 1) showBusy(true);
   try {
     const result = await fn();
     if (options.success) toast(options.success, 'success');
     return result;
   } catch (err) {
-    // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每 20 秒再彈一次）。
+    // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每次輪詢都再彈一次）。
     // AUTH 錯誤預設也不彈 toast——這是為了「操作到一半 session 過期，靜靜跳回
     // 登入頁就好，不用再彈一個刺眼的錯誤」設計的。但登入表單本身送出的帳密錯誤／
     // 帳號被鎖，後端一樣是用 AUTH 這個代碼回傳，如果照這條規則整個吃掉，
@@ -940,7 +940,7 @@ function viewElectronicMachine(d, nav, hero, switcher) {
 /**
  * 記住上一次 machineSwitcher() 是幫哪一台機台畫的，用來分辨這次重畫
  * 是「真的切到別台」還是「同一台機台原地重繪」（記帳送出後的背景
- * 重新整理、20 秒輪詢…）。render() 每次都整個 replaceChildren，
+ * 重新整理、背景輪詢…）。render() 每次都整個 replaceChildren，
  * 這排籤跟著整個重建，瀏覽器自己的捲動位置記憶完全沒用，
  * 一定要手動處理，不然使用者手動滑到後面找機台，一遇到背景重繪
  * 就會被強制捲回目前這台，變成「切著切著自己彈回去」。
@@ -2079,7 +2079,7 @@ function adminPerms(data) {
  * 活動、作廢…）之後的刷新不受影響，那些都是直接呼叫 loadDetail 之類
  * 的函式、不經過這裡的新鮮度判斷，一定會拿到最新的。
  */
-const CACHE_FRESH_MS = 60000;
+const CACHE_FRESH_MS = 300000;
 
 function cacheWrite(key, data) {
   state.cache[key] = { data: data, at: Date.now() };
@@ -2110,7 +2110,7 @@ async function loadHome(opts) {
  * 不是每台各讀一次——這才是真的「登入後一次讀完，切換時秒切」。
  *
  * 不走 run()：這是背景低優先度的事，不該讓 state.busy 卡住、
- * 影響到使用者正在做的事情或每 20 秒的輪詢；失敗也靜靜略過，
+ * 影響到使用者正在做的事情或背景輪詢；失敗也靜靜略過，
  * 使用者真的點進去時 loadDetail 會照正常流程重新抓一次。
  */
 let _prefetchInFlight = false;
@@ -2227,7 +2227,7 @@ function doLogout() {
 
 /**
  * 記住上一次 render() 是畫「哪一頁」，分辨這次重繪是「真的換頁／換機台」
- * 還是「同一頁的背景重新整理」（記帳後刷新、20 秒輪詢…）。
+ * 還是「同一頁的背景重新整理」（記帳後刷新、背景輪詢…）。
  *
  * machineSwitcher() 自己有一套 _switcherLastMachineId 邏輯，但那個只顧得到
  * 切換籤自己那條「水平」捲軸；整個頁面的「垂直」捲動位置是另一回事，
