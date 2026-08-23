@@ -878,6 +878,7 @@ function doStartBusinessDay() {
 }
 
 function doEndBusinessDay() {
+  if (!confirm('確定要結算今日營業嗎？結單後才能再次「今日營業開始」。')) return;
   run(async () => {
     await api('endBusinessDay', {});
     _clearMachineDetailCache();
