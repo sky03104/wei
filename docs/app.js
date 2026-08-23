@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v30';
+const APP_VERSION = 'v31';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -870,6 +870,8 @@ function _clearMachineDetailCache() {
 }
 
 function doStartBusinessDay() {
+  const biz = state.home && state.home.businessDay;
+  if (biz && biz.open && !confirm('目前已經在營業中，確定要重新開始今日營業嗎？\n這會自動結算目前這個營業日，並開一個新的。')) return;
   run(async () => {
     await api('startBusinessDay', {});
     _clearMachineDetailCache();
