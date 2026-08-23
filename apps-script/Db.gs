@@ -19,7 +19,7 @@ const SCHEMA = {
   Config: ['key', 'value'],
   BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
   DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at', 'biz_id',
-    'manual_432', 'manual_441', 'given_to_owner_items', 'taken_by_owner_items']
+    'manual_432', 'manual_441', 'given_to_owner_items', 'taken_by_owner_items', 'manual_expense']
 };
 
 /**
@@ -64,7 +64,7 @@ const HEADER_LABELS = {
   Config: ['設定鍵', '設定值'],
   BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
   DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給（舊，已改用明細）', '台主領（舊，已改用明細）', '還內場', '更新人', '更新時間', '所屬營業日編號',
-    '手動活動支出432', '手動活動支出441', '台主給明細（JSON）', '台主領明細（JSON）']
+    '手動活動支出432', '手動活動支出441', '台主給明細（JSON）', '台主領明細（JSON）', '開銷']
 };
 
 /**
