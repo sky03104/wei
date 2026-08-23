@@ -325,6 +325,7 @@ function _publicDailyLedger(row) {
     returnedToHouse: row ? toNumber(row.returned_to_house) : 0,
     manual432: row ? toNumber(row.manual_432) : 0,
     manual441: row ? toNumber(row.manual_441) : 0,
+    manualExpense: row ? toNumber(row.manual_expense) : 0,
     updatedAt: row ? row.updated_at : ''
   };
 }
@@ -378,6 +379,7 @@ function saveDailyLedger(user, payload) {
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
   const manual432 = _validOutflowAmount(payload.manual432);
   const manual441 = _validOutflowAmount(payload.manual441);
+  const manualExpense = _validOutflowAmount(payload.manualExpense);
 
   return withLock(function () {
     // 用跟 getDashboard() 讀取時同一套邊界（_relevantBizDayForToday()），
@@ -399,6 +401,7 @@ function saveDailyLedger(user, payload) {
       returned_to_house: returnedToHouse,
       manual_432: manual432,
       manual_441: manual441,
+      manual_expense: manualExpense,
       updated_by: user.userId,
       updated_at: nowIso()
     };
@@ -547,13 +550,14 @@ function getDashboard(user) {
 
   const ledger = _publicDailyLedger(_dailyLedgerRow(today));
 
-  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（自動算的「開銷+432
-  // 獎」）− 手動活動支出432/441（自動算的之外，另外辦的活動）＋電子淨贏
+  // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 432獎金額（自動算的「活動出獎」）
+  // − 手動活動支出432/441（自動算的之外，另外辦的活動）− 開銷（每天手動填的
+  // 現金支出，跟 432/441 是不同性質的扣項，各自分開存）＋電子淨贏
   // ＋週轉金/運拿/台主給/台主領/還內場這幾個每天手動輸入的數字。運拿、
-  // 台主領、手動活動支出存的是使用者輸入的正數現金流出金額，這裡要扣掉；
+  // 台主領、手動活動支出、開銷存的是使用者輸入的正數現金流出金額，這裡要扣掉；
   // 週轉金、台主給、還內場是加回去。台主給／台主領現在可能有好幾筆，
   // 這裡用的是 _publicDailyLedger() 已經加總好的 givenToOwner／takenByOwner。
-  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount - ledger.manual432 - ledger.manual441
+  const ledgerTotal = diceTotal.in - diceTotal.out - today432Amount - ledger.manual432 - ledger.manual441 - ledger.manualExpense
     + ledger.turnover - ledger.transport + ledger.givenToOwner
     + electronicTotal.chipNet - ledger.takenByOwner + ledger.returnedToHouse;
 
