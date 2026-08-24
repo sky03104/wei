@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v33';
+const APP_VERSION = 'v34';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -844,10 +844,41 @@ function exportLedgerImage(data) {
   ctx.textAlign = 'right';
   ctx.fillText(money(data.ledgerTotal), width - padX, y + totalH / 2 + 4);
 
+  const filename = '今日現金結餘明細_' + (data.today || todayInputValue()) + '.png';
+  const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
+
+  // 手機（尤其 iPhone Safari，裝成 PWA 獨立模式後更明顯）不吃「憑空建立
+  // 一個 <a download> 沒放進畫面就直接點擊」這招——按下去完全沒反應，
+  // 這是手機版按鈕沒動靜最常見的原因。改用手機原生的分享面板（能選「儲存
+  // 圖片」），share() 一定要在點擊當下同步呼叫，不能等 toDataURL 之後的
+  // 非同步流程，不然手機會判定不是使用者主動觸發而擋下來——所以上面轉
+  // Blob 用同步的 _dataUrlToBlob，不是用非同步的 canvas.toBlob。
+  const file = (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : null;
+  if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file] }).catch(function () {});
+    return;
+  }
+
+  // 桌機／不支援分享面板的瀏覽器：走原本的下載連結，但一定要先把 <a>
+  // 掛進畫面再點擊——沒掛進畫面點擊在部分瀏覽器一樣會被吃掉沒反應。
+  const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = canvas.toDataURL('image/png');
-  link.download = '今日現金結餘明細_' + (data.today || todayInputValue()) + '.png';
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
   link.click();
+  document.body.removeChild(link);
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+
+/** 同步把 data: URL 轉成 Blob——刻意不用非同步的 canvas.toBlob()，見上面呼叫端註解。 */
+function _dataUrlToBlob(dataUrl) {
+  const parts = dataUrl.split(',');
+  const mime = parts[0].match(/:(.*?);/)[1];
+  const bin = atob(parts[1]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
 }
 
 /** 設定今天（進行中營業日）的週轉金／運拿／台主給／台主領／還內場／開銷／432／441，每天只存一組，重新儲存會覆蓋。 */
