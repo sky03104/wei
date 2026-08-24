@@ -350,9 +350,22 @@ function _writeLedgerSheet(sheet, grid) {
   for (let c = 1; c <= numCols; c++) sheet.setColumnWidth(c, 90);
 }
 
+/**
+ * 機台名稱是自由輸入的文字（adminSaveMachine 只擋長度，沒擋字元），但
+ * Google Sheets 的分頁名稱不能包含 [ ] * ? / \ : 這幾個字元，插入或改名
+ * 遇到就直接丟錯——本機測試環境的假試算表沒做這個限制，所以這個坑在
+ * 本機測試不會現形，只有在真的 GAS 上才會炸開。轉成 .xlsx 之後 Excel
+ * 分頁名稱上限是 31 字，所以先砍到 28 字，留空間給下面加的「(2)」這類
+ * 撞名後綴，不然砍在後綴中間又變成另一種撞名。
+ */
+function _sanitizeSheetName(name) {
+  const cleaned = String(name || '機台').replace(/[[\]*?/\\:]/g, '-').trim();
+  return (cleaned || '機台').substring(0, 28);
+}
+
 /** 分頁名稱不能重複（Sheets 會直接報錯拒絕），機台改過名也可能撞名。 */
 function _uniqueSheetName(used, name) {
-  const base = String(name || '機台').substring(0, 90);
+  const base = _sanitizeSheetName(name);
   let candidate = base;
   let n = 2;
   while (used[candidate]) {

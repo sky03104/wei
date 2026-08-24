@@ -1310,6 +1310,26 @@ function _selfTestBody(results) {
       '骰台查詢的 rowCount 應該等於各骰台分頁各自的 rowCount 加總（電子機台不算）');
   });
 
+  _t(results, '骰台查詢匯出：機台名稱含 Sheets 分頁名不准用的字元（/ \\ : * ? [ ]）不會匯出失敗', function () {
+    // 機台名稱只擋長度沒擋字元（adminSaveMachine），但這些字元當分頁名稱
+    // 在真的 Google Sheets 上會直接報錯——本機假試算表不會擋，這裡改成
+    // 直接測 _sanitizeSheetName，不靠假試算表的（不存在的）字元檢查。
+    _assertEq(_sanitizeSheetName('1/2號機'), '1-2號機', '斜線要換掉');
+    _assertEq(_sanitizeSheetName('A:B機台'), 'A-B機台', '冒號要換掉');
+    _assertEq(_sanitizeSheetName('[維修]機台*?'), '-維修-機台--', '中括號跟星號問號都要換掉');
+    _assert(_sanitizeSheetName('x'.repeat(50)).length <= 28, '要砍到 28 字以內，留空間給撞名後綴');
+
+    const diceP = _ok({ action: 'adminSaveMachine', token: adminTok, name: '1/2號機', sortOrder: 90 }).machineId;
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceP, type: 'out', amount: 10, clientToken: newId('ct') });
+    const scopedOwner2 = _mkUser('t_owner_slash_name', ROLE_OWNER, 'ownerSlash123');
+    _clearSheetCache();
+    const scopedTok2 = _token('t_owner_slash_name', 'ownerSlash123');
+    _ok({ action: 'adminSetPermission', token: adminTok, userId: scopedOwner2.user_id, machineId: diceP, granted: true });
+
+    const xlsx2 = _ok({ action: 'exportLedgerXlsx', token: scopedTok2, category: 'dice', preset: 'day' });
+    _assert(xlsx2.rowCount >= 1, '含特殊字元機台名稱的骰台查詢應該照樣匯出成功');
+  });
+
   _t(results, '骰台查詢匯出：台主只被授權電子機台時，查骰台分類會直接報錯，不是靜默生出空白活頁簿', function () {
     // 系統裡其實「有」骰台（machineA），但這個台主沒被授權——證明報錯是
     // 權限篩掉了看得到的骰台清單，不是系統裡根本沒有骰台機台。
