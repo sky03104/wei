@@ -203,7 +203,7 @@ const state = {
   homeTab: 'dice',    // 首頁分頁籤：'dice' 骰台（預設）| 'electronic' 電子 | 'total' 加總
   editMode: false,
   prizeCounts: {},
-  reportParams: { machineId: '', preset: 'day', from: '', to: '', type: '', userId: '' },
+  reportParams: { machineId: '', category: '', preset: 'day', from: '', to: '', type: '', userId: '' },
   adminTab: 'users',
   permExpanded: {}, // 台主授權頁每個台主的卡片是否展開，key 是 userId
   busy: false,
@@ -660,7 +660,7 @@ function viewHome() {
       statBox('今日432數量', String(data.today432Count || 0), ''),
       statBox('今日441數量', String(data.today441Count || 0), ''),
       statBox('今日活動金額', money(t.prize), ''),
-      statBox('今日淨收益', money(t.net), 'net ' + netClass(t.net))
+      statBox('今日總筆數', String((data.todayOutCount || 0) + (data.today432Count || 0) + (data.today441Count || 0)), '')
     ]);
     const machines = data.machines.filter((m) => m.category !== 'electronic');
     list = machines.length
@@ -697,14 +697,19 @@ function homeTabBar() {
  * 用各自的名字當標籤，不是只顯示一個「台主給」的總和——沒有任何一筆時
  * 退回顯示「台主給／台主領 $0」這一行占位，維持跟其他固定項目一樣的排版。
  */
-function ledgerCard(data) {
+/**
+ * 明細列表的資料來源，跟卡片畫面（DOM）跟匯出截圖（canvas）共用同一份，
+ * 避免兩邊各寫一次、改一邊忘了改另一邊。「活動出獎」不列在這裡——它是
+ * 432 活動的自動金額，跟下面的「432(手動)」是分開扣的兩筆，但一起看
+ * 會讓人誤以為 432 活動的錢扣了兩次，所以只留「432(手動)」這筆。
+ */
+function ledgerRows(data) {
   const l = data.ledger;
   const givenRows = (l.givenToOwnerItems.length ? l.givenToOwnerItems : [{ name: '台主給', amount: 0 }])
     .map((it) => [it.name, it.amount]);
   const takenRows = (l.takenByOwnerItems.length ? l.takenByOwnerItems : [{ name: '台主領', amount: 0 }])
     .map((it) => [it.name, -it.amount]);
-  const rows = [
-    ['活動出獎', -data.today432Amount],
+  return [
     ['432(手動)', -l.manual432],
     ['441(手動)', -l.manual441],
     ['入幣', data.diceTotal.in],
@@ -717,13 +722,26 @@ function ledgerCard(data) {
     ...takenRows,
     ['還內場', l.returnedToHouse]
   ];
+}
+
+function ledgerCard(data) {
+  const l = data.ledger;
+  const rows = ledgerRows(data);
+
+  // 上面一排橫的兩顆——手機螢幕塞不下時用橫向捲動（跟 .tabs／
+  // .machine-switcher 同一種做法），不要讓按鈕擠壓成直的好幾排。
+  // 「匯出明細截圖」放最下面總結餘下面，不跟這排擠在一起。
+  const actionsRow = h('div', { class: 'row', style: 'flex-wrap:nowrap; overflow-x:auto; gap:8px; margin-bottom:10px; justify-content:flex-end' }, [
+    h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => goReport('', 'dice') }, '📊 骰台查詢'),
+    canRecord()
+      ? h('button', { class: 'btn btn-sm btn-prize', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
+      : null
+  ]);
 
   return h('div', { class: 'card' }, [
+    actionsRow,
     h('div', { class: 'panel-head' }, [
-      h('h3', { text: '今日現金結餘明細' }),
-      canRecord()
-        ? h('button', { class: 'btn btn-sm btn-prize', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
-        : null
+      h('h3', { text: '今日現金結餘明細' })
     ]),
     h('div', {}, rows.map(([label, value]) => h('div', { class: 'ledger-row' }, [
       h('span', { class: 'ledger-label', text: label }),
@@ -733,12 +751,103 @@ function ledgerCard(data) {
       h('span', { class: 'ledger-label', text: '總結餘' }),
       h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
     ]),
+    h('button', {
+      class: 'btn btn-sm',
+      style: 'width:100%; margin-top:12px',
+      onclick: () => exportLedgerImage(data)
+    }, '📷 匯出明細截圖'),
     l.updatedAt
       ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 最後更新：' + formatTime(l.updatedAt) })
       : h('p', { class: 'small muted', style: 'margin-top:10px' }, isAdmin() || canRecord()
         ? '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
         : '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 今天還沒設定。')
   ]);
+}
+
+/**
+ * 把「今日現金結餘明細」卡片畫成一張 PNG 圖片下載——現場對帳習慣截圖傳
+ * 群組，明細列一多手機螢幕塞不下，一次截圖只能截到一半，還要拼兩張。
+ * 用 canvas 手繪而不是叫 html2canvas 之類的套件，是因為這個 App 是
+ * 離線可用的 PWA（見 docs/sw.js），不想為了這個功能多裝一個外部套件、
+ * 多一個離線時可能載不到的依賴。
+ */
+function exportLedgerImage(data) {
+  const rows = ledgerRows(data);
+  const scale = 2;
+  const width = 360;
+  const rowH = 32;
+  const padX = 16;
+  const headerH = 44;
+  const totalH = 44;
+  const font = 'system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif';
+  const colorBg = '#141926';
+  const colorBorder = '#263049';
+  const colorText = '#E8ECF5';
+  const colorMuted = '#8B96AD';
+  const colorPos = '#4ADE80';
+  const colorNeg = '#F87171';
+  const valueColor = (v) => (v > 0 ? colorPos : v < 0 ? colorNeg : colorMuted);
+
+  const height = headerH + rows.length * rowH + totalH + 16;
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+
+  ctx.fillStyle = colorBg;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = colorText;
+  ctx.font = 'bold 17px ' + font;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('今日現金結餘明細', padX, headerH / 2 + 4);
+
+  let y = headerH;
+  rows.forEach(([label, value]) => {
+    ctx.strokeStyle = colorBorder;
+    ctx.beginPath();
+    ctx.moveTo(padX, y + rowH - 0.5);
+    ctx.lineTo(width - padX, y + rowH - 0.5);
+    ctx.stroke();
+
+    ctx.font = '14px ' + font;
+    ctx.fillStyle = colorMuted;
+    ctx.textAlign = 'left';
+    ctx.fillText(label, padX, y + rowH / 2);
+
+    ctx.font = 'bold 14px ' + font;
+    ctx.fillStyle = valueColor(value);
+    ctx.textAlign = 'right';
+    ctx.fillText(money(value), width - padX, y + rowH / 2);
+
+    y += rowH;
+  });
+
+  y += 8;
+  ctx.strokeStyle = colorBorder;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(padX, y);
+  ctx.lineTo(width - padX, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.font = 'bold 16px ' + font;
+  ctx.fillStyle = colorText;
+  ctx.textAlign = 'left';
+  ctx.fillText('總結餘', padX, y + totalH / 2 + 4);
+
+  ctx.font = 'bold 19px ' + font;
+  ctx.fillStyle = valueColor(data.ledgerTotal);
+  ctx.textAlign = 'right';
+  ctx.fillText(money(data.ledgerTotal), width - padX, y + totalH / 2 + 4);
+
+  const link = document.createElement('a');
+  link.href = canvas.toDataURL('image/png');
+  link.download = '今日現金結餘明細_' + (data.today || todayInputValue()) + '.png';
+  link.click();
 }
 
 /** 設定今天（進行中營業日）的週轉金／運拿／台主給／台主領／還內場／開銷／432／441，每天只存一組，重新儲存會覆蓋。 */
@@ -2295,10 +2404,11 @@ function goMachine(machineId) {
   if (!cacheFresh(key)) loadDetail(machineId);
 }
 
-function goReport(machineId) {
+function goReport(machineId, category) {
   state.view = 'report';
   state.reportParams = {
     machineId: machineId || '',
+    category: category || '',
     preset: 'day', from: '', to: '', type: '', userId: ''
   };
   const key = 'report:' + JSON.stringify(state.reportParams);

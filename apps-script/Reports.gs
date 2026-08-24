@@ -139,7 +139,12 @@ function getReport(user, params) {
   };
 }
 
-/** 報表要看哪些機台：指定單台就驗權限，沒指定就是這個帳號看得到的全部。 */
+/**
+ * 報表要看哪些機台：指定單台就驗權限，沒指定就是這個帳號看得到的全部。
+ * params.category 有值（'dice'／'electronic'）時，再從「看得到的全部」
+ * 裡篩出該分類——目前給首頁「加總」分頁的「骰台查詢」用，合併查詢/匯出
+ * 所有骰台但不含電子機台。
+ */
 function _reportScope(user, params) {
   if (params.machineId) {
     assertMachineAccess(user, params.machineId);
@@ -151,7 +156,16 @@ function _reportScope(user, params) {
       category: m ? (m.category || 'dice') : ''
     };
   }
-  return { ids: visibleMachineIds(user), machineId: '', machineName: '', category: '' };
+
+  const category = (params.category === MACHINE_CATEGORY_ELECTRONIC || params.category === MACHINE_CATEGORY_DICE)
+    ? params.category : '';
+  let ids = visibleMachineIds(user);
+  let machineName = '';
+  if (category) {
+    ids = ids.filter(function (id) { return _machineCategory(id) === category; });
+    machineName = category === MACHINE_CATEGORY_ELECTRONIC ? '全部電子機台' : '全部骰台';
+  }
+  return { ids: ids, machineId: '', machineName: machineName, category: category };
 }
 
 function _reportRows(machineIds, range, params, includeArchive) {
@@ -291,15 +305,13 @@ function _buildLedgerGrid(user, params) {
 }
 
 /**
- * 把 _buildLedgerGrid() 的格線資料做成一份有格式的 .xlsx：表頭粗體、
+ * 把一份 _buildLedgerGrid() 的格線資料寫進一個 sheet 並套樣式：表頭粗體、
  * 出幣逐筆列跟五列小計中間隔一條黑底分隔列、「+/-」列紅字、五列小計
  * 最右邊的標籤欄（總出幣/432/441/總入幣/+/-）粉紅底——排版照現場原本
- * 手記在紙本試算表上的樣子。做法是先建一份暫時的 Google 試算表套版，
- * 再用 UrlFetchApp 打 Google 內建的匯出網址轉成 .xlsx bytes，最後把暫時
- * 試算表丟進垃圾桶（不留在雲端硬碟裡）。
+ * 手記在紙本試算表上的樣子。單一機台匯出跟「骰台查詢」的每一個分頁
+ * 都呼叫這支，確保排版永遠一致。
  */
-function exportLedgerXlsx(user, params) {
-  const grid = _buildLedgerGrid(user, params);
+function _writeLedgerSheet(sheet, grid) {
   const numCols = grid.colCount;
   const dividerRow = new Array(numCols).fill('');
   const allRows = [grid.headerRow].concat(grid.outRows, [dividerRow], grid.summaryRows);
@@ -308,39 +320,111 @@ function exportLedgerXlsx(user, params) {
   const summaryStartRow = dividerRowIndex + 1;
   const SUMMARY_ROW_COUNT = 5; // 出幣/432/441/入幣/+/- 固定五列
 
-  const ss = SpreadsheetApp.create(grid.filenameBase);
-  const id = ss.getId();
-  try {
-    const sheet = ss.getSheets()[0] || ss.insertSheet('對帳表');
+  // 表頭列（圖數＋「8月21日」這種日期標籤）跟兩個標籤欄（出幣/432/441/
+  // 入幣/+/-、總出幣/432/441/總入幣/+/-）看起來像日期或純數字，Sheets
+  // 預設會在寫入當下自動幫忙轉型，「8月21日」會變成日期序號（例如
+  // 46255）、「432」會變成數字，顯示就跑掉了。一定要在 setValues() 之前
+  // 先把儲存格格式鎖成純文字，Sheets 才不會自動轉型——這個專案已經因為
+  // 同一種自動轉型的坑踩過好幾次（Db.gs 的 _fixTextColumnFormatting
+  // 就是在修同一類問題，只是那邊是事後補救既有資料，這裡是寫入前預防）。
+  sheet.getRange(1, 1, 1, numCols).setNumberFormat('@');
+  sheet.getRange(summaryStartRow, 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
+  sheet.getRange(summaryStartRow, numCols - 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
 
-    // 表頭列（圖數＋「8月21日」這種日期標籤）跟兩個標籤欄（出幣/432/441/
-    // 入幣/+/-、總出幣/432/441/總入幣/+/-）看起來像日期或純數字，Sheets
-    // 預設會在寫入當下自動幫忙轉型，「8月21日」會變成日期序號（例如
-    // 46255）、「432」會變成數字，顯示就跑掉了。一定要在 setValues() 之前
-    // 先把儲存格格式鎖成純文字，Sheets 才不會自動轉型——這個專案已經因為
-    // 同一種自動轉型的坑踩過好幾次（Db.gs 的 _fixTextColumnFormatting
-    // 就是在修同一類問題，只是那邊是事後補救既有資料，這裡是寫入前預防）。
-    sheet.getRange(1, 1, 1, numCols).setNumberFormat('@');
-    sheet.getRange(summaryStartRow, 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
-    sheet.getRange(summaryStartRow, numCols - 1, SUMMARY_ROW_COUNT, 1).setNumberFormat('@');
+  sheet.getRange(1, 1, numRows, numCols).setValues(allRows);
+  sheet.getRange(1, 1, 1, numCols).setFontWeight('bold');
+  sheet.getRange(1, 1, numRows, numCols).setHorizontalAlignment('center');
+  sheet.setFrozenRows(1);
 
-    sheet.getRange(1, 1, numRows, numCols).setValues(allRows);
-    sheet.getRange(1, 1, 1, numCols).setFontWeight('bold');
-    sheet.getRange(1, 1, numRows, numCols).setHorizontalAlignment('center');
-    sheet.setFrozenRows(1);
+  sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
 
-    sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
+  grid.summaryRows.forEach(function (row, i) {
+    const sheetRow = summaryStartRow + i;
+    if (row[0] === '+/-') sheet.getRange(sheetRow, 1, 1, numCols).setFontColor('#c00000');
+    sheet.getRange(sheetRow, numCols - 1, 1, 1).setBackground('#f8cbcb');
+  });
 
-    grid.summaryRows.forEach(function (row, i) {
-      const sheetRow = summaryStartRow + i;
-      if (row[0] === '+/-') sheet.getRange(sheetRow, 1, 1, numCols).setFontColor('#c00000');
-      sheet.getRange(sheetRow, numCols - 1, 1, 1).setBackground('#f8cbcb');
+  // 不用 autoResizeColumns：它對中文字的寬度估得偏窄，「總出幣」「總入幣」
+  // 「8月21日」這種欄位常常被切字。改成每一欄都給同一個固定的保底寬度，
+  // 也比較貼近參考照片那種欄寬整齊劃一的紙本對帳表版面。
+  for (let c = 1; c <= numCols; c++) sheet.setColumnWidth(c, 90);
+}
+
+/** 分頁名稱不能重複（Sheets 會直接報錯拒絕），機台改過名也可能撞名。 */
+function _uniqueSheetName(used, name) {
+  const base = String(name || '機台').substring(0, 90);
+  let candidate = base;
+  let n = 2;
+  while (used[candidate]) {
+    candidate = base + '(' + n + ')';
+    n++;
+  }
+  used[candidate] = true;
+  return candidate;
+}
+
+/**
+ * 「骰台查詢」「電子查詢」這種不指定單台、改指定分類的查詢，匯出時
+ * 每一台機台各自開一個分頁，而不是把所有機台的出幣合併成同一張表——
+ * 現場對帳是一台一台分開核對，合併在一起反而要自己拆開來看。分頁內容
+ * 直接照單一機台匯出的邏輯算（_buildLedgerGrid 帶 machineId），保證跟
+ * 「單一機台匯出」長得一模一樣，不是另外寫一套。
+ */
+function exportLedgerXlsx(user, params) {
+  const scope = _reportScope(user, params);
+  const isCategoryScope = !params.machineId && scope.category;
+
+  if (!isCategoryScope) {
+    const grid = _buildLedgerGrid(user, params);
+    const result = _exportLedgerWorkbook(grid.filenameBase, function (ss) {
+      const sheet = ss.getSheets()[0] || ss.insertSheet('對帳表');
+      _writeLedgerSheet(sheet, grid);
+    });
+    result.rowCount = grid.rowCount;
+    return result;
+  }
+
+  if (!scope.ids.length) {
+    const categoryLabel = scope.category === MACHINE_CATEGORY_ELECTRONIC ? '電子機台' : '骰台';
+    throw new Error('目前沒有看得到的' + categoryLabel + '，無法匯出');
+  }
+
+  const machines = dbReadAll('Machines')
+    .filter(function (m) { return scope.ids.indexOf(String(m.machine_id)) >= 0; })
+    .sort(function (a, b) {
+      if (toNumber(a.sort_order) !== toNumber(b.sort_order)) return toNumber(a.sort_order) - toNumber(b.sort_order);
+      return String(a.name).localeCompare(String(b.name));
     });
 
-    // 不用 autoResizeColumns：它對中文字的寬度估得偏窄，「總出幣」「總入幣」
-    // 「8月21日」這種欄位常常被切字。改成每一欄都給同一個固定的保底寬度，
-    // 也比較貼近參考照片那種欄寬整齊劃一的紙本對帳表版面。
-    for (let c = 1; c <= numCols; c++) sheet.setColumnWidth(c, 90);
+  const range = resolveRange(params.preset, params.from, params.to);
+  const filenameBase = '娃娃機對帳表_' + scope.machineName + '_' + range.from + '_' + range.to;
+
+  let totalRowCount = 0;
+  const result = _exportLedgerWorkbook(filenameBase, function (ss) {
+    const usedNames = {};
+    machines.forEach(function (m, i) {
+      const grid = _buildLedgerGrid(user, Object.assign({}, params, { machineId: String(m.machine_id) }));
+      totalRowCount += grid.rowCount;
+      const sheetName = _uniqueSheetName(usedNames, m.name);
+      const sheet = i === 0 ? (ss.getSheets()[0] || ss.insertSheet(sheetName)) : ss.insertSheet(sheetName);
+      if (i === 0) sheet.setName(sheetName);
+      _writeLedgerSheet(sheet, grid);
+    });
+  });
+  result.rowCount = totalRowCount;
+  return result;
+}
+
+/**
+ * 建一份暫時的 Google 試算表、交給 fillFn 把內容跟分頁寫好，
+ * 再用 UrlFetchApp 打 Google 內建的匯出網址轉成 .xlsx bytes 回傳，
+ * 最後把暫時試算表丟進垃圾桶（不留在雲端硬碟裡）。
+ */
+function _exportLedgerWorkbook(filenameBase, fillFn) {
+  const ss = SpreadsheetApp.create(filenameBase);
+  const id = ss.getId();
+  try {
+    fillFn(ss);
 
     // 一定要在打匯出網址之前 flush：剛套用的樣式（底色／字色／欄寬）是
     // 透過 Sheets service 排入佇列的操作，沒有 flush 過就直接打匯出網址，
@@ -355,11 +439,7 @@ function exportLedgerXlsx(user, params) {
     });
     const base64 = Utilities.base64Encode(resp.getBlob().getBytes());
 
-    return {
-      filename: grid.filenameBase + '.xlsx',
-      base64: base64,
-      rowCount: grid.rowCount
-    };
+    return { filename: filenameBase + '.xlsx', base64: base64 };
   } finally {
     DriveApp.getFileById(id).setTrashed(true);
   }

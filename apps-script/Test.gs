@@ -1282,6 +1282,46 @@ function _selfTestBody(results) {
     _assertEq(grid.summaryRows[4].join(','), '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
   });
 
+  _t(results, '骰台查詢匯出：不指定機台改指定分類時，各骰台各自算好的小計要加總成整體 rowCount，電子機台不算進去', function () {
+    const diceX = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試X', sortOrder: 95 }).machineId;
+    const diceY = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Y', sortOrder: 94 }).machineId;
+    const elecZ = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Z（電子）', category: 'electronic', sortOrder: 93 }).machineId;
+
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceX, type: 'out', amount: 60, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceY, type: 'out', amount: 25, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: diceY, type: 'out', amount: 15, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: elecZ, type: 'chip_in', amount: 500, clientToken: newId('ct') });
+
+    // 用只被授權這三台的台主查詢，才不會被整個測試套件跑下來累積的
+    // 其他骰台（admin 看得到全部）污染 rowCount 的比對基準。
+    const scopedOwner = _mkUser('t_owner_dice_query', ROLE_OWNER, 'ownerDice123');
+    _clearSheetCache();
+    const scopedTok = _token('t_owner_dice_query', 'ownerDice123');
+    [diceX, diceY, elecZ].forEach(function (mid) {
+      _ok({ action: 'adminSetPermission', token: adminTok, userId: scopedOwner.user_id, machineId: mid, granted: true });
+    });
+
+    const xGrid = _buildLedgerGrid(validateSession(scopedTok), { machineId: diceX, preset: 'day' });
+    const yGrid = _buildLedgerGrid(validateSession(scopedTok), { machineId: diceY, preset: 'day' });
+
+    const xlsx = _ok({ action: 'exportLedgerXlsx', token: scopedTok, category: 'dice', preset: 'day' });
+    _assert(xlsx.filename.indexOf('全部骰台') >= 0, '檔名應該標示「全部骰台」，跟單一機台的檔名區分開來：' + xlsx.filename);
+    _assertEq(xlsx.rowCount, xGrid.rowCount + yGrid.rowCount,
+      '骰台查詢的 rowCount 應該等於各骰台分頁各自的 rowCount 加總（電子機台不算）');
+  });
+
+  _t(results, '骰台查詢匯出：台主只被授權電子機台時，查骰台分類會直接報錯，不是靜默生出空白活頁簿', function () {
+    // 系統裡其實「有」骰台（machineA），但這個台主沒被授權——證明報錯是
+    // 權限篩掉了看得到的骰台清單，不是系統裡根本沒有骰台機台。
+    const elecOnly = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢權限測試（電子）', category: 'electronic', sortOrder: 91 }).machineId;
+    const elecOnlyOwner = _mkUser('t_owner_elec_only', ROLE_OWNER, 'ownerElec123');
+    _clearSheetCache();
+    const elecOnlyTok = _token('t_owner_elec_only', 'ownerElec123');
+    _ok({ action: 'adminSetPermission', token: adminTok, userId: elecOnlyOwner.user_id, machineId: elecOnly, granted: true });
+
+    _fails({ action: 'exportLedgerXlsx', token: elecOnlyTok, category: 'dice', preset: 'day' });
+  });
+
   // ── 按季自動封存舊資料 ──
   _t(results, '_quarterKey：日期換算季度正確', function () {
     _assertEq(_quarterKey('2026-01-15'), '2026Q1', '1月屬於Q1');
