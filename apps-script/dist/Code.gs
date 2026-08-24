@@ -2618,16 +2618,21 @@ function _writeLedgerSheet(sheet, grid) {
 
   sheet.getRange(dividerRowIndex, 1, 1, numCols).setBackground('#000000');
 
+  // 五列小計最右邊的標籤欄粉紅底是連續的（同一欄、連續五列），一次
+  // setBackground() 就能整批套上，不用一列一列各呼叫一次——「骰台查詢」
+  // 一次要開好幾個機台的分頁，每台都省下幾次 API 呼叫，加總起來才有感。
+  sheet.getRange(summaryStartRow, numCols - 1, SUMMARY_ROW_COUNT, 1).setBackground('#f8cbcb');
+
   grid.summaryRows.forEach(function (row, i) {
-    const sheetRow = summaryStartRow + i;
-    if (row[0] === '+/-') sheet.getRange(sheetRow, 1, 1, numCols).setFontColor('#c00000');
-    sheet.getRange(sheetRow, numCols - 1, 1, 1).setBackground('#f8cbcb');
+    if (row[0] === '+/-') sheet.getRange(summaryStartRow + i, 1, 1, numCols).setFontColor('#c00000');
   });
 
   // 不用 autoResizeColumns：它對中文字的寬度估得偏窄，「總出幣」「總入幣」
   // 「8月21日」這種欄位常常被切字。改成每一欄都給同一個固定的保底寬度，
-  // 也比較貼近參考照片那種欄寬整齊劃一的紙本對帳表版面。
-  for (let c = 1; c <= numCols; c++) sheet.setColumnWidth(c, 90);
+  // 也比較貼近參考照片那種欄寬整齊劃一的紙本對帳表版面。用
+  // setColumnWidths() 一次設完全部欄寬，不要一欄一欄各呼叫一次
+  // setColumnWidth()——道理跟上面的粉紅底一樣，都是省 API 呼叫次數。
+  sheet.setColumnWidths(1, numCols, 90);
 }
 
 /**
