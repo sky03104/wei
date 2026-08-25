@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v35';
+const APP_VERSION = 'v36';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -260,6 +260,12 @@ function netClass(n) {
 }
 
 function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+/** 'yyyy-MM-dd' → 「8月24日」，跟 apps-script/Reports.gs 的 _dayKeyToLabel 同一種寫法（不補零）。 */
+function dayKeyToLabel(key) {
+  const p = String(key).split('-');
+  return Number(p[1]) + '月' + Number(p[2]) + '日';
+}
 
 function formatTime(iso) {
   const d = new Date(iso);
@@ -697,6 +703,8 @@ function homeTabBar() {
  * 台主給／台主領可能不只一筆（不只一位台主），各自可以命名，這裡逐筆列出
  * 用各自的名字當標籤，不是只顯示一個「台主給」的總和——沒有任何一筆時
  * 退回顯示「台主給／台主領 $0」這一行占位，維持跟其他固定項目一樣的排版。
+ * 「運拿」已經用不到了，不列在這裡，總結餘也不會扣（DailyLedger 分頁
+ * 還留著這一欄只是為了讀舊資料，新存的值不影響這裡）。
  *
  * 這份資料跟卡片畫面（DOM）跟匯出截圖（canvas）共用同一份，避免兩邊
  * 各寫一次、改一邊忘了改另一邊。
@@ -708,13 +716,12 @@ function ledgerRows(data) {
   const takenRows = (l.takenByOwnerItems.length ? l.takenByOwnerItems : [{ name: '台主領', amount: 0 }])
     .map((it) => [it.name, -it.amount]);
   return [
-    ['432(手動)', -l.manual432],
-    ['441(手動)', -l.manual441],
+    ['432活動出獎', -l.manual432],
+    ['441活動出獎', -l.manual441],
     ['入幣', data.diceTotal.in],
     ['出幣', -data.diceTotal.out],
     ['開銷', -l.manualExpense],
     ['週轉金', l.turnover],
-    ['運拿', -l.transport],
     ...givenRows,
     ['電子贏', data.electronicTotal.chipNet],
     ...takenRows,
@@ -739,7 +746,7 @@ function ledgerCard(data) {
   return h('div', { class: 'card' }, [
     actionsRow,
     h('div', { class: 'panel-head' }, [
-      h('h3', { text: '今日現金結餘明細' })
+      h('h3', { text: dayKeyToLabel(data.today) + ' 今日現金結餘明細' })
     ]),
     h('div', {}, rows.map(([label, value]) => h('div', { class: 'ledger-row' }, [
       h('span', { class: 'ledger-label', text: label }),
@@ -749,16 +756,18 @@ function ledgerCard(data) {
       h('span', { class: 'ledger-label', text: '總結餘' }),
       h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
     ]),
+    h('p', { class: 'small muted', style: 'margin-top:10px' },
+      '今日432支數 ' + (data.today432Count || 0) + '　今日441支數 ' + (data.today441Count || 0)),
     h('button', {
       class: 'btn btn-sm',
       style: 'width:100%; margin-top:12px',
       onclick: () => exportLedgerImage(data)
     }, '📷 匯出明細截圖'),
     l.updatedAt
-      ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 最後更新：' + formatTime(l.updatedAt) })
+      ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／台主給／台主領／還內場／開銷／432／441 最後更新：' + formatTime(l.updatedAt) })
       : h('p', { class: 'small muted', style: 'margin-top:10px' }, isAdmin() || canRecord()
-        ? '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
-        : '週轉金／運拿／台主給／台主領／還內場／開銷／432／441 今天還沒設定。')
+        ? '週轉金／台主給／台主領／還內場／開銷／432／441 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
+        : '週轉金／台主給／台主領／還內場／開銷／432／441 今天還沒設定。')
   ]);
 }
 
@@ -786,7 +795,8 @@ function exportLedgerImage(data) {
   const colorNeg = '#F87171';
   const valueColor = (v) => (v > 0 ? colorPos : v < 0 ? colorNeg : colorMuted);
 
-  const height = headerH + rows.length * rowH + totalH + 16;
+  const footerH = 30;
+  const height = headerH + rows.length * rowH + totalH + footerH + 16;
   const canvas = document.createElement('canvas');
   canvas.width = width * scale;
   canvas.height = height * scale;
@@ -800,7 +810,7 @@ function exportLedgerImage(data) {
   ctx.font = 'bold 17px ' + font;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText('今日現金結餘明細', padX, headerH / 2 + 4);
+  ctx.fillText(dayKeyToLabel(data.today) + ' 今日現金結餘明細', padX, headerH / 2 + 4);
 
   let y = headerH;
   rows.forEach(([label, value]) => {
@@ -841,6 +851,12 @@ function exportLedgerImage(data) {
   ctx.fillStyle = valueColor(data.ledgerTotal);
   ctx.textAlign = 'right';
   ctx.fillText(money(data.ledgerTotal), width - padX, y + totalH / 2 + 4);
+
+  y += totalH;
+  ctx.font = '13px ' + font;
+  ctx.fillStyle = colorMuted;
+  ctx.textAlign = 'left';
+  ctx.fillText('今日432支數 ' + (data.today432Count || 0) + '　今日441支數 ' + (data.today441Count || 0), padX, y + footerH / 2 + 2);
 
   const filename = '今日現金結餘明細_' + (data.today || todayInputValue()) + '.png';
   const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
@@ -934,19 +950,17 @@ function editDailyLedger(data) {
   const turnover = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.turnover : DEFAULT_TURNOVER });
   const manual432 = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manual432 || '') : '' });
   const manual441 = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manual441 || '') : '' });
-  const transport = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? l.transport : '' });
   const givenEditor = ledgerItemsEditor(setToday ? l.givenToOwnerItems : [], '台主給');
   const takenEditor = ledgerItemsEditor(setToday ? l.takenByOwnerItems : [], '台主領');
   const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.returnedToHouse : '' });
 
   openDialog('設定今日數字', [
     h('p', { class: 'small muted', style: 'margin-bottom:12px' },
-      '這些是整間店當天的現金調度，跟哪一台機台無關。運拿、台主領、開銷、432/441 請直接輸入正數金額，系統會自動從總結餘扣除；週轉金、台主給、還內場則是加回總結餘。432/441 是自動算出來的活動金額之外，另外辦活動時的手動支出；開銷是每天一般的手動現金支出。台主給／台主領可以按「+ 新增一筆」記好幾位台主，名字可以自己改。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
+      '這些是整間店當天的現金調度，跟哪一台機台無關。台主領、開銷、432/441 請直接輸入正數金額，系統會自動從總結餘扣除；週轉金、台主給、還內場則是加回總結餘。432/441 是自動算出來的活動金額之外，另外辦活動時的手動支出；開銷是每天一般的手動現金支出。台主給／台主領可以按「+ 新增一筆」記好幾位台主，名字可以自己改。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
     dialogField('開銷（會自動扣除）', manualExpense),
     dialogField('週轉金', turnover),
-    dialogField('432（手動填寫的活動支出，會自動扣除）', manual432),
-    dialogField('441（手動填寫的活動支出，會自動扣除）', manual441),
-    dialogField('運拿（會自動扣除）', transport),
+    dialogField('432活動出獎（會自動扣除）', manual432),
+    dialogField('441活動出獎（會自動扣除）', manual441),
     dialogField('台主給', givenEditor.node),
     dialogField('台主領（會自動扣除）', takenEditor.node),
     dialogField('還內場', returnedToHouse)
@@ -960,7 +974,6 @@ function editDailyLedger(data) {
           manualExpense: Number(manualExpense.value) || 0,
           manual432: Number(manual432.value) || 0,
           manual441: Number(manual441.value) || 0,
-          transport: Number(transport.value) || 0,
           givenToOwnerItems: givenEditor.getItems(),
           takenByOwnerItems: takenEditor.getItems(),
           returnedToHouse: Number(returnedToHouse.value) || 0

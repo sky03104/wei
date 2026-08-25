@@ -1352,15 +1352,17 @@ function getDashboard(user) {
 
   // 「加總」分頁的現金結餘：今日入幣 − 出幣 − 手動活動支出432/441（另外辦
   // 活動時的現金支出）− 開銷（每天手動填的現金支出）＋電子淨贏 ＋週轉金/
-  // 運拿/台主給/台主領/還內場這幾個每天手動輸入的數字。系統自動算出來的
+  // 台主給/台主領/還內場這幾個每天手動輸入的數字。系統自動算出來的
   // 432活動金額（today432Amount，即「活動出獎」）故意不扣在這裡——給出去
   // 的是獎品不是現金，不會讓收銀機裡的錢變少，只影響機台自己的「淨收益」
-  // （diceTotal.net 那條算式），不是這裡的現金對帳。運拿、台主領、手動
-  // 活動支出、開銷存的是使用者輸入的正數現金流出金額，這裡要扣掉；
-  // 週轉金、台主給、還內場是加回去。台主給／台主領現在可能有好幾筆，
-  // 這裡用的是 _publicDailyLedger() 已經加總好的 givenToOwner／takenByOwner。
+  // （diceTotal.net 那條算式），不是這裡的現金對帳。運拿（transport）這個
+  // 欄位已經用不到，故意不扣——DailyLedger 分頁還留著這一欄只是為了讀
+  // 舊資料，新存的值不會再影響這裡。台主領、手動活動支出、開銷存的是
+  // 使用者輸入的正數現金流出金額，這裡要扣掉；週轉金、台主給、還內場是
+  // 加回去。台主給／台主領現在可能有好幾筆，這裡用的是 _publicDailyLedger()
+  // 已經加總好的 givenToOwner／takenByOwner。
   const ledgerTotal = diceTotal.in - diceTotal.out - ledger.manual432 - ledger.manual441 - ledger.manualExpense
-    + ledger.turnover - ledger.transport + ledger.givenToOwner
+    + ledger.turnover + ledger.givenToOwner
     + electronicTotal.chipNet - ledger.takenByOwner + ledger.returnedToHouse;
 
   return {
@@ -4175,7 +4177,7 @@ function _selfTestBody(results) {
     _assertEq(after - before, 3, '今日441數量應該只增加 441 獎型的次數（3），不算其他獎型，也不算金額');
   });
 
-  _t(results, '加總分頁的總結餘＝入幣－出幣－手動活動支出432/441＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場（自動算的432活動金額不算現金支出，不扣）', function () {
+  _t(results, '加總分頁的總結餘＝入幣－出幣－手動活動支出432/441＋週轉金＋台主給＋電子淨贏－台主領＋還內場（自動算的432活動金額跟運拿都不算現金支出，不扣）', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({
       action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
@@ -4188,7 +4190,7 @@ function _selfTestBody(results) {
 
     _ok({
       action: 'saveDailyLedger', token: adminTok,
-      turnover: 10, transport: 20,
+      turnover: 10, transport: 0,
       givenToOwnerItems: [{ name: '老王', amount: 18 }, { name: '老李', amount: 12 }],
       takenByOwnerItems: [{ name: '老王', amount: 40 }],
       returnedToHouse: 5, manual432: 7, manual441: 3
@@ -4198,9 +4200,9 @@ function _selfTestBody(results) {
     _assertEq(before.ledger.givenToOwner, 30, '台主給應該是「老王 18」＋「老李 12」的總和');
     const expected = before.diceTotal.in - before.diceTotal.out
       - before.ledger.manual432 - before.ledger.manual441
-      + before.ledger.turnover - before.ledger.transport + before.ledger.givenToOwner
+      + before.ledger.turnover + before.ledger.givenToOwner
       + before.electronicTotal.chipNet - before.ledger.takenByOwner + before.ledger.returnedToHouse;
-    _assertEq(before.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領／手動活動支出扣除、其餘加總後的結果');
+    _assertEq(before.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於台主領／手動活動支出扣除、其餘加總後的結果');
 
     // 骰台記一筆真的活動獎品開獎，today432Amount 因此變成非 0——但這筆是
     // 給獎品不是給現金，加總的總結餘不應該因此改變，只有機台自己的
@@ -4210,6 +4212,19 @@ function _selfTestBody(results) {
     const after = _ok({ action: 'dashboard', token: adminTok });
     _assert(after.today432Amount > 0, '這筆開獎應該讓 today432Amount 變成非 0，測試前提才成立');
     _assertEq(after.ledgerTotal, before.ledgerTotal, '登記432活動獎品不該讓現金結餘的總結餘變動——給的是獎品不是現金');
+
+    // 運拿這個欄位「用不到了」——畫面已經拿掉這一列，公式也不該再扣，
+    // 就算資料庫裡還存著舊值（歷史相容），也不能偷偷影響今天的總結餘。
+    // 除了 transport 其餘欄位照抄第一次存的值，才能單獨看出 transport 有沒有影響。
+    _ok({
+      action: 'saveDailyLedger', token: adminTok,
+      turnover: 10, transport: 99999,
+      givenToOwnerItems: [{ name: '老王', amount: 18 }, { name: '老李', amount: 12 }],
+      takenByOwnerItems: [{ name: '老王', amount: 40 }],
+      returnedToHouse: 5, manual432: 7, manual441: 3
+    });
+    const afterTransport = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(afterTransport.ledgerTotal, before.ledgerTotal, '運拿欄位不管存多少都不該影響總結餘——這一列已經不用了');
   });
 
   _t(results, '按下「今日營業開始」：所有機台的今日數字跟加總分頁的手動帳目都歸零，但紀錄跟累計都沒被動過', function () {
