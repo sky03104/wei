@@ -1542,7 +1542,7 @@ function addRecord(user, payload) {
 
   const amount = _validAmount(payload.amount);
 
-  return withLock(function () {
+  const result = withLock(function () {
     const dup = _findByClientToken(payload.clientToken);
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
@@ -1569,6 +1569,13 @@ function addRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+  // 前端送出入幣/出幣後一定緊接著重新整理機台詳細頁，沒理由分兩趟網路
+  // 來回各付一次 GAS 的 /exec 轉址成本——直接把最新的詳細頁資料一起
+  // 回傳，跟 homeBootstrap／getAllMachineDetails 同一個道理。放在鎖外面
+  // 算（純讀取，不用佔著鎖），且這筆剛寫入的紀錄在同一次執行內立刻可讀
+  // （dbInsert 已經把 Records 的快取清掉）。
+  result.detail = getMachineDetail(user, payload.machineId);
+  return result;
 }
 
 /**
@@ -1591,7 +1598,7 @@ function addMeterRecord(user, payload) {
   const rate = _resolveMeterRate(payload.machineId).rate;
   const amount = _validAmount((meterEnd - meterStart) * rate);
 
-  return withLock(function () {
+  const result = withLock(function () {
     const dup = _findByClientToken(payload.clientToken);
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
@@ -1618,6 +1625,10 @@ function addMeterRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+  // 跟 addRecord 同一個道理：直接把最新的機台詳細頁資料一起回傳，
+  // 省掉前端緊接著再打一次 machineDetail 的來回。
+  result.detail = getMachineDetail(user, payload.machineId);
+  return result;
 }
 
 /** 碼表讀數只接受非負整數（機械式計數器不會有小數，也不會是負的）。 */
@@ -3723,6 +3734,29 @@ function _selfTestBody(results) {
     const second = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 50, clientToken: ct });
     _assertEq(second.duplicated, true, '第二次應被判定為重複');
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: mid }).total.in, 50, '總入幣');
+  });
+
+  _t(results, 'addRecord／addMeterRecord 回傳要直接附上最新的機台詳細頁資料，前端才不用送出後再多打一次 machineDetail', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '送出即回詳細頁測試台', sortOrder: 10.5 }).machineId;
+
+    const outRes = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+    _assert(!!outRes.detail, 'addRecord 的回應應該要附帶 detail');
+    _assertEq(outRes.detail.total.out, 30, 'addRecord 附帶的 detail 要反映剛寫入的這一筆');
+    _assertEq(JSON.stringify(outRes.detail), JSON.stringify(_ok({ action: 'machineDetail', token: adminTok, machineId: mid })),
+      'addRecord 附帶的 detail 應該跟另外呼叫一次 machineDetail 拿到的結果一模一樣');
+
+    const meterRes = _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 0, meterEnd: 5, clientToken: newId('ct') });
+    _assert(!!meterRes.detail, 'addMeterRecord 的回應應該要附帶 detail');
+    _assertEq(meterRes.detail.total.in, 500, 'addMeterRecord 附帶的 detail 要反映剛寫入的這一筆（費率100×5格）');
+    _assertEq(JSON.stringify(meterRes.detail), JSON.stringify(_ok({ action: 'machineDetail', token: adminTok, machineId: mid })),
+      'addMeterRecord 附帶的 detail 應該跟另外呼叫一次 machineDetail 拿到的結果一模一樣');
+
+    // 重複送出（clientToken 撞到）也要附帶 detail，前端不管有沒有重複都會直接拿它用。
+    const dupCt = newId('ct');
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: dupCt });
+    const dupRes = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: dupCt });
+    _assert(dupRes.duplicated, '這筆應該被判定為重複');
+    _assert(!!dupRes.detail, '就算是重複，也要附帶 detail，前端不用另外判斷');
   });
 
   // ── 開獎 ──

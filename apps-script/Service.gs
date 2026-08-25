@@ -745,7 +745,7 @@ function addRecord(user, payload) {
 
   const amount = _validAmount(payload.amount);
 
-  return withLock(function () {
+  const result = withLock(function () {
     const dup = _findByClientToken(payload.clientToken);
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
@@ -772,6 +772,13 @@ function addRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+  // 前端送出入幣/出幣後一定緊接著重新整理機台詳細頁，沒理由分兩趟網路
+  // 來回各付一次 GAS 的 /exec 轉址成本——直接把最新的詳細頁資料一起
+  // 回傳，跟 homeBootstrap／getAllMachineDetails 同一個道理。放在鎖外面
+  // 算（純讀取，不用佔著鎖），且這筆剛寫入的紀錄在同一次執行內立刻可讀
+  // （dbInsert 已經把 Records 的快取清掉）。
+  result.detail = getMachineDetail(user, payload.machineId);
+  return result;
 }
 
 /**
@@ -794,7 +801,7 @@ function addMeterRecord(user, payload) {
   const rate = _resolveMeterRate(payload.machineId).rate;
   const amount = _validAmount((meterEnd - meterStart) * rate);
 
-  return withLock(function () {
+  const result = withLock(function () {
     const dup = _findByClientToken(payload.clientToken);
     if (dup.length) return { duplicated: true, records: dup.map(_publicRecord) };
 
@@ -821,6 +828,10 @@ function addMeterRecord(user, payload) {
     dbInsert('Records', rec);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
+  // 跟 addRecord 同一個道理：直接把最新的機台詳細頁資料一起回傳，
+  // 省掉前端緊接著再打一次 machineDetail 的來回。
+  result.detail = getMachineDetail(user, payload.machineId);
+  return result;
 }
 
 /** 碼表讀數只接受非負整數（機械式計數器不會有小數，也不會是負的）。 */

@@ -355,6 +355,29 @@ function _selfTestBody(results) {
     _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: mid }).total.in, 50, '總入幣');
   });
 
+  _t(results, 'addRecord／addMeterRecord 回傳要直接附上最新的機台詳細頁資料，前端才不用送出後再多打一次 machineDetail', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '送出即回詳細頁測試台', sortOrder: 10.5 }).machineId;
+
+    const outRes = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 30, clientToken: newId('ct') });
+    _assert(!!outRes.detail, 'addRecord 的回應應該要附帶 detail');
+    _assertEq(outRes.detail.total.out, 30, 'addRecord 附帶的 detail 要反映剛寫入的這一筆');
+    _assertEq(JSON.stringify(outRes.detail), JSON.stringify(_ok({ action: 'machineDetail', token: adminTok, machineId: mid })),
+      'addRecord 附帶的 detail 應該跟另外呼叫一次 machineDetail 拿到的結果一模一樣');
+
+    const meterRes = _ok({ action: 'addMeterRecord', token: adminTok, machineId: mid, meterStart: 0, meterEnd: 5, clientToken: newId('ct') });
+    _assert(!!meterRes.detail, 'addMeterRecord 的回應應該要附帶 detail');
+    _assertEq(meterRes.detail.total.in, 500, 'addMeterRecord 附帶的 detail 要反映剛寫入的這一筆（費率100×5格）');
+    _assertEq(JSON.stringify(meterRes.detail), JSON.stringify(_ok({ action: 'machineDetail', token: adminTok, machineId: mid })),
+      'addMeterRecord 附帶的 detail 應該跟另外呼叫一次 machineDetail 拿到的結果一模一樣');
+
+    // 重複送出（clientToken 撞到）也要附帶 detail，前端不管有沒有重複都會直接拿它用。
+    const dupCt = newId('ct');
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: dupCt });
+    const dupRes = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 5, clientToken: dupCt });
+    _assert(dupRes.duplicated, '這筆應該被判定為重複');
+    _assert(!!dupRes.detail, '就算是重複，也要附帶 detail，前端不用另外判斷');
+  });
+
   // ── 開獎 ──
   const prizeMachine = _ok({ action: 'adminSaveMachine', token: adminTok, name: '開獎測試台', sortOrder: 11 }).machineId;
   const bigPrize = _ok({ action: 'savePrize', token: adminTok, name: '大娃', amount: 150, sortOrder: 1 }).prizeId;

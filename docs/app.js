@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v36';
+const APP_VERSION = 'v37';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1422,7 +1422,9 @@ function submitAmount(machineId, type, amount) {
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
     else toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success');
-    await loadDetail(machineId);
+    // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
+    // addRecord），不用再另外打一次 machineDetail，省一趟網路來回。
+    applyDetail(machineId, res.detail);
   });
 }
 
@@ -1500,7 +1502,9 @@ function submitMeterRecord(machineId, startInput, endInput) {
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
     else toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success');
-    await loadDetail(machineId);
+    // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
+    // addMeterRecord），不用再另外打一次 machineDetail，省一趟網路來回。
+    applyDetail(machineId, res.detail);
   });
 }
 
@@ -2385,11 +2389,15 @@ async function prefetchMachineDetails() {
 
 async function loadDetail(machineId, opts) {
   const data = await run(() => api('machineDetail', { machineId: machineId }), opts);
-  if (data) {
-    cacheWrite('detail:' + machineId, data);
-    state.detail = data;
-    render();
-  }
+  if (data) applyDetail(machineId, data);
+}
+
+/** 把一份機台詳細頁資料套進畫面＋快取，不管是從 machineDetail 單獨打來的，
+ *  還是 addRecord／addMeterRecord 送出時順便帶回來的。 */
+function applyDetail(machineId, data) {
+  cacheWrite('detail:' + machineId, data);
+  state.detail = data;
+  render();
 }
 
 async function loadReport() {
