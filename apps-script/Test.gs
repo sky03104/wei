@@ -807,7 +807,7 @@ function _selfTestBody(results) {
     _assertEq(after - before, 3, '今日441數量應該只增加 441 獎型的次數（3），不算其他獎型，也不算金額');
   });
 
-  _t(results, '加總分頁的總結餘＝入幣－出幣－432獎金額－手動活動支出432/441＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場', function () {
+  _t(results, '加總分頁的總結餘＝入幣－出幣－手動活動支出432/441＋週轉金－運拿＋台主給＋電子淨贏－台主領＋還內場（自動算的432活動金額不算現金支出，不扣）', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({
       action: 'adminSaveMachine', token: adminTok, name: '結餘算式電子', sortOrder: 96, category: 'electronic'
@@ -826,13 +826,22 @@ function _selfTestBody(results) {
       returnedToHouse: 5, manual432: 7, manual441: 3
     });
 
+    const before = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(before.ledger.givenToOwner, 30, '台主給應該是「老王 18」＋「老李 12」的總和');
+    const expected = before.diceTotal.in - before.diceTotal.out
+      - before.ledger.manual432 - before.ledger.manual441
+      + before.ledger.turnover - before.ledger.transport + before.ledger.givenToOwner
+      + before.electronicTotal.chipNet - before.ledger.takenByOwner + before.ledger.returnedToHouse;
+    _assertEq(before.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領／手動活動支出扣除、其餘加總後的結果');
+
+    // 骰台記一筆真的活動獎品開獎，today432Amount 因此變成非 0——但這筆是
+    // 給獎品不是給現金，加總的總結餘不應該因此改變，只有機台自己的
+    // 「淨收益」會反映這筆成本。
+    const prizeId = _ok({ action: 'savePrize', token: adminTok, machineId: diceMid, name: '432', amount: 15, sortOrder: 1 }).prizeId;
+    _ok({ action: 'addPrizeRecord', token: adminTok, machineId: diceMid, items: [{ prizeId: prizeId, count: 2 }], clientToken: newId('ct') });
     const after = _ok({ action: 'dashboard', token: adminTok });
-    _assertEq(after.ledger.givenToOwner, 30, '台主給應該是「老王 18」＋「老李 12」的總和');
-    const expected = after.diceTotal.in - after.diceTotal.out - after.today432Amount
-      - after.ledger.manual432 - after.ledger.manual441
-      + after.ledger.turnover - after.ledger.transport + after.ledger.givenToOwner
-      + after.electronicTotal.chipNet - after.ledger.takenByOwner + after.ledger.returnedToHouse;
-    _assertEq(after.ledgerTotal, Math.round(expected * 100) / 100, '總結餘應該等於運拿／台主領／手動活動支出扣除、其餘加總後的結果');
+    _assert(after.today432Amount > 0, '這筆開獎應該讓 today432Amount 變成非 0，測試前提才成立');
+    _assertEq(after.ledgerTotal, before.ledgerTotal, '登記432活動獎品不該讓現金結餘的總結餘變動——給的是獎品不是現金');
   });
 
   _t(results, '按下「今日營業開始」：所有機台的今日數字跟加總分頁的手動帳目都歸零，但紀錄跟累計都沒被動過', function () {
