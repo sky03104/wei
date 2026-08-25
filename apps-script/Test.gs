@@ -830,6 +830,38 @@ function _selfTestBody(results) {
     _assertEq(after - before, 3, '今日441數量應該只增加 441 獎型的次數（3），不算其他獎型，也不算金額');
   });
 
+  _t(results, '本月432/441支數：算的是這個月（照營業日期，1號到今天）的次數加總，不是只算今天；上個月的紀錄不算進去', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '本月支數測試台', sortOrder: 93 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 10, sortOrder: 1 }).prizeId;
+    const prize441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 10, sortOrder: 2 }).prizeId;
+
+    const before = _ok({ action: 'dashboard', token: adminTok });
+
+    // 今天登記一筆，應該算進本月。
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 2 }, { prizeId: prize441, count: 4 }],
+      clientToken: newId('ct')
+    });
+
+    // 再登記一筆，改記到「上個月」，確認不會被算進本月——用 40 天前保證
+    // 換到不同月份，不用管今天是幾號。
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 9 }, { prizeId: prize441, count: 9 }],
+      clientToken: newId('ct')
+    });
+    const lastMonthDate = _addDays(todayKey(), -40);
+    dbReadAll('Records')
+      .filter(function (r) { return r.machine_id === mid && toNumber(r.count) === 9; })
+      .forEach(function (r) { dbUpdate('Records', r._row, { business_date: lastMonthDate }); });
+    _clearSheetCache();
+
+    const after = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(after.month432Count - before.month432Count, 2, '本月432支數只該算今天那筆的 2，上個月那筆 9 不該算進來');
+    _assertEq(after.month441Count - before.month441Count, 4, '本月441支數只該算今天那筆的 4，上個月那筆 9 不該算進來');
+  });
+
   _t(results, '加總分頁的總結餘＝入幣－出幣－手動活動支出432/441＋週轉金＋台主給＋電子淨贏－台主領＋還內場（自動算的432活動金額跟運拿都不算現金支出，不扣）', function () {
     const diceMid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '結餘算式骰台', sortOrder: 95 }).machineId;
     const elecMid = _ok({

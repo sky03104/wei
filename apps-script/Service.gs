@@ -488,6 +488,12 @@ function getDashboard(user) {
   let today432Amount = 0;
   let today441Count = 0;
   let todayOutCount = 0;
+  // 本月432/441支數——「本月」照營業日期算（跟報表頁 month 這個 preset
+  // 同一套邏輯：從這個月1號算到今天），不是行事曆月份，才會跟「今日」
+  // 的算法一致，晚上跨過月初的營業額不會被切開。
+  const thisMonth = today.substring(0, 7);
+  let month432Count = 0;
+  let month441Count = 0;
   activeRecords().forEach(function (r) {
     const mid = String(r.machine_id);
     if (!totals[mid]) return;
@@ -503,6 +509,10 @@ function getDashboard(user) {
       } else if (r.type === RECORD_OUT) {
         todayOutCount += 1;
       }
+    }
+    if (r.type === RECORD_PRIZE && _recordBusinessDate(r).substring(0, 7) === thisMonth) {
+      if (r.prize_name === TRACKED_PRIZE_NAME) month432Count += toNumber(r.count);
+      else if (r.prize_name === TRACKED_PRIZE_NAME_2) month441Count += toNumber(r.count);
     }
   });
 
@@ -577,6 +587,8 @@ function getDashboard(user) {
     today432Amount: today432Amount,
     today441Count: today441Count,
     todayOutCount: todayOutCount,
+    month432Count: month432Count,
+    month441Count: month441Count,
     ledger: ledger,
     ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,

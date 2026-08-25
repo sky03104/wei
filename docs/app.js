@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v37';
+const APP_VERSION = 'v38';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -649,10 +649,18 @@ function viewHome() {
     const dice = data.diceTotal;
     const electronic = data.electronicTotal;
     const grandNet = dice.net + electronic.chipNet;
-    summary = h('div', { class: 'summary-strip' }, [
-      statBox('今日骰台淨收益', money(dice.net), 'net ' + netClass(dice.net)),
-      statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
-      statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
+    summary = h('div', {}, [
+      // 本月432/441支數放最上面，跟下面「今日」那排分開——是不同時間
+      // 範圍的數字，混在同一排容易誤看成也是「今日」的。
+      h('div', { class: 'summary-strip', style: 'grid-template-columns:repeat(2, 1fr); margin-bottom:8px' }, [
+        statBox('本月432支數', String(data.month432Count || 0), ''),
+        statBox('本月441支數', String(data.month441Count || 0), '')
+      ]),
+      h('div', { class: 'summary-strip' }, [
+        statBox('今日骰台淨收益', money(dice.net), 'net ' + netClass(dice.net)),
+        statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
+        statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
+      ])
     ]);
     list = ledgerCard(data);
   } else {
