@@ -2505,6 +2505,59 @@ function _operatorOptions(machineIds) {
     .map(function (u) { return { userId: String(u.user_id), name: u.display_name || u.username }; });
 }
 
+// ── 活動查詢（432/441支數＋開銷）────────────────────────
+
+/**
+ * 「活動查詢」：自訂日期範圍內的432/441支數，加上這段期間每天手動填的
+ * 開銷加總——給咖哩快速對這段時間辦了幾次活動、花了多少現金開銷用，
+ * 不特定看哪一台機台，是這個帳號看得到的全部機台合併算。
+ *
+ * 432/441支數算法跟 getDashboard() 的今日/本月支數同一套（只認
+ * prize_name 剛好是432/441的活動紀錄），只是這裡時間範圍換成自訂區間。
+ */
+function getActivityQuery(user, params) {
+  const range = resolveRange('custom', params.from, params.to);
+  _assertRangeNotArchived(range);
+
+  const ids = visibleMachineIds(user);
+  const idSet = {};
+  ids.forEach(function (id) { idSet[id] = true; });
+
+  let count432 = 0;
+  let count441 = 0;
+  activeRecords().forEach(function (r) {
+    if (r.type !== RECORD_PRIZE) return;
+    if (!idSet[String(r.machine_id)]) return;
+    const key = _recordBusinessDate(r);
+    if (key < range.from || key > range.to) return;
+    if (r.prize_name === TRACKED_PRIZE_NAME) count432 += toNumber(r.count);
+    else if (r.prize_name === TRACKED_PRIZE_NAME_2) count441 += toNumber(r.count);
+  });
+
+  return {
+    range: range,
+    count432: count432,
+    count441: count441,
+    manualExpense: _sumManualExpenseInRange(range.from, range.to)
+  };
+}
+
+/**
+ * 逐天取那一天 DailyLedger 最新的一列（同一天可能因為忘記結單又重開之類
+ * 的情況存過好幾列，只算最後那列，其餘視為被覆蓋——跟 _dailyLedgerRow()
+ * 對「今天」的處理原則一致，只是這裡查的都是已經過去的日子，不用另外
+ * 判斷「進行中 session」）加總開銷欄位。
+ */
+function _sumManualExpenseInRange(from, to) {
+  const byDate = {};
+  dbReadAll('DailyLedger').forEach(function (row) {
+    const d = String(row.business_date);
+    if (d < from || d > to) return;
+    if (!byDate[d] || toNumber(row._row) > toNumber(byDate[d]._row)) byDate[d] = row;
+  });
+  return Object.keys(byDate).reduce(function (sum, d) { return sum + toNumber(byDate[d].manual_expense); }, 0);
+}
+
 // ── 對帳表匯出（xlsx）───────────────────────────────────
 
 /** 'yyyy-MM-dd' → 「8月9日」，跟現場原本手記的逐日對帳表同一種寫法（不補零）。 */
@@ -3024,6 +3077,7 @@ const ACTION_ROLES = {
   allMachineDetails: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   report: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   exportLedgerXlsx: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  activityQuery: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listPrizes: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listMeterRate: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -3132,6 +3186,8 @@ function _dispatch(action, p, user) {
       return getReport(user, p);
     case 'exportLedgerXlsx':
       return exportLedgerXlsx(user, p);
+    case 'activityQuery':
+      return getActivityQuery(user, p);
     case 'listQuickAmounts':
       return listQuickAmounts(user, p.machineId);
     case 'listPrizes':
@@ -4253,6 +4309,57 @@ function _selfTestBody(results) {
     const after = _ok({ action: 'dashboard', token: adminTok });
     _assertEq(after.month432Count - before.month432Count, 2, '本月432支數只該算今天那筆的 2，上個月那筆 9 不該算進來');
     _assertEq(after.month441Count - before.month441Count, 4, '本月441支數只該算今天那筆的 4，上個月那筆 9 不該算進來');
+  });
+
+  _t(results, '活動查詢：自訂日期範圍內的432/441支數＋每天開銷加總，只算範圍內的、範圍外的日期不算', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '活動查詢測試台', sortOrder: 92 }).machineId;
+    const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 10, sortOrder: 1 }).prizeId;
+    const prize441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 10, sortOrder: 2 }).prizeId;
+
+    // 用兩個不同的歷史日期來測邊界，這樣才能對精確的數字，不用再用
+    // before/after 相減。刻意只往回抓幾天（不是幾十天）——抓太遠可能跨到
+    // 上一季，之後跑到的封存測試（archiveOldRecords）會把這幾筆也順手
+    // 掃進去，反而弄亂那個測試自己對「封存到哪一季」的期待值。
+    const inDate = _addDays(todayKey(), -2);
+    const outDate = _addDays(todayKey(), -5); // 範圍外，確認不會被算進來
+
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 5 }, { prizeId: prize441, count: 7 }],
+      clientToken: newId('ct')
+    });
+    _ok({
+      action: 'addPrizeRecord', token: adminTok, machineId: mid,
+      items: [{ prizeId: prize432, count: 99 }, { prizeId: prize441, count: 99 }],
+      clientToken: newId('ct')
+    });
+    dbReadAll('Records').filter(function (r) { return r.machine_id === mid && toNumber(r.count) === 5; })
+      .forEach(function (r) { dbUpdate('Records', r._row, { business_date: inDate }); });
+    dbReadAll('Records').filter(function (r) { return r.machine_id === mid && toNumber(r.count) === 7; })
+      .forEach(function (r) { dbUpdate('Records', r._row, { business_date: inDate }); });
+    dbReadAll('Records').filter(function (r) { return r.machine_id === mid && toNumber(r.count) === 99; })
+      .forEach(function (r) { dbUpdate('Records', r._row, { business_date: outDate }); });
+    _clearSheetCache();
+
+    // 直接塞一列 DailyLedger 到 inDate，模擬那天存過的開銷；outDate 完全
+    // 不存，確認開銷加總不會誤把它算成 0 以外的東西、也不會漏算。
+    dbInsert('DailyLedger', {
+      ledger_id: newId('ldg'), business_date: inDate,
+      turnover: 0, transport: 0, given_to_owner: 0, taken_by_owner: 0, returned_to_house: 0,
+      updated_by: '', updated_at: nowIso(), biz_id: '',
+      manual_432: 0, manual_441: 0, given_to_owner_items: '', taken_by_owner_items: '',
+      manual_expense: 888
+    });
+    _clearSheetCache();
+
+    const inRange = _ok({ action: 'activityQuery', token: adminTok, from: inDate, to: inDate });
+    _assertEq(inRange.count432, 5, '活動查詢只該算範圍內那天的432支數，outDate 那筆 99 不該算進來');
+    _assertEq(inRange.count441, 7, '活動查詢只該算範圍內那天的441支數，outDate 那筆 99 不該算進來');
+    _assertEq(inRange.manualExpense, 888, '活動查詢的開銷應該是那天存的 888');
+
+    const boundedRange = _ok({ action: 'activityQuery', token: adminTok, from: outDate, to: inDate });
+    _assertEq(boundedRange.count432, 5 + 99, '拉長區間把 outDate 也包進來後，432支數應該是兩天加總');
+    _assertEq(boundedRange.count441, 7 + 99, '拉長區間把 outDate 也包進來後，441支數應該是兩天加總');
   });
 
   _t(results, '加總分頁的總結餘＝入幣－出幣－手動活動支出432/441＋週轉金＋台主給＋電子淨贏－台主領＋還內場（自動算的432活動金額跟運拿都不算現金支出，不扣）', function () {

@@ -21,6 +21,7 @@ const ACTION_ROLES = {
   allMachineDetails: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   report: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   exportLedgerXlsx: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  activityQuery: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listPrizes: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listMeterRate: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -129,6 +130,8 @@ function _dispatch(action, p, user) {
       return getReport(user, p);
     case 'exportLedgerXlsx':
       return exportLedgerXlsx(user, p);
+    case 'activityQuery':
+      return getActivityQuery(user, p);
     case 'listQuickAmounts':
       return listQuickAmounts(user, p.machineId);
     case 'listPrizes':

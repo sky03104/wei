@@ -198,6 +198,59 @@ function _operatorOptions(machineIds) {
     .map(function (u) { return { userId: String(u.user_id), name: u.display_name || u.username }; });
 }
 
+// ── 活動查詢（432/441支數＋開銷）────────────────────────
+
+/**
+ * 「活動查詢」：自訂日期範圍內的432/441支數，加上這段期間每天手動填的
+ * 開銷加總——給咖哩快速對這段時間辦了幾次活動、花了多少現金開銷用，
+ * 不特定看哪一台機台，是這個帳號看得到的全部機台合併算。
+ *
+ * 432/441支數算法跟 getDashboard() 的今日/本月支數同一套（只認
+ * prize_name 剛好是432/441的活動紀錄），只是這裡時間範圍換成自訂區間。
+ */
+function getActivityQuery(user, params) {
+  const range = resolveRange('custom', params.from, params.to);
+  _assertRangeNotArchived(range);
+
+  const ids = visibleMachineIds(user);
+  const idSet = {};
+  ids.forEach(function (id) { idSet[id] = true; });
+
+  let count432 = 0;
+  let count441 = 0;
+  activeRecords().forEach(function (r) {
+    if (r.type !== RECORD_PRIZE) return;
+    if (!idSet[String(r.machine_id)]) return;
+    const key = _recordBusinessDate(r);
+    if (key < range.from || key > range.to) return;
+    if (r.prize_name === TRACKED_PRIZE_NAME) count432 += toNumber(r.count);
+    else if (r.prize_name === TRACKED_PRIZE_NAME_2) count441 += toNumber(r.count);
+  });
+
+  return {
+    range: range,
+    count432: count432,
+    count441: count441,
+    manualExpense: _sumManualExpenseInRange(range.from, range.to)
+  };
+}
+
+/**
+ * 逐天取那一天 DailyLedger 最新的一列（同一天可能因為忘記結單又重開之類
+ * 的情況存過好幾列，只算最後那列，其餘視為被覆蓋——跟 _dailyLedgerRow()
+ * 對「今天」的處理原則一致，只是這裡查的都是已經過去的日子，不用另外
+ * 判斷「進行中 session」）加總開銷欄位。
+ */
+function _sumManualExpenseInRange(from, to) {
+  const byDate = {};
+  dbReadAll('DailyLedger').forEach(function (row) {
+    const d = String(row.business_date);
+    if (d < from || d > to) return;
+    if (!byDate[d] || toNumber(row._row) > toNumber(byDate[d]._row)) byDate[d] = row;
+  });
+  return Object.keys(byDate).reduce(function (sum, d) { return sum + toNumber(byDate[d].manual_expense); }, 0);
+}
+
 // ── 對帳表匯出（xlsx）───────────────────────────────────
 
 /** 'yyyy-MM-dd' → 「8月9日」，跟現場原本手記的逐日對帳表同一種寫法（不補零）。 */

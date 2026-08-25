@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v38';
+const APP_VERSION = 'v39';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -204,6 +204,8 @@ const state = {
   editMode: false,
   prizeCounts: {},
   reportParams: { machineId: '', category: '', preset: 'day', from: '', to: '', type: '', userId: '' },
+  activityParams: { from: '', to: '' },
+  activityResult: null,
   adminTab: 'users',
   permExpanded: {}, // 台主授權頁每個台主的卡片是否展開，key 是 userId
   busy: false,
@@ -745,6 +747,7 @@ function ledgerCard(data) {
   // .machine-switcher 同一種做法），不要讓按鈕擠壓成直的好幾排。
   // 「匯出明細截圖」放最下面總結餘下面，不跟這排擠在一起。
   const actionsRow = h('div', { class: 'row', style: 'flex-wrap:nowrap; overflow-x:auto; gap:8px; margin-bottom:10px; justify-content:flex-end' }, [
+    h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto', onclick: goActivityQuery }, '🎁 活動查詢'),
     h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => goReport('', 'dice') }, '📊 骰台查詢'),
     canRecord()
       ? h('button', { class: 'btn btn-sm btn-prize', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
@@ -1726,6 +1729,67 @@ function voidRecord(r) {
   }, { success: '已作廢' });
 }
 
+// ── 畫面：活動查詢 ──────────────────────────────────────
+
+/** 開啟「活動查詢」，預設查詢區間是今天，改日期會自動重新查詢。 */
+function goActivityQuery() {
+  state.view = 'activity';
+  const t = todayInputValue();
+  state.activityParams = { from: t, to: t };
+  state.activityResult = null;
+  render();
+  loadActivityQuery();
+}
+
+async function loadActivityQuery() {
+  const data = await run(() => api('activityQuery', state.activityParams));
+  if (data) { state.activityResult = data; render(); }
+}
+
+/**
+ * 自訂日期範圍查這段期間的432/441支數＋每天開銷加總，不特定看哪一台
+ * 機台——是這個帳號看得到的全部機台合併算，跟「骰台查詢」共用同一個
+ * 「合併所有機台」的邏輯精神，但這裡連電子機台也算（電子機台本來就
+ * 不會有432/441活動紀錄，算不算都一樣）。
+ */
+function viewActivityQuery() {
+  const p = state.activityParams;
+  const r = state.activityResult;
+
+  const nav = h('div', { class: 'navbar' }, [
+    h('button', { class: 'btn btn-sm', onclick: goHome }, '← 返回')
+  ]);
+
+  // 跟查詢報表頁的「自訂」日期選擇器同一種限制：只能選近三個月內，
+  // 更早的資料已經封存到別的分頁，這裡不查那麼久以前的。
+  const customRange = h('div', { class: 'filter-row', style: 'margin-bottom:12px' }, [
+    dialogField('起始日期', h('input', {
+      type: 'date', value: p.from,
+      min: monthsAgoInputValue(3), max: todayInputValue(),
+      onchange: (e) => { p.from = e.target.value; loadActivityQuery(); }
+    })),
+    dialogField('結束日期', h('input', {
+      type: 'date', value: p.to,
+      min: monthsAgoInputValue(3), max: todayInputValue(),
+      onchange: (e) => { p.to = e.target.value; loadActivityQuery(); }
+    }))
+  ]);
+
+  const title = h('h1', { text: '活動查詢' });
+
+  if (!r) {
+    return h('div', {}, [nav, title, customRange, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+  }
+
+  const stats = h('div', { class: 'report-stats' }, [
+    statBox('432支數', String(r.count432 || 0), ''),
+    statBox('441支數', String(r.count441 || 0), ''),
+    statBox('開銷', money(r.manualExpense), '')
+  ]);
+
+  return h('div', {}, [nav, title, customRange, stats]);
+}
+
 // ── 畫面：報表 ──────────────────────────────────────────
 
 function viewReport() {
@@ -2518,6 +2582,7 @@ function render() {
   else if (state.view === 'home') node = viewHome();
   else if (state.view === 'machine') node = viewMachine();
   else if (state.view === 'report') node = viewReport();
+  else if (state.view === 'activity') node = viewActivityQuery();
   else if (state.view === 'admin') node = viewAdmin();
   else node = h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' }), h('p', {}, '載入中…')]);
 
@@ -2572,6 +2637,7 @@ function refreshCurrent() {
   if (state.view === 'home') loadHome();
   else if (state.view === 'machine' && state.machineId) loadDetail(state.machineId);
   else if (state.view === 'report') loadReport();
+  else if (state.view === 'activity') loadActivityQuery();
   else if (state.view === 'admin') loadAdmin();
 }
 
