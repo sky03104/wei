@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v43';
+const APP_VERSION = 'v44';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2064,10 +2064,11 @@ function downloadLedgerXlsx() {
 
 /**
  * 「骰台查詢」／「電子查詢」（不指定單台、看整個分類）頁「📷 匯出截圖」
- * 用的畫布繪製——每台機台一段，內容跟 exportLedgerXlsx 每個分頁一模一樣
- * 的逐日對帳表（圖數逐筆列出，底下接出幣/432/441/入幣/+/-五列小計），
- * 疊成一張直向捲動的長圖，每一段最上面標該機台的名稱＋查詢區間，模擬
- * Excel「一台機台一個分頁」的概念，但不用另外開 Excel 才看得到。
+ * 用的畫布繪製——一台機台一張圖，內容跟 exportLedgerXlsx 那台機台自己的
+ * 分頁一模一樣的逐日對帳表（圖數逐筆列出，底下接出幣/432/441/入幣/+/-
+ * 五列小計），標題是該機台的名稱＋查詢區間，模擬 Excel「一台機台一個
+ * 分頁」的概念，但不用另外開 Excel 才看得到；一台一張圖，不是全部疊成
+ * 一張長圖，現場對帳習慣一台一台分開傳，疊在一起反而要自己裁切。
  * 手繪 canvas、不叫外部套件，同一個理由見 exportLedgerImage() 的說明。
  */
 function _gridCellText(cell) {
@@ -2075,7 +2076,7 @@ function _gridCellText(cell) {
   return typeof cell === 'number' ? money(cell) : String(cell);
 }
 
-function drawLedgerGridsCanvas(rangeLabel, machines) {
+function drawLedgerGridCanvas(rangeLabel, m) {
   const scale = 2;
   const font = 'system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif';
   const colorBg = '#141926';
@@ -2089,23 +2090,18 @@ function drawLedgerGridsCanvas(rangeLabel, machines) {
   const rowH = 26;
   const titleH = 32;
   const dividerH = 5;
-  const sectionGap = 22;
   const firstColW = 56;
   const dayColW = 62;
   const tailColWidths = [70, 78]; // 每列小計最右邊的「標籤欄／數字欄」
 
-  const colWidthsOf = (colCount) => {
-    const days = colCount - 1 - tailColWidths.length;
-    return [firstColW].concat(new Array(days).fill(dayColW)).concat(tailColWidths);
-  };
+  const days = m.colCount - 1 - tailColWidths.length;
+  const widths = [firstColW].concat(new Array(days).fill(dayColW)).concat(tailColWidths);
+  const colX = [padX];
+  widths.forEach((w) => colX.push(colX[colX.length - 1] + w));
+  const tableRight = colX[colX.length - 1];
 
-  let width = 320;
-  let height = 16;
-  machines.forEach((m) => {
-    const widths = colWidthsOf(m.colCount);
-    width = Math.max(width, padX * 2 + widths.reduce((a, b) => a + b, 0));
-    height += titleH + rowH /* 表頭 */ + m.outRows.length * rowH + dividerH + m.summaryRows.length * rowH + sectionGap;
-  });
+  const width = Math.max(320, padX * 2 + widths.reduce((a, b) => a + b, 0));
+  const height = 12 + titleH + rowH /* 表頭 */ + m.outRows.length * rowH + dividerH + m.summaryRows.length * rowH + 12;
 
   const canvas = document.createElement('canvas');
   canvas.width = width * scale;
@@ -2117,53 +2113,44 @@ function drawLedgerGridsCanvas(rangeLabel, machines) {
   ctx.textBaseline = 'middle';
 
   let y = 12;
-  machines.forEach((m) => {
-    const widths = colWidthsOf(m.colCount);
-    const colX = [padX];
-    widths.forEach((w) => colX.push(colX[colX.length - 1] + w));
-    const tableRight = colX[colX.length - 1];
+  ctx.font = 'bold 16px ' + font;
+  ctx.fillStyle = colorText;
+  ctx.textAlign = 'left';
+  ctx.fillText(m.machineName + '　' + rangeLabel, padX, y + titleH / 2);
+  y += titleH;
 
-    ctx.font = 'bold 16px ' + font;
-    ctx.fillStyle = colorText;
-    ctx.textAlign = 'left';
-    ctx.fillText(m.machineName + '　' + rangeLabel, padX, y + titleH / 2);
-    y += titleH;
+  const drawRow = (cells, opts) => {
+    opts = opts || {};
+    cells.forEach((cell, i) => {
+      // 只有右邊那個「總出幣/432/441/總入幣/+/-」標籤欄套底色，跟
+      // Excel（_writeLedgerSheet）的樣式規則一致——最左邊那欄（出幣/432/
+      // 441/入幣/+/-）在 Excel 裡沒有套底色，這裡照抄同一個規則。
+      const isLabelCol = i === widths.length - 2;
+      if (opts.labelBg && isLabelCol) {
+        ctx.fillStyle = colorSummaryLabelBg;
+        ctx.fillRect(colX[i], y, widths[i], rowH);
+      }
+      ctx.font = (opts.bold ? 'bold ' : '') + '12px ' + font;
+      ctx.fillStyle = opts.neg ? colorNeg : (opts.bold ? colorText : colorMuted);
+      ctx.textAlign = 'center';
+      ctx.fillText(_gridCellText(cell), colX[i] + widths[i] / 2, y + rowH / 2);
+    });
+    ctx.strokeStyle = colorBorder;
+    ctx.beginPath();
+    ctx.moveTo(padX, y + rowH - 0.5);
+    ctx.lineTo(tableRight, y + rowH - 0.5);
+    ctx.stroke();
+    y += rowH;
+  };
 
-    const drawRow = (cells, opts) => {
-      opts = opts || {};
-      cells.forEach((cell, i) => {
-        // 只有右邊那個「總出幣/432/441/總入幣/+/-」標籤欄套底色，跟
-        // Excel（_writeLedgerSheet）的樣式規則一致——最左邊那欄（出幣/432/
-        // 441/入幣/+/-）在 Excel 裡沒有套底色，這裡照抄同一個規則。
-        const isLabelCol = i === widths.length - 2;
-        if (opts.labelBg && isLabelCol) {
-          ctx.fillStyle = colorSummaryLabelBg;
-          ctx.fillRect(colX[i], y, widths[i], rowH);
-        }
-        ctx.font = (opts.bold ? 'bold ' : '') + '12px ' + font;
-        ctx.fillStyle = opts.neg ? colorNeg : (opts.bold ? colorText : colorMuted);
-        ctx.textAlign = 'center';
-        ctx.fillText(_gridCellText(cell), colX[i] + widths[i] / 2, y + rowH / 2);
-      });
-      ctx.strokeStyle = colorBorder;
-      ctx.beginPath();
-      ctx.moveTo(padX, y + rowH - 0.5);
-      ctx.lineTo(tableRight, y + rowH - 0.5);
-      ctx.stroke();
-      y += rowH;
-    };
+  drawRow(m.headerRow, { bold: true });
+  m.outRows.forEach((row) => drawRow(row));
 
-    drawRow(m.headerRow, { bold: true });
-    m.outRows.forEach((row) => drawRow(row));
+  ctx.fillStyle = colorText;
+  ctx.fillRect(padX, y + 1, tableRight - padX, dividerH - 2);
+  y += dividerH;
 
-    ctx.fillStyle = colorText;
-    ctx.fillRect(padX, y + 1, tableRight - padX, dividerH - 2);
-    y += dividerH;
-
-    m.summaryRows.forEach((row) => drawRow(row, { bold: true, labelBg: true, neg: row[0] === '+/-' }));
-
-    y += sectionGap;
-  });
+  m.summaryRows.forEach((row) => drawRow(row, { bold: true, labelBg: true, neg: row[0] === '+/-' }));
 
   return canvas;
 }
@@ -2173,24 +2160,32 @@ function exportLedgerScreenshots() {
     const p = state.reportParams;
     const data = await api('exportLedgerGrids', p);
     const rangeLabel = data.range.from + ' ~ ' + data.range.to;
-    const canvas = drawLedgerGridsCanvas(rangeLabel, data.machines);
-    const filename = '骰台查詢對帳表截圖_' + data.range.from + '_' + data.range.to + '.png';
-    const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
+
+    const files = data.machines.map((m) => {
+      const canvas = drawLedgerGridCanvas(rangeLabel, m);
+      const filename = '娃娃機對帳表_' + m.machineName + '_' + data.range.from + '_' + data.range.to + '.png';
+      const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
+      return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
+    });
 
     // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
-    // 只有一個檔案，同一套邏輯直接照搬。
-    const file = (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : null;
-    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-      navigator.share({ files: [file] }).catch(function () {});
+    // 一次可能有好幾個檔案，先試分享面板一次全部帶走，不支援的裝置
+    // 才退回一張一張各自觸發下載。
+    if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
+      navigator.share({ files }).catch(function () {});
       return;
     }
 
-    const url = URL.createObjectURL(blob);
-    const link = h('a', { href: url, download: filename });
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    files.forEach((file) => {
+      const blob = file instanceof File ? file : file.blob;
+      const filename = file instanceof File ? file.name : file.filename;
+      const url = URL.createObjectURL(blob);
+      const link = h('a', { href: url, download: filename });
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    });
     toast('已匯出 ' + data.machines.length + ' 台機台的截圖', 'success');
   });
 }
