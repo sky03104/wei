@@ -89,15 +89,47 @@
       得住「手動塞第二筆進行中的營業日」（丟 `duplicate key` 錯誤）；
       也驗證過 owner 角色打這三支全部被 `can_record()` 擋下來、負數
       金額被 `valid_outflow_amount()` 擋下來，錯誤訊息跟 GAS 版本一致。
-      **還沒做**：`report`（`getReport()`，日/週/月/自訂/歷史）、
-      `exportLedgerGrids` 對應的逐日對帳表格線——這兩個可以照
-      `machine_today_and_week()`／`dashboard()` 同一套模式（`today_key()`/
-      `current_business_date()`/`is_today_record()` 當地基）逐一搬。
+      **`report()`／`ledger_grid()`／`activity_query()` 也完成了**，
+      對照 `getReport()`／`_buildLedgerGrid()`／`getActivityQuery()`。
+      三個重點：
+      1. `resolve_range(preset, from, to)` 對照 `resolveRange()`——
+         day/week/month 用 `current_business_date()` 當「今天」；
+         custom/history 要求明確給 from/to 且 from<=to。GAS 版本這裡
+         還有一大段「history 明確願意跨分頁合併查詢已封存資料、其餘
+         preset 選到已封存區間要報錯」的邏輯（配合季度封存機制），
+         Postgres 版本完全不需要——`records` 表本來就是索引查詢，
+         不會隨資料量變慢，不需要季度封存，`history` 這裡直接等同
+         `custom`，這是這次遷移唯一「主動刪掉一段邏輯，不是照搬」的
+         地方，原因記在 `functions.sql` 的註解裡。
+      2. `report_scope_machine_ids()` 取代 `_reportScope()`／
+         `visibleMachineIds()`：machines 表已經被 RLS 篩過，這裡不用
+         再自己查一輪權限，只需要在「有沒有給 machineId」「有沒有給
+         category」這兩個分支上做文章。
+      3. `ledger_grid()` 保留跟 GAS 版本一樣的介面設計：不管有沒有給
+         machineId，回傳的都是「這個範圍」的一份格線，多機台（例如
+         「全部骰台」一台一張截圖）的迴圈留在呼叫端做，這支本身不
+         迴圈——跟現有 `exportLedgerXlsx()`／`exportLedgerGrids()` 呼叫
+         `_buildLedgerGrid()` 的方式一致，Phase 5 前端改接時呼叫端的
+         邏輯幾乎不用重新設計。
+      已在本機 Postgres 造了跨 3 天的資料（含出幣兩筆、入幣一筆、432
+      活動一筆），`report()`／`ledger_grid()` 的每日趨勢、五列小計、
+      獎型統計、明細排序都手算比對過；也驗證過 RLS：台主指定沒授權的
+      機台被 `can_see_machine()` 明確擋掉，指定「全部骰台」分類查詢時
+      `machineCount`／`summary` 都只反映他被授權的那一台，另一台骰台
+      的紀錄完全不會混進來。
       `docs/app.js` 的 `api()` 目前完全還沒開始改，等這批 function 搬得
       差不多、每支都跟 GAS 版本比對過數字再動前端，避免前端一半打新
       API、一半打舊 API 的過渡期混亂狀態。
       「新增帳號」這個動作是唯一確定要留一小塊後端的地方（見下面
       Auth & RLS 那節最後一小段），不算違反「前端直連」的大方向。
+      **剩下還沒搬的**：`exportLedgerXlsx()`（真的產生 .xlsx 檔案的部分，
+      這需要一個能寫 Excel 檔案格式的地方，不是純 SQL 能做的，屬於
+      Phase 3 最後才需要決定「這段邏輯要放哪」的一小塊——目前傾向前端
+      直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端的 xlsx 產生
+      套件現場組出檔案，不需要後端）；`adminBootstrap`／`adminSaveUser`
+      等系統管理頁的一批 CRUD 動作（多半是單純查表/寫表，可能不需要包
+      成 function，直接讓前端用 `.from(...).select()/.insert()` 打，
+      交給 Phase 5 前端改接時再個別確認）。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
       那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／

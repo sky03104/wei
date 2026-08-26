@@ -743,3 +743,417 @@ begin
   return public_daily_ledger((select l from daily_ledger_row_for_today() l limit 1));
 end;
 $$;
+
+-- ── 報表／活動查詢／逐日對帳表格線 ──────────────────────
+--
+-- 對照 apps-script/Reports.gs。這支檔案原本還有「歷史」preset 明確願意
+-- 跨分頁合併查詢已封存資料、其餘 preset 選到已封存區間要報錯（見
+-- _assertRangeNotArchived()）這一整套機制——那是配合季度封存
+-- （apps-script/Archive.gs）存在的，Postgres 版本 records 表本來就是
+-- 索引查詢、不會隨資料量變慢，不需要季度封存，這套機制整個不需要搬過
+-- 來：這裡的 'history' preset 直接等同 'custom'（都只是要求明確給
+-- from／to），沒有「選到已封存區間」這件事。
+
+-- 對照 resolveRange()：day=今天、week=本週（週日起）、month=本月
+-- （1號起）、custom/history=自己給的區間（一定要給 from／to，且
+-- from<=to）。「今天」用 current_business_date()，跟報表頁的既有行為
+-- 一致——有進行中的營業日，週/月的邊界也照營業日算。
+create or replace function resolve_range(p_preset text, p_from date, p_to date)
+returns table (range_from date, range_to date, preset text)
+language plpgsql
+stable
+as $$
+declare
+  v_today date := current_business_date();
+begin
+  if p_preset = 'custom' or p_preset = 'history' then
+    if p_from is null or p_to is null then
+      raise exception '日期格式不正確';
+    end if;
+    if p_from > p_to then
+      raise exception '起始日期不能晚於結束日期';
+    end if;
+    return query select p_from, p_to, p_preset;
+    return;
+  end if;
+
+  if p_preset = 'week' then
+    return query select w.week_from, w.week_to, 'week'::text from resolve_week_range() w;
+    return;
+  end if;
+
+  if p_preset = 'month' then
+    return query select date_trunc('month', v_today)::date, v_today, 'month'::text;
+    return;
+  end if;
+
+  return query select v_today, v_today, 'day'::text;
+end;
+$$;
+
+-- 報表要看哪些機台：指定單一機台就只有那一台（可見性另外在呼叫端用
+-- can_see_machine() 明確擋），沒指定機台則是這個帳號看得到的全部
+-- （machines 表本身已經被 RLS 篩過，這裡直接查就是「看得到的」），
+-- p_category 有值時再篩出該分類。對照 _reportScope()。
+create or replace function report_scope_machine_ids(p_machine_id text, p_category text)
+returns setof text
+language sql
+stable
+as $$
+  select machine_id from machines
+  where (p_machine_id is not null and machine_id = p_machine_id)
+     or (p_machine_id is null and (coalesce(p_category, '') = '' or category = p_category));
+$$;
+
+-- 報表本體。對照 getReport()。SECURITY INVOKER，records/machines 兩張表
+-- 靠 RLS 自動篩成看得到的範圍；指定單一機台時額外用 can_see_machine()
+-- 明確擋沒有權限的呼叫（RLS 本身會讓沒權限的人查到空結果，這裡擋出
+-- 明確錯誤訊息，跟 assertMachineAccess() 行為一致）。
+create or replace function report(
+  p_machine_id text default null,
+  p_category text default null,
+  p_preset text default 'day',
+  p_from date default null,
+  p_to date default null,
+  p_type text default null,
+  p_user_id uuid default null
+)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_machine_id text := nullif(p_machine_id, '');
+  v_category text;
+  v_machine_name text;
+  v_result jsonb;
+begin
+  if v_machine_id is not null then
+    if not can_see_machine(v_machine_id) then
+      raise exception '沒有這台機台的權限' using errcode = '42501';
+    end if;
+    select coalesce(name, ''), coalesce(category, '') into v_machine_name, v_category
+    from machines where machine_id = v_machine_id;
+  else
+    v_category := case when p_category in ('dice', 'electronic') then p_category else '' end;
+    v_machine_name := case v_category
+      when 'electronic' then '全部電子機台'
+      when 'dice' then '全部骰台'
+      else ''
+    end;
+  end if;
+
+  with range as (
+    select * from resolve_range(p_preset, p_from, p_to)
+  ),
+  scope_ids as (
+    select report_scope_machine_ids(v_machine_id, v_category) as machine_id
+  ),
+  rows as (
+    select r.* from records r, range
+    where r.machine_id in (select machine_id from scope_ids)
+      and r.voided = false
+      and r.business_date between range.range_from and range.range_to
+      and (nullif(p_type, '') is null or r.type = p_type)
+      and (p_user_id is null or r.user_id = p_user_id)
+  ),
+  summary as (
+    select
+      coalesce(sum(amount) filter (where type = 'in'), 0) as in_amt,
+      coalesce(sum(amount) filter (where type = 'out'), 0) as out_amt,
+      coalesce(sum(amount) filter (where type = 'prize'), 0) as prize_amt,
+      coalesce(sum(amount) filter (where type = 'chip_in'), 0) as chip_in_amt,
+      coalesce(sum(amount) filter (where type = 'chip_out'), 0) as chip_out_amt
+    from rows
+  ),
+  days as (
+    select generate_series((select range_from from range), (select range_to from range), interval '1 day')::date as d
+  ),
+  daily as (
+    select
+      days.d,
+      coalesce(sum(rows.amount) filter (where rows.type = 'in'), 0) as in_amt,
+      coalesce(sum(rows.amount) filter (where rows.type = 'out'), 0) as out_amt,
+      coalesce(sum(rows.amount) filter (where rows.type = 'prize'), 0) as prize_amt,
+      coalesce(sum(rows.amount) filter (where rows.type = 'chip_in'), 0) as chip_in_amt,
+      coalesce(sum(rows.amount) filter (where rows.type = 'chip_out'), 0) as chip_out_amt
+    from days
+    left join rows on rows.business_date = days.d
+    group by days.d
+  ),
+  trend_json as (
+    select coalesce(jsonb_agg(
+      jsonb_build_object(
+        'date', d::text, 'in', in_amt, 'out', out_amt, 'prize', prize_amt,
+        'net', in_amt - out_amt - prize_amt,
+        'chipIn', chip_in_amt, 'chipOut', chip_out_amt, 'chipNet', chip_in_amt - chip_out_amt
+      ) order by d
+    ), '[]'::jsonb) as val
+    from daily
+  ),
+  prize_stats as (
+    select coalesce(nullif(prize_name, ''), '(未命名獎型)') as label, sum(count) as cnt, sum(amount) as amt
+    from rows
+    where type = 'prize'
+    group by coalesce(nullif(prize_name, ''), '(未命名獎型)')
+  ),
+  prize_stats_json as (
+    select coalesce(jsonb_agg(
+      jsonb_build_object('name', label, 'count', coalesce(cnt, 0), 'amount', coalesce(amt, 0))
+      order by amt desc
+    ), '[]'::jsonb) as val
+    from prize_stats
+  ),
+  records_ranked as (
+    select r.*, row_number() over (order by r.created_at desc, r.seq desc) as rn
+    from rows r
+  ),
+  records_json as (
+    select coalesce(jsonb_agg(
+      jsonb_build_object(
+        'recordId', record_id, 'machineId', machine_id, 'type', type, 'amount', amount,
+        'prizeName', coalesce(prize_name, ''), 'unitAmount', unit_amount, 'count', count,
+        'meterStart', meter_start, 'meterEnd', meter_end,
+        'userName', (select coalesce(nullif(p.display_name, ''), p.username) from profiles p where p.id = records_ranked.user_id),
+        'createdAt', created_at, 'businessDate', business_date::text, 'note', coalesce(note, '')
+      ) order by created_at desc, seq desc
+    ), '[]'::jsonb) as val
+    from records_ranked
+    where rn <= 500
+  ),
+  record_count as (
+    select count(*) as n from rows
+  ),
+  operators_json as (
+    select coalesce(jsonb_agg(
+      jsonb_build_object('userId', p.id::text, 'name', coalesce(nullif(p.display_name, ''), p.username))
+      order by p.username
+    ), '[]'::jsonb) as val
+    from (select distinct user_id from rows) o
+    join profiles p on p.id = o.user_id
+  )
+  select jsonb_build_object(
+    'range', jsonb_build_object(
+      'from', (select range_from from range)::text, 'to', (select range_to from range)::text,
+      'preset', (select preset from range)
+    ),
+    'scope', jsonb_build_object(
+      'machineId', coalesce(v_machine_id, ''), 'machineName', v_machine_name,
+      'machineCount', (select count(*) from scope_ids), 'category', v_category
+    ),
+    'summary', jsonb_build_object(
+      'in', (select in_amt from summary), 'out', (select out_amt from summary), 'prize', (select prize_amt from summary),
+      'net', (select in_amt from summary) - (select out_amt from summary) - (select prize_amt from summary),
+      'chipIn', (select chip_in_amt from summary), 'chipOut', (select chip_out_amt from summary),
+      'chipNet', (select chip_in_amt from summary) - (select chip_out_amt from summary)
+    ),
+    'trend', (select val from trend_json),
+    'prizeStats', (select val from prize_stats_json),
+    'records', (select val from records_json),
+    'recordCount', (select n from record_count),
+    'truncated', (select n from record_count) > 500,
+    'operators', (select val from operators_json)
+  ) into v_result;
+
+  return v_result;
+end;
+$$;
+
+-- 「活動查詢」：自訂日期範圍內的432/441支數＋每天手動填的開銷加總，
+-- 不特定看哪一台機台，是這個帳號看得到的全部機台合併算。對照
+-- getActivityQuery()／_sumManualExpenseInRange()。
+create or replace function activity_query(p_from date, p_to date)
+returns jsonb
+language sql
+stable
+as $$
+  with range as (
+    select * from resolve_range('custom', p_from, p_to)
+  ),
+  rows as (
+    select r.* from records r, range
+    where r.voided = false
+      and r.type = 'prize'
+      and r.business_date between range.range_from and range.range_to
+      -- machines 已經被 RLS 篩過，這裡直接 join 現在看得到的機台即可，
+      -- 不用像 GAS 版本那樣自己先查一輪 visibleMachineIds()。
+      and r.machine_id in (select machine_id from machines)
+  ),
+  counts as (
+    select
+      coalesce(sum(count) filter (where prize_name = '432'), 0) as count432,
+      coalesce(sum(count) filter (where prize_name = '441'), 0) as count441
+    from rows
+  ),
+  -- 逐天取那一天 daily_ledger 最新（seq 最大）的一列，同一天可能因為忘記
+  -- 結單又重開之類的情況存過好幾列，只算最後那列，其餘視為被覆蓋。
+  latest_ledger_per_day as (
+    select distinct on (business_date) business_date, manual_expense
+    from daily_ledger
+    where business_date between (select range_from from range) and (select range_to from range)
+    order by business_date, seq desc
+  )
+  select jsonb_build_object(
+    'range', jsonb_build_object(
+      'from', (select range_from from range)::text, 'to', (select range_to from range)::text,
+      'preset', (select preset from range)
+    ),
+    'count432', (select count432 from counts),
+    'count441', (select count441 from counts),
+    'manualExpense', coalesce((select sum(manual_expense) from latest_ledger_per_day), 0)
+  );
+$$;
+
+-- 逐日對帳表格線（「匯出 Excel」「匯出截圖」共用的資料來源）。對照
+-- _buildLedgerGrid()：橫向一欄一天，直向把當天每一筆出幣依發生順序
+-- 列出來，底下再接出幣/432/441/入幣/+/- 五列小計，最右邊兩欄是整個
+-- 區間的總計。純資料，不含任何樣式（粗體/底色/紅字是前端畫 Excel／
+-- canvas 時才套的，見 docs/app.js 的 exportLedgerXlsx／
+-- drawLedgerGridCanvas 之後接上這支時要做的事）。
+--
+-- 跟 GAS 版本一樣是「不管給不給 machineId 都是同一份邏輯」：要匯出
+-- 「全部骰台」那種一台一張圖的情境，呼叫端自己對每台機台各呼叫一次
+-- （傳不同的 p_machine_id），不是這支自己迴圈——完全對應現有
+-- exportLedgerXlsx()／exportLedgerGrids() 呼叫 _buildLedgerGrid() 的
+-- 方式，只是迴圈本身搬到前端做。
+create or replace function ledger_grid(
+  p_machine_id text default null,
+  p_category text default null,
+  p_preset text default 'day',
+  p_from date default null,
+  p_to date default null,
+  p_type text default null,
+  p_user_id uuid default null
+)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_machine_id text := nullif(p_machine_id, '');
+  v_category text;
+  v_machine_name text;
+  v_label text;
+  v_result jsonb;
+begin
+  if v_machine_id is not null then
+    if not can_see_machine(v_machine_id) then
+      raise exception '沒有這台機台的權限' using errcode = '42501';
+    end if;
+    select coalesce(name, ''), coalesce(category, '') into v_machine_name, v_category
+    from machines where machine_id = v_machine_id;
+  else
+    v_category := case when p_category in ('dice', 'electronic') then p_category else '' end;
+    v_machine_name := case v_category
+      when 'electronic' then '全部電子機台'
+      when 'dice' then '全部骰台'
+      else ''
+    end;
+  end if;
+  v_label := nullif(v_machine_name, '');
+  if v_label is null then
+    v_label := '全部機台';
+  end if;
+
+  with range as (
+    select * from resolve_range(p_preset, p_from, p_to)
+  ),
+  scope_ids as (
+    select report_scope_machine_ids(v_machine_id, v_category) as machine_id
+  ),
+  days as (
+    select generate_series((select range_from from range), (select range_to from range), interval '1 day')::date as d
+  ),
+  rows as (
+    select r.* from records r, range
+    where r.machine_id in (select machine_id from scope_ids)
+      and r.voided = false
+      and r.business_date between range.range_from and range.range_to
+      and (nullif(p_type, '') is null or r.type = p_type)
+      and (p_user_id is null or r.user_id = p_user_id)
+  ),
+  out_rows_ranked as (
+    select
+      business_date, amount,
+      row_number() over (partition by business_date order by created_at asc, seq asc) as rn
+    from rows
+    where type = 'out'
+  ),
+  max_outs as (
+    select coalesce(max(rn), 0) as n from out_rows_ranked
+  ),
+  day_agg as (
+    select
+      d.d,
+      coalesce(sum(r.amount) filter (where r.type = 'in'), 0) as in_total,
+      coalesce(sum(r.count) filter (where r.type = 'prize' and r.prize_name = '432'), 0) as count432,
+      coalesce(sum(r.amount) filter (where r.type = 'prize' and r.prize_name = '432'), 0) as amount432,
+      coalesce(sum(r.count) filter (where r.type = 'prize' and r.prize_name = '441'), 0) as count441,
+      coalesce(sum(r.amount) filter (where r.type = 'prize' and r.prize_name = '441'), 0) as amount441,
+      coalesce(sum(r.amount) filter (where r.type = 'out'), 0) as out_total
+    from days d
+    left join rows r on r.business_date = d.d
+    group by d.d
+  ),
+  header_row as (
+    select
+      jsonb_build_array('圖數')
+      || coalesce(jsonb_agg((extract(month from d)::int || '月' || extract(day from d)::int || '日') order by d), '[]'::jsonb)
+      || jsonb_build_array('', '')
+      as val
+    from days
+  ),
+  out_grid_rows as (
+    select coalesce(jsonb_agg(row_arr order by rn), '[]'::jsonb) as val
+    from (
+      select
+        gs.rn,
+        jsonb_build_array(gs.rn::text)
+        || jsonb_agg(coalesce(to_jsonb(oo.amount), '""'::jsonb) order by d.d)
+        || jsonb_build_array('', '')
+        as row_arr
+      from generate_series(1, (select n from max_outs)) as gs(rn)
+      cross join days d
+      left join out_rows_ranked oo on oo.business_date = d.d and oo.rn = gs.rn
+      group by gs.rn
+    ) t
+  ),
+  summary_days as (
+    select
+      coalesce(jsonb_agg(out_total order by d), '[]'::jsonb) as out_by_day,
+      coalesce(jsonb_agg(count432 order by d), '[]'::jsonb) as c432_by_day,
+      coalesce(jsonb_agg(count441 order by d), '[]'::jsonb) as c441_by_day,
+      coalesce(jsonb_agg(in_total order by d), '[]'::jsonb) as in_by_day,
+      coalesce(jsonb_agg(in_total - out_total - amount432 - amount441 order by d), '[]'::jsonb) as net_by_day,
+      coalesce(sum(out_total), 0) as grand_out,
+      coalesce(sum(count432), 0) as grand_432,
+      coalesce(sum(count441), 0) as grand_441,
+      coalesce(sum(in_total), 0) as grand_in,
+      coalesce(sum(in_total - out_total - amount432 - amount441), 0) as grand_net
+    from day_agg
+  ),
+  summary_rows as (
+    select jsonb_build_array(
+      jsonb_build_array('出幣') || out_by_day || jsonb_build_array('總出幣', grand_out),
+      jsonb_build_array('432') || c432_by_day || jsonb_build_array('432', grand_432),
+      jsonb_build_array('441') || c441_by_day || jsonb_build_array('441', grand_441),
+      jsonb_build_array('入幣') || in_by_day || jsonb_build_array('總入幣', grand_in),
+      jsonb_build_array('+/-') || net_by_day || jsonb_build_array('+/-', grand_net)
+    ) as val
+    from summary_days
+  ),
+  row_count as (
+    select count(*) as n from rows
+  )
+  select jsonb_build_object(
+    'filenameBase', '娃娃機對帳表_' || v_label || '_' || (select range_from from range)::text || '_' || (select range_to from range)::text,
+    'rowCount', (select n from row_count),
+    'colCount', jsonb_array_length((select val from header_row)),
+    'headerRow', (select val from header_row),
+    'outRows', (select val from out_grid_rows),
+    'summaryRows', (select val from summary_rows)
+  ) into v_result;
+
+  return v_result;
+end;
+$$;
