@@ -1333,10 +1333,9 @@ $$;
 
 -- ── 記帳（入幣／出幣／碼表／開獎）───────────────────────────
 
--- 對照 addRecord()。跟 GAS 版本不同的是：這裡不像 GAS 那樣把
--- getMachineDetail() 一併塞進回傳值省一趟來回——machine_detail()（完整
--- 詳細頁：分頁紀錄清單＋今日/本週統計＋營業日狀態）還沒搬過來，前端
--- 目前得自己在寫入成功後再叫一次查詢。見 MIGRATION_PLAN.md 的待辦。
+-- 對照 addRecord()：連同最新的機台詳細頁資料（machine_detail()）一起
+-- 回傳，前端寫入成功後不用再多打一次查詢，對照 GAS 的
+-- result.detail = getMachineDetail(...)。
 create or replace function add_record(
   p_machine_id text, p_type text, p_amount numeric, p_note text, p_client_token text
 )
@@ -1373,7 +1372,7 @@ begin
   if v_token <> '' then
     select * into v_dup from records where client_token = v_token limit 1;
     if found then
-      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)));
+      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)), 'detail', machine_detail(p_machine_id));
     end if;
   end if;
 
@@ -1384,7 +1383,9 @@ begin
     left(coalesce(p_note, ''), 200), v_token, current_business_date()
   ) returning * into v_rec;
 
-  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)));
+  -- 前端送出後一定緊接著重新整理機台詳細頁，一起回傳省一趟來回，
+  -- 對照 GAS 的 result.detail = getMachineDetail(...)。
+  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)), 'detail', machine_detail(p_machine_id));
 end;
 $$;
 
@@ -1432,7 +1433,7 @@ begin
   if v_token <> '' then
     select * into v_dup from records where client_token = v_token limit 1;
     if found then
-      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)));
+      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)), 'detail', machine_detail(p_machine_id));
     end if;
   end if;
 
@@ -1444,7 +1445,7 @@ begin
     auth.uid(), now(), left(coalesce(p_note, ''), 200), v_token, current_business_date()
   ) returning * into v_rec;
 
-  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)));
+  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)), 'detail', machine_detail(p_machine_id));
 end;
 $$;
 
@@ -1894,5 +1895,104 @@ begin
   end if;
 
   return jsonb_build_object('userId', p_user_id, 'machineId', p_machine_id, 'granted', p_granted);
+end;
+$$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 機台詳細頁
+-- 對照 apps-script/Service.gs 的 _buildMachineDetail()/getMachineDetail()/
+-- getAllMachineDetails()。GAS 版本把兩支函式的組裝邏輯合成一份
+-- _buildMachineDetail() 主要是為了避免「Sheets 要讀 N 次」的效能問題；
+-- Postgres 這邊每台機台各自查一次 records 本來就是索引查詢，不需要
+-- 那種手工合併最佳化，所以 all_machine_details() 直接迴圈呼叫
+-- machine_detail()，程式碼比 GAS 版本單純。
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- 對照 getMachineDetail()/_buildMachineDetail()。today/total(=本週) 兩組
+-- 統計直接借用 machine_today_and_week()，不用再自己重算一次
+-- is_today_record()/週範圍那套邏輯。
+create or replace function machine_detail(p_machine_id text, p_record_limit int default 50)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_machine machines;
+  v_agg record;
+  v_limit int := coalesce(p_record_limit, 50);
+  v_total_count int;
+  v_records jsonb;
+begin
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  select * into v_machine from machines where machine_id = p_machine_id;
+  if not found then
+    raise exception '找不到這台機台';
+  end if;
+
+  select * into v_agg from machine_today_and_week(p_machine_id);
+
+  select count(*) into v_total_count
+  from records where machine_id = p_machine_id and voided = false;
+
+  select coalesce(jsonb_agg(public_record(r) order by r.created_at desc, r.seq desc), '[]'::jsonb)
+  into v_records
+  from (
+    select * from records
+    where machine_id = p_machine_id and voided = false
+    order by created_at desc, seq desc
+    limit v_limit
+  ) r;
+
+  return jsonb_build_object(
+    'machine', jsonb_build_object(
+      'machineId', v_machine.machine_id,
+      'name', v_machine.name,
+      'location', coalesce(v_machine.location, ''),
+      'status', coalesce(v_machine.status, 'running'),
+      'color', coalesce(v_machine.color, '#4F7BE8'),
+      'note', coalesce(v_machine.note, ''),
+      'category', coalesce(v_machine.category, 'dice'),
+      'icon', coalesce(v_machine.icon, 'classic')
+    ),
+    'today', jsonb_build_object(
+      'in', v_agg.today_in, 'out', v_agg.today_out, 'prize', v_agg.today_prize, 'net', v_agg.today_net,
+      'chipIn', v_agg.today_chip_in, 'chipOut', v_agg.today_chip_out, 'chipNet', v_agg.today_chip_net
+    ),
+    'today432Count', v_agg.today_432_count,
+    'total', jsonb_build_object(
+      'in', v_agg.week_in, 'out', v_agg.week_out, 'prize', v_agg.week_prize, 'net', v_agg.week_net,
+      'chipIn', v_agg.week_chip_in, 'chipOut', v_agg.week_chip_out, 'chipNet', v_agg.week_chip_net
+    ),
+    'records', v_records,
+    'hasMore', v_total_count > v_limit,
+    'quickAmounts', resolve_quick_amounts(p_machine_id),
+    'prizes', resolve_prizes(p_machine_id),
+    'meterRate', resolve_meter_rate(p_machine_id),
+    'lastMeterReading', v_agg.last_meter_reading
+  );
+end;
+$$;
+
+-- 對照 getAllMachineDetails()：一次算出這個帳號看得到的每一台機台的
+-- 完整詳細頁資料，用 machineId 當 key，前端登入後背景預取全部機台時
+-- 一次呼叫就夠，不用每台各打一次。machines 表本身已經被 RLS 篩過，
+-- 這裡查到的就是「看得到的」那些。
+create or replace function all_machine_details(p_record_limit int default 50)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_limit int := coalesce(p_record_limit, 50);
+  v_result jsonb := '{}'::jsonb;
+  v_mid text;
+begin
+  for v_mid in select machine_id from machines order by sort_order loop
+    v_result := v_result || jsonb_build_object(v_mid, machine_detail(v_mid, v_limit));
+  end loop;
+  return v_result;
 end;
 $$;

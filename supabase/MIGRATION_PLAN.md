@@ -152,19 +152,39 @@
       `can_see_machine()` 明確擋掉）、`schema.sql`／`policies.sql`／
       `functions.sql` 三個檔案重覆執行兩次都不報錯（`create or replace`／
       `drop policy if exists` 都是冪等的）。
+      **機台詳細頁也搬完了**：`machine_detail(machineId, recordLimit)`
+      對照 `getMachineDetail()`/`_buildMachineDetail()`（機台基本資料＋
+      今日統計＋本週統計＋分頁紀錄清單＋快捷金額/獎型/碼表費率＋上次
+      碼表讀數），直接借用先前搬好的 `machine_today_and_week()` 算
+      today/本週兩組數字，不用重寫一次 `is_today_record()`/週範圍邏輯；
+      `all_machine_details(recordLimit)` 對照 `getAllMachineDetails()`，
+      用 machineId 當 key 一次算出這個帳號看得到的每一台。GAS 版本把
+      這兩支合成一份 `_buildMachineDetail()` 主要是為了閃避「Sheets
+      要跨執行讀 N 次」的效能問題，Postgres 這邊每台各自查一次 records
+      本來就是索引查詢，不需要那種手工合併最佳化，`all_machine_details()`
+      直接迴圈呼叫 `machine_detail()`，程式碼比 GAS 版本單純。
+      `add_record()`／`add_meter_record()` 也補上了跟 GAS 一致的
+      `result.detail = getMachineDetail(...)` 那個最佳化——回傳值裡
+      多一個 `detail` 欄位，直接帶最新的機台詳細頁，前端寫入成功後
+      不用再多打一次查詢（`add_prize_record()` 沒有這個欄位，因為
+      GAS 原本的 `addPrizeRecord()` 就沒有）。已手動驗證：連續兩次
+      入幣/出幣後 `detail.today`/`detail.total` 的累計數字正確、
+      `detail.records` 依 `created_at desc, seq desc` 排序、
+      `detail.lastMeterReading` 正確帶出最近一筆入幣紀錄的下班表讀數、
+      `all_machine_details()` 回傳的 key 集合等於這個帳號看得到的
+      機台集合。
       **剩下還沒搬的**：`exportLedgerXlsx()`（真的產生 .xlsx 檔案的部分，
       這需要一個能寫 Excel 檔案格式的地方，不是純 SQL 能做的——目前傾向
       前端直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端的 xlsx
-      產生套件現場組出檔案，不需要後端）；`machine_detail()`（完整的
-      單台詳細頁：分頁紀錄清單＋今日/本週統計＋營業日狀態，對照
-      `getMachineDetail()`/`_buildMachineDetail()`——`add_record()` 等
-      寫入 function 目前也還沒像 GAS 版本那樣把這份資料一起回傳省一趟
-      來回，等這支搬完再補上）；`adminBootstrap`（純聚合，前端可以直接
-      分開打 `adminListUsers`/`adminListMachines`/... 對應的 4 條
-      查詢，不一定需要包成一支 function）；`adminSaveUser`／
+      產生套件現場組出檔案，不需要後端）；`adminBootstrap`（純聚合，
+      前端可以直接分開打 `adminListUsers`/`adminListMachines`/... 對應
+      的 4 條查詢，不一定需要包成一支 function）；`adminSaveUser`／
       `adminResetPassword`（建立新帳號、改密碼——需要 Supabase Auth
       Admin API 的 service role key，純 SQL function 做不到，要用
-      Edge Function，見下面 Auth & RLS 那節）。
+      Edge Function，見下面 Auth & RLS 那節）。Phase 3 到這裡，記帳/
+      查詢/報表/系統管理這幾條主線的 SQL function 大致都搬完了，剩下
+      的幾項都是「刻意留給前端」或「刻意留給 Edge Function」的，不是
+      還沒想到怎麼搬。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
       那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／
