@@ -306,11 +306,18 @@ async function main() {
   await upsert('daily_ledger', ledgerRows, 'ledger_id');
 
   // 8) 紀錄（分批寫入，最後做）
+  const validMachineIds = new Set(raw.machines.map(function (m) { return m.machineId; }));
   const recordRows = [];
   let skippedRecords = 0;
+  let skippedOrphanMachine = 0;
   for (const r of raw.records) {
     const uid = userIdMap[r.userId];
     if (!uid) { skippedRecords++; continue; }
+    // records.machine_id 有外鍵限制（references machines），Sheets 裡偶爾會有
+    // 指向「現在已經不存在的機台」的舊紀錄（機台被用不常見方式改過 ID、或
+    // 很久以前的測試資料）——upsert 是整批送出的，一筆對不上外鍵會讓整批
+    // 500 筆全部失敗，所以要先在這裡濾掉，不要等資料庫報錯才發現。
+    if (!validMachineIds.has(r.machineId)) { skippedOrphanMachine++; continue; }
     recordRows.push({
       record_id: r.recordId,
       machine_id: r.machineId,
@@ -333,6 +340,7 @@ async function main() {
     });
   }
   if (skippedRecords) console.log('⚠ ' + skippedRecords + ' 筆紀錄找不到對應帳號，已跳過（原始資料保留在 Sheets，之後可以手動補）');
+  if (skippedOrphanMachine) console.log('⚠ ' + skippedOrphanMachine + ' 筆紀錄的 machine_id 對不到任何一台已匯入的機台，已跳過（原始資料保留在 Sheets，之後可以手動確認）');
 
   for (let i = 0; i < recordRows.length; i += RECORDS_BATCH_SIZE) {
     const batch = recordRows.slice(i, i + RECORDS_BATCH_SIZE);
