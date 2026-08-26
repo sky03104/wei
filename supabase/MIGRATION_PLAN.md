@@ -265,8 +265,8 @@
       `admin_set_permission()` 重新手動授權一次就好。
       **收尾**：那個臨時用的 Apps Script 專案（獨立、沒動到正式部署）
       可以直接刪除或封存，不影響正式站台。
-- [~] **Phase 5：雙軌驗證＋切換**——前端改接的部分寫好了，還沒拿真的
-      Supabase 專案在瀏覽器裡跑過一次。
+- [x] **Phase 5：雙軌驗證**——前端改接的部分寫好了，也已經拿真的
+      Supabase 專案在瀏覽器裡實測過一輪，通過。
       **架構決定：加一支後端開關，不是直接砍掉 GAS 路徑**——
       `docs/config.js` 新增 `BACKEND`（預設 `'gas'`，行為跟現在完全
       一樣）跟 `SUPABASE_URL`／`SUPABASE_ANON_KEY`；`docs/app.js` 原本
@@ -320,12 +320,37 @@
       而不是靜默失敗、`api()` 本身依 `BACKEND` 正確分派。`npm test`
       （GAS 那邊的自我測試）全部通過，確認 `BACKEND` 預設 `'gas'` 時
       GAS 路徑一行邏輯都沒被動到。
-      **還沒做、沒辦法在這裡做的**：實際在瀏覽器裡對著真的 Supabase
-      專案跑一輪（登入、記帳、報表、系統管理全部點過一次），確認
-      `RPC_MAP` 裡每一組參數改名跟 Postgres function 的實際簽章都對得
-      起來——本機測試驗證的是「呼叫的參數形狀符合我寫的預期」，不是
-      「Postgres 那邊真的接受這組參數」，這兩件事只有接上真專案才能
-      完整驗證到。
+      **真的在瀏覽器裡測過了**：`docs/config.js` 設成
+      `BACKEND: 'supabase'`（`SUPABASE_URL`／`SUPABASE_ANON_KEY` 直接
+      填實際值提交進 repo——anon key 設計上就是公開安全的,權限控管在
+      RLS,跟 `GAS_API_URL` 一樣不算敏感資訊）,用 `tools/dev-server.js`
+      跑本機靜態伺服器（改了一下：原本它會把 `/config.js` 整個覆寫成
+      指向本機模擬後端,只在 `BACKEND` 不是 `'supabase'` 時才這樣做,
+      是 `'supabase'` 就照原樣把真正的 `docs/config.js` 送給瀏覽器,
+      讓瀏覽器直接打真的 Supabase 專案）,拿 Phase 4 遷移出來的其中一個
+      帳號（用遷移腳本產生的臨時密碼,不是舊系統的密碼）登入,實際點過
+      首頁、機台詳細頁、記一筆帳、報表頁、匯出截圖、系統管理頁,全部
+      正常。
+      **測試中抓到一個真的 bug（不是遷移造成的，是原本就有的）**：
+      「📷 匯出截圖」在機台數量多、圖檔總大小超過瀏覽器分享面板上限時，
+      `navigator.canShare({files})` 檢查會過，但實際呼叫
+      `navigator.share({files})` 會被系統拒絕（Chrome 主控台看到
+      「Share too large」），原本的程式碼用 `.catch(function(){})` 把
+      這個失敗整個吞掉、直接 `return`，使用者會看到按鈕按下去完全沒
+      反應。改成失敗時退回原本就有的「一張一張各自觸發下載」流程，
+      不會再靜默失敗。同一支檔案裡單台截圖（`exportLedgerImage`）的
+      分享面板也有一樣的邏輯漏洞，一併修掉，用 `.catch(downloadFallback)`
+      而不是 `await/try`（保留原本「share() 必須在點擊當下同步呼叫，
+      不能等非同步流程之後才呼叫」的手機 Safari 相容性設計，這支沒有
+      改成 async）。
+      **測試中還抓到（測試流程本身的坑，不是程式的 bug）**：Windows
+      PowerShell 執行原則預設擋掉 `npm.ps1`，要用 `npm.cmd` 才行；
+      Service Worker 快取會讓瀏覽器抓不到剛推上去的新版前端，測試時
+      要嘛用無痕視窗、要嘛確認有真的觸發更新流程。
+      到這裡 Phase 5 的雙軌驗證算完成了——GAS/Sheets（`main` 分支的
+      正式系統）跟 Supabase（這個分支）兩條後端路徑並存在同一份
+      `docs/app.js` 裡，切 `BACKEND` 這個開關就能切換，兩邊都實測
+      跑得動。
 
 ## Auth & RLS——已拍板：前端直連 + RLS
 
@@ -369,12 +394,14 @@ role，沒有真的專案沒辦法完整驗證。
   天」。這不是這次搬過來才有的新 bug，是 GAS 原本就有的行為（已經在
   本機測過、行為一致），只是移植過程中特別容易被「順手修掉」，寫在這
   裡提醒之後改這塊的人：不要在沒有明確決定的情況下悄悄改掉這個行為。
-- 「新增帳號」的 Edge Function、「username 登入」的 `resolve_username_email()`
-  都還沒實測——這兩個碰到 `auth.users`／service role key，是`policies.sql`
-  裡最需要在真的 Supabase 專案上小心驗證的部分，不要直接照抄貼到
-  正式環境用。
-- 舊帳號的密碼沒辦法遷移（雜湊方式不同），Phase 4 要先想好怎麼跟
-  使用者溝通「這次要重設密碼」。
+- 「新增帳號」的 Edge Function 還沒實作也還沒實測——這個碰到 service
+  role key，是還沒解決的一塊（見上面 Phase 3／Auth & RLS 那兩節）。
+  `resolve_username_email()` 已經在真的 Supabase 專案上實測過，登入
+  流程也已經整個跑通。
+- 舊帳號的密碼沒辦法遷移（雜湊方式不同）——已經照這個設計跑過一次
+  真的遷移：每個帳號拿到一組隨機臨時密碼，存在遷移執行者本機的
+  `migration-credentials.txt`（不進 git），要發給對應的人自己登入後
+  改密碼。
 - `records.client_token` 沒有設資料庫層的 `unique` 約束（設計原因見
   上面「記帳寫入」那段），去重完全靠 `add_record()`/`add_meter_record()`/
   `add_prize_record()` 裡「先查再寫」的 app 層邏輯，跟 GAS/Sheets 版本
@@ -387,7 +414,15 @@ role，沒有真的專案沒辦法完整驗證。
   `carry_in`/`carry_out`/... 這幾欄只是遷移過渡用，新資料寫入不會
   再往上加——遷移完成後要不要整個拿掉這幾欄，等 Phase 4 資料遷移
   跑完、確認新系統穩定運作一段時間後再決定。
-- 目前 `supabase/` 底下還沒有實際連上任何 Supabase 專案（沒有
-  `.env`、沒有 project ref、沒有跑過 `supabase db push`）——Phase 1／2
-  只是把 schema 跟 policy 設計寫好，還沒真的建立任何雲端資源，也還
-  沒實測過任何一條 policy 真的擋不擋得住。
+- 已經建立真的 Supabase 專案（`ap-southeast-1`，Singapore），
+  `schema.sql`／`policies.sql`／`functions.sql` 都套用過，Phase 4
+  資料遷移也跑過一次真的、確認過數字正確。**目前 Supabase 那份資料
+  是遷移當時的快照，之後正式站台（GAS/Sheets）如果繼續有新的記帳、
+  新增機台等等，Supabase 那份會愈來愈舊**——這是「雙軌驗證」階段的
+  正常現象（正式流量仍然完全走 `main` 分支的 GAS/Sheets，這個分支的
+  Supabase 只是拿來測試），真的要切換上線前，需要再跑一次遷移把最新
+  資料同步過去（或改成寫入雙軌並行一段時間再切）。
+- Phase 5 瀏覽器測試時在 Supabase 那份資料裡留了幾筆測試用的記帳
+  紀錄（金額很小、備註「測試」）——不影響 Sheets 正式資料，但如果之後
+  真的要拿 Supabase 這份資料上線，記得先清掉或用一次乾淨的重新遷移
+  覆蓋掉。
