@@ -96,6 +96,76 @@ function _clearSheetCache() {
 }
 
 /**
+ * 「跨執行」的分頁快取（GAS CacheService）——上面 _sheetCache 那層只在單次
+ * 執行內有效，每一次新的請求（每次 doPost）都是全新的執行環境，一樣要
+ * 重新真的打一次 Sheets API 讀整張表。dashboard／report 這種高流量的
+ * API 短時間內常常被重複打好幾次（多個使用者、同一人背景輪詢），這層
+ * 快取讓短時間內的重複請求可以直接吃快取，不用每次都真的讀 Sheets。
+ *
+ * 正確性完全靠「主動失效」保證，不是靠 TTL 自然過期：dbInsertMany／
+ * dbUpdate／dbDeleteRows，以及任何直接改儲存格、繞過這幾支寫入的地方
+ * （例如 _fixTextColumnFormatting()／_migrateRecordsMeterColumns() 這種
+ * 修復函式），一律要呼叫 _invalidateSheetCache()，寫入當下就把這張表的
+ * 快取砍掉。CacheService 是全 script 共用（不像 _sheetCache 只在單次
+ * 執行內有效），砍掉之後**所有使用者**下一次讀都會直接 miss、重新從
+ * Sheets 讀到最新的值。TTL 只是防呆用的安全網，不是靠它保證資料新鮮。
+ *
+ * 快取鍵值帶進目前試算表的 ID，不是只用分頁名稱——runSelfTest() 會透過
+ * _spreadsheetOverride 暫時切到一份全新的暫時試算表跑完整套測試，如果
+ * 快取鍵值沒帶試算表 ID，暫時試算表讀到的資料會被寫進跟正式試算表共用
+ * 的快取鍵，等暫時試算表用完丟進垃圾桶、下次正式站台的使用者剛好命中
+ * 這個快取，讀到的會是已經不存在的測試資料。帶了 ID 之後兩者天生互不
+ * 干擾，不需要另外為了測試特別關閉這層快取。
+ *
+ * Sessions／Users 這兩張表刻意不進這層快取：登入驗證、登出、改密碼
+ * 要求「立刻生效」，不能有任何一段快取窗口讓已經失效的 token／舊密碼
+ * 還能通過驗證；這兩張表本來就很小，讀取成本不高，不快取也無妨。
+ */
+const CROSS_EXEC_CACHE_TTL_SEC = 300;
+const CROSS_EXEC_CACHEABLE = {
+  Machines: true, Records: true, Prizes: true, QuickAmounts: true,
+  MeterRates: true, Permissions: true, Config: true, BizDays: true, DailyLedger: true
+};
+
+function _crossExecCacheKey(name) {
+  return 'sheet:' + _spreadsheet().getId() + ':' + name;
+}
+
+function _crossExecCacheGet(name) {
+  if (!CROSS_EXEC_CACHEABLE[name]) return null;
+  try {
+    const raw = CacheService.getScriptCache().get(_crossExecCacheKey(name));
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null; // 快取讀取／解析失敗就退回正常讀 Sheets，不讓這層快取影響正確性
+  }
+}
+
+function _crossExecCachePut(name, rows) {
+  if (!CROSS_EXEC_CACHEABLE[name]) return;
+  try {
+    CacheService.getScriptCache().put(_crossExecCacheKey(name), JSON.stringify(rows), CROSS_EXEC_CACHE_TTL_SEC);
+  } catch (err) {
+    // CacheService 單一鍵值上限 100KB，資料量大的分頁可能超過——放棄快取
+    // 這張表就好，不要讓快取寫入失敗連累整支請求。
+  }
+}
+
+function _crossExecCacheClear(name) {
+  if (!CROSS_EXEC_CACHEABLE[name]) return;
+  try {
+    CacheService.getScriptCache().remove(_crossExecCacheKey(name));
+  } catch (err) { /* 清不掉就算了，反正還有 TTL 會讓它自然過期 */ }
+}
+
+/** 清掉某一張分頁的快取，單次執行內＋跨執行 CacheService 兩層都清——
+ *  任何一個地方寫入試算表之後都要呼叫這支，不能只清單次執行內那層。 */
+function _invalidateSheetCache(name) {
+  delete _sheetCache[name];
+  _crossExecCacheClear(name);
+}
+
+/**
  * 只在「這一次執行」裡生效的試算表覆寫，給 runSelfTest() 這種要暫時切到
  * 別份試算表跑的情境用。**故意不透過 PropertiesService**：Apps Script
  * 每次執行（不管是編輯器手動執行、或 Web App 的每一次請求）都是全新、
@@ -239,7 +309,7 @@ function _migrateRecordsMeterColumns() {
 
   if (fixed > 0) {
     range.setValues(out);
-    delete _sheetCache.Records;
+    _invalidateSheetCache('Records');
   }
   return fixed;
 }
@@ -322,7 +392,7 @@ function _fixTextColumnFormatting() {
 
     if (changed) {
       range.setValues(values);
-      delete _sheetCache[name];
+      _invalidateSheetCache(name);
     }
   });
 
@@ -331,16 +401,24 @@ function _fixTextColumnFormatting() {
 
 /**
  * 讀出整張分頁，回傳物件陣列。每個物件多一個 _row（實際列號，從 2 起算）。
- * 同一次執行內只會真的讀一次。
+ * 同一次執行內只會真的讀一次；跨執行的話先試跨執行快取（見上面
+ * _crossExecCacheGet 的說明），還是沒有才真的打 Sheets API。
  */
 function dbReadAll(name) {
   if (_sheetCache[name]) return _sheetCache[name];
+
+  const cached = _crossExecCacheGet(name);
+  if (cached) {
+    _sheetCache[name] = cached;
+    return cached;
+  }
 
   const sh = _sheet(name);
   const lastRow = sh.getLastRow();
   const cols = SCHEMA[name];
   if (lastRow < 2) {
     _sheetCache[name] = [];
+    _crossExecCachePut(name, []);
     return [];
   }
 
@@ -360,6 +438,7 @@ function dbReadAll(name) {
     rows.push(obj);
   }
   _sheetCache[name] = rows;
+  _crossExecCachePut(name, rows);
   return rows;
 }
 
@@ -399,7 +478,7 @@ function dbInsertMany(name, objs) {
   const startRow = sh.getLastRow() + 1;
   const rows = objs.map(function (o) { return _toRow(name, o); });
   sh.getRange(startRow, 1, rows.length, SCHEMA[name].length).setValues(rows);
-  delete _sheetCache[name];
+  _invalidateSheetCache(name);
   return objs;
 }
 
@@ -413,7 +492,7 @@ function dbUpdate(name, rowIndex, patch) {
     const v = patch[key];
     sh.getRange(rowIndex, c + 1).setValue((v === undefined || v === null) ? '' : v);
   });
-  delete _sheetCache[name];
+  _invalidateSheetCache(name);
 }
 
 /** 刪除指定列（由大到小刪，避免列號位移）。 */
@@ -423,7 +502,7 @@ function dbDeleteRows(name, rowIndexes) {
   rowIndexes.slice().sort(function (a, b) { return b - a; }).forEach(function (r) {
     sh.deleteRow(r);
   });
-  delete _sheetCache[name];
+  _invalidateSheetCache(name);
 }
 
 /** 包住寫入動作，避免兩人同時記帳撞在一起。 */
