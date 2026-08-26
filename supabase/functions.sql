@@ -1978,7 +1978,12 @@ begin
     'records', v_records,
     'hasMore', v_total_count > v_limit,
     'quickAmounts', resolve_quick_amounts(p_machine_id),
-    'prizes', resolve_prizes(p_machine_id),
+    -- 對照 _buildMachineDetail() 的 prizes: _resolvePrizes(machineId)：
+    -- 這裡要放純陣列，不是 resolve_prizes() 給 listPrizes() 用的
+    -- {scope, prizes:[...]} 包裝形狀——每個獎型項目自己就帶了 scope
+    -- 欄位（resolve_prizes() 裡每個 jsonb_build_object 都有寫），
+    -- 不需要再包一層，前端 prizePanel() 是直接 d.prizes.map(...)。
+    'prizes', resolve_prizes(p_machine_id) -> 'prizes',
     'meterRate', resolve_meter_rate(p_machine_id),
     'lastMeterReading', v_agg.last_meter_reading
   );
@@ -2149,5 +2154,65 @@ begin
     'prizes', admin_list_prizes(),
     'perms', admin_list_permissions()
   );
+end;
+$$;
+
+-- ── 帳號管理：修改已存在的帳號 ──────────────────────────────
+--
+-- 對照 adminSaveUser() 裡「有帶 userId」的分支（改角色/狀態/顯示名稱）。
+-- 「建立全新帳號」跟「重設密碼」這兩件事需要 Supabase Auth Admin API
+-- 的 service role key，純 SQL function 做不到，走另外部署的 Edge
+-- Function（見 supabase/functions/admin-users/），這支只處理不需要
+-- service role 的部分。
+--
+-- 沒有對照 GAS 的 invalidateUserSessions()——這裡不需要：
+-- is_admin()/can_record()/can_see_machine() 全部是每次請求都直接查
+-- 當下的 profiles.role/status（見 current_role_name()），不是讀取
+-- session 建立當下快取的舊角色，把這裡的 role/status 改掉，下一個
+-- 請求立刻就會反映新權限，效果跟「踢掉舊 session」一樣，不用另外做。
+create or replace function admin_update_user(
+  p_user_id uuid, p_display_name text, p_role text, p_status text
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_row profiles;
+  v_status text := coalesce(p_status, 'active');
+  v_losing_admin boolean;
+  v_other_active_admins int;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定帳號' using errcode = '42501';
+  end if;
+  if p_role not in ('admin', 'patrol', 'owner') then
+    raise exception '角色不正確';
+  end if;
+  if v_status not in ('active', 'disabled') then
+    raise exception '帳號狀態不正確';
+  end if;
+
+  select * into v_row from profiles where id = p_user_id;
+  if not found then
+    raise exception '找不到這個帳號';
+  end if;
+
+  -- 不能把最後一個可用的管理員降級或停用，否則沒人進得了系統管理頁。
+  v_losing_admin := (v_row.role = 'admin') and (p_role <> 'admin' or v_status <> 'active');
+  if v_losing_admin then
+    select count(*) into v_other_active_admins from profiles
+    where role = 'admin' and status = 'active' and id <> p_user_id;
+    if v_other_active_admins = 0 then
+      raise exception '至少要保留一個啟用中的管理員帳號';
+    end if;
+  end if;
+
+  update profiles
+  set display_name = left(coalesce(nullif(trim(both from coalesce(p_display_name, '')), ''), v_row.display_name), 30),
+      role = p_role,
+      status = v_status
+  where id = p_user_id;
+
+  return jsonb_build_object('userId', p_user_id);
 end;
 $$;

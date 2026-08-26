@@ -23,6 +23,12 @@
 -- itself has RLS enabled) without recursing into the RLS check they exist
 -- to serve, and without being hijackable by a caller-controlled search_path.
 
+-- 對照 GAS 的 validateSession()：帳號被停用之後，這個 session 剩下的
+-- 有效期內也不該還能做任何事——GAS 版本每次 validateSession() 都會
+-- 明確檢查 status，這裡對照的做法是讓 status 不是 active 時直接查不到
+-- 任何 role（回傳 null），is_admin()/can_record()/can_see_machine()
+-- 這些全部靠 current_role_name() 判斷的檢查就會自動全部擋下來，
+-- 不用每個地方各自重複檢查一次 status。
 create or replace function current_role_name()
 returns text
 language sql
@@ -30,9 +36,18 @@ stable
 security definer
 set search_path = public
 as $$
-  select role from profiles where id = auth.uid();
+  select role from profiles where id = auth.uid() and status = 'active';
 $$;
 
+-- coalesce(..., false) 是必要的，不是保險而已：帳號被停用時
+-- current_role_name() 回傳 null，而 SQL 的 `null = 'admin'`／
+-- `null in (...)` 算出來也是 null，不是 false。這些 helper function
+-- 幾乎全部被拿去寫成 `if not is_admin() then raise ...` 這種 plpgsql
+-- 判斷式，`if not null` 在 plpgsql 裡是 null、當成不成立處理，等於
+-- 直接跳過那個檢查，沒有真的擋下來（RLS 本身用 `using (...)` 的
+-- null 語意沒有這個問題，null 一樣不算通過，但這些 function 不是只
+-- 用在 RLS policy，還被明確拿來當 plpgsql 的守門判斷用，兩邊語意
+-- 不一樣，要用 coalesce 統一成真正的 boolean）。
 create or replace function is_admin()
 returns boolean
 language sql
@@ -40,7 +55,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select current_role_name() = 'admin';
+  select coalesce(current_role_name() = 'admin', false);
 $$;
 
 create or replace function can_record()
@@ -50,7 +65,7 @@ stable
 security definer
 set search_path = public
 as $$
-  select current_role_name() in ('admin', 'patrol');
+  select coalesce(current_role_name() in ('admin', 'patrol'), false);
 $$;
 
 -- 「看得到某台機台」＝管理員／巡邏人員一律看得到；台主要 permissions
@@ -63,13 +78,15 @@ stable
 security definer
 set search_path = public
 as $$
-  select
+  select coalesce(
     current_role_name() in ('admin', 'patrol')
     or exists (
       select 1 from permissions
       where permissions.machine_id = p_machine_id
         and permissions.user_id = auth.uid()
-    );
+    ),
+    false
+  );
 $$;
 
 -- ── profiles ────────────────────────────────────────────
