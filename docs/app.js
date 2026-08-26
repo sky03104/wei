@@ -713,11 +713,15 @@ function homeTabBar() {
  * 台主給／台主領可能不只一筆（不只一位台主），各自可以命名，這裡逐筆列出
  * 用各自的名字當標籤，不是只顯示一個「台主給」的總和——沒有任何一筆時
  * 退回顯示「台主給／台主領 $0」這一行占位，維持跟其他固定項目一樣的排版。
- * 「運拿」已經用不到了，不列在這裡，總結餘也不會扣（DailyLedger 分頁
- * 還留著這一欄只是為了讀舊資料，新存的值不影響這裡）。
+ * 「運拿」「還內場」都已經用不到了，不列在這裡，總結餘也不會扣（DailyLedger
+ * 分頁還留著這兩欄只是為了讀舊資料，新存的值不影響這裡）。
+ * 週轉金／入幣／出幣是每天一定會有、獨立列出的項目；其餘會加回或扣掉
+ * 總結餘的項目再拆成「收入（+）」「支出（-）」兩個小分類，方便現場核對
+ * 明細時知道哪些是加、哪些是扣。
  *
  * 這份資料跟卡片畫面（DOM）跟匯出截圖（canvas）共用同一份，避免兩邊
- * 各寫一次、改一邊忘了改另一邊。
+ * 各寫一次、改一邊忘了改另一邊。每一行是 [標籤, 金額]，分類標題則是
+ * { section: 標題文字 }。
  */
 function ledgerRows(data) {
   const l = data.ledger;
@@ -726,16 +730,17 @@ function ledgerRows(data) {
   const takenRows = (l.takenByOwnerItems.length ? l.takenByOwnerItems : [{ name: '台主領', amount: 0 }])
     .map((it) => [it.name, -it.amount]);
   return [
-    ['432活動出獎', -l.manual432],
-    ['441活動出獎', -l.manual441],
+    ['週轉金', l.turnover],
     ['入幣', data.diceTotal.in],
     ['出幣', -data.diceTotal.out],
-    ['開銷', -l.manualExpense],
-    ['週轉金', l.turnover],
+    { section: '收入（+）' },
     ...givenRows,
-    ['電子贏', data.electronicTotal.chipNet],
-    ...takenRows,
-    ['還內場', l.returnedToHouse]
+    ['電子總結', data.electronicTotal.chipNet],
+    { section: '支出（-）' },
+    ['432活動出獎', -l.manual432],
+    ['441活動出獎', -l.manual441],
+    ['開銷', -l.manualExpense],
+    ...takenRows
   ];
 }
 
@@ -759,10 +764,12 @@ function ledgerCard(data) {
     h('div', { class: 'panel-head' }, [
       h('h3', { text: dayKeyToLabel(data.today) + ' 今日現金結餘明細' })
     ]),
-    h('div', {}, rows.map(([label, value]) => h('div', { class: 'ledger-row' }, [
-      h('span', { class: 'ledger-label', text: label }),
-      h('span', { class: 'ledger-value num ' + netClass(value), text: money(value) })
-    ]))),
+    h('div', {}, rows.map((row) => row.section
+      ? h('div', { class: 'ledger-section-title', text: row.section })
+      : h('div', { class: 'ledger-row' }, [
+        h('span', { class: 'ledger-label', text: row[0] }),
+        h('span', { class: 'ledger-value num ' + netClass(row[1]), text: money(row[1]) })
+      ]))),
     h('div', { class: 'ledger-row ledger-total' }, [
       h('span', { class: 'ledger-label', text: '總結餘' }),
       h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
@@ -775,10 +782,10 @@ function ledgerCard(data) {
       onclick: () => exportLedgerImage(data)
     }, '📷 匯出明細截圖'),
     l.updatedAt
-      ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／台主給／台主領／還內場／開銷／432／441 最後更新：' + formatTime(l.updatedAt) })
+      ? h('p', { class: 'small muted', style: 'margin-top:10px', text: '週轉金／台主給／台主領／開銷／432／441 最後更新：' + formatTime(l.updatedAt) })
       : h('p', { class: 'small muted', style: 'margin-top:10px' }, isAdmin() || canRecord()
-        ? '週轉金／台主給／台主領／還內場／開銷／432／441 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
-        : '週轉金／台主給／台主領／還內場／開銷／432／441 今天還沒設定。')
+        ? '週轉金／台主給／台主領／開銷／432／441 今天還沒設定，點上面「✎ 設定今日數字」輸入。'
+        : '週轉金／台主給／台主領／開銷／432／441 今天還沒設定。')
   ]);
 }
 
@@ -824,7 +831,17 @@ function exportLedgerImage(data) {
   ctx.fillText(dayKeyToLabel(data.today) + ' 今日現金結餘明細', padX, headerH / 2 + 4);
 
   let y = headerH;
-  rows.forEach(([label, value]) => {
+  rows.forEach((row) => {
+    if (row.section) {
+      ctx.font = 'bold 13px ' + font;
+      ctx.fillStyle = colorMuted;
+      ctx.textAlign = 'left';
+      ctx.fillText(row.section, padX, y + rowH / 2);
+      y += rowH;
+      return;
+    }
+    const [label, value] = row;
+
     ctx.strokeStyle = colorBorder;
     ctx.beginPath();
     ctx.moveTo(padX, y + rowH - 0.5);
@@ -906,7 +923,7 @@ function _dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-/** 設定今天（進行中營業日）的週轉金／運拿／台主給／台主領／還內場／開銷／432／441，每天只存一組，重新儲存會覆蓋。 */
+/** 設定今天（進行中營業日）的週轉金／台主給／台主領／開銷／432／441，每天只存一組，重新儲存會覆蓋。 */
 /**
  * 週轉金幾乎每天都是同一筆固定的浮動金額，今天還沒設定過的話直接帶入這個
  * 預設值，不用每次都手動刪掉「0」再重打一次；其他項目每天金額都不一樣，
@@ -963,18 +980,16 @@ function editDailyLedger(data) {
   const manual441 = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manual441 || '') : '' });
   const givenEditor = ledgerItemsEditor(setToday ? l.givenToOwnerItems : [], '台主給');
   const takenEditor = ledgerItemsEditor(setToday ? l.takenByOwnerItems : [], '台主領');
-  const returnedToHouse = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.returnedToHouse : '' });
 
   openDialog('設定今日數字', [
     h('p', { class: 'small muted', style: 'margin-bottom:12px' },
-      '這些是整間店當天的現金調度，跟哪一台機台無關。台主領、開銷、432/441 請直接輸入正數金額，系統會自動從總結餘扣除；週轉金、台主給、還內場則是加回總結餘。432/441 是自動算出來的活動金額之外，另外辦活動時的手動支出；開銷是每天一般的手動現金支出。台主給／台主領可以按「+ 新增一筆」記好幾位台主，名字可以自己改。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
+      '這些是整間店當天的現金調度，跟哪一台機台無關。台主領、開銷、432/441 請直接輸入正數金額，系統會自動從總結餘扣除；週轉金、台主給則是加回總結餘。432/441 是自動算出來的活動金額之外，另外辦活動時的手動支出；開銷是每天一般的手動現金支出。台主給／台主領可以按「+ 新增一筆」記好幾位台主，名字可以自己改。每天只會存一組數字，重新儲存會覆蓋掉今天原本的值。'),
     dialogField('開銷（會自動扣除）', manualExpense),
     dialogField('週轉金', turnover),
     dialogField('432活動出獎（會自動扣除）', manual432),
     dialogField('441活動出獎（會自動扣除）', manual441),
     dialogField('台主給', givenEditor.node),
-    dialogField('台主領（會自動扣除）', takenEditor.node),
-    dialogField('還內場', returnedToHouse)
+    dialogField('台主領（會自動扣除）', takenEditor.node)
   ], [
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
@@ -986,8 +1001,7 @@ function editDailyLedger(data) {
           manual432: Number(manual432.value) || 0,
           manual441: Number(manual441.value) || 0,
           givenToOwnerItems: givenEditor.getItems(),
-          takenByOwnerItems: takenEditor.getItems(),
-          returnedToHouse: Number(returnedToHouse.value) || 0
+          takenByOwnerItems: takenEditor.getItems()
         });
         closeDialog();
         await loadHome();
