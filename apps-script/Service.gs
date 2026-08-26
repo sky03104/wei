@@ -332,9 +332,13 @@ function _publicDailyLedger(row) {
   };
 }
 
-/** 跟 _validAmount 不同：允許輸入負數（用於偶爾需要沖正的修正），只限制數字的大小。 */
+/**
+ * 跟 _validAmount 不同：允許輸入負數（用於偶爾需要沖正的修正），只限制數字的大小。
+ * raw 沒帶（undefined/null/''）當 0 處理，不當成非法輸入——運拿／還內場
+ * 這兩個舊欄位前端已經不再收集、不會送這個 key，不能因為缺席就整個請求失敗。
+ */
 function _validSignedAmount(raw) {
-  const n = Number(raw);
+  const n = Number(raw || 0);
   if (!isFinite(n)) throw new Error('金額必須是數字');
   if (Math.abs(n) > MAX_AMOUNT) throw new Error('金額超出上限');
   return Math.round(n * 100) / 100;
