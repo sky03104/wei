@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v47';
+const APP_VERSION = 'v48';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -592,6 +592,15 @@ async function supabaseApi(action, payload) {
     return {};
   }
 
+  // 自己改密碼——GAS 後端沒有這個動作（那邊密碼重設一直是管理員專屬），
+  // 只有 Supabase 後端有，讓遷移後拿到臨時密碼的帳號能自己換成新密碼。
+  // Supabase Auth 內建 updateUser() 就能做，不需要另外寫 Postgres function。
+  if (action === 'changePassword') {
+    const { error } = await sb.auth.updateUser({ password: p.newPassword });
+    if (error) throw _pgError(error);
+    return { ok: true };
+  }
+
   if (action === 'homeBootstrap') {
     const user = await _currentProfile(sb);
     const { count, error: cErr } = await sb.from('machines').select('*', { count: 'exact', head: true });
@@ -881,6 +890,7 @@ function viewHome() {
     ]),
     h('div', { class: 'row' }, [
       isAdmin() ? h('button', { class: 'btn btn-sm', onclick: goAdmin }, '⚙ 系統管理') : null,
+      BACKEND === 'supabase' ? h('button', { class: 'btn btn-sm btn-ghost', onclick: openChangePasswordDialog }, '🔑 改密碼') : null,
       h('button', { class: 'btn btn-sm btn-ghost', onclick: doLogout }, '登出')
     ])
   ]);
@@ -2981,6 +2991,35 @@ function doLogout() {
   state.view = 'login';
   render();
   api('logout', { token: token }).catch(() => { /* 本機已登出就好 */ });
+}
+
+/**
+ * 改密碼（只有 Supabase 後端有，見 api() 附近 supabaseApi() 的說明）。
+ * 遷移過來的帳號一開始都是遷移腳本產生的隨機臨時密碼，這是讓每個人
+ * 自己換成好記密碼的地方——不用問「目前密碼」，Supabase Auth 認的是
+ * 「已經登入、session 有效」這件事本身，不是重新驗證一次舊密碼。
+ */
+function openChangePasswordDialog() {
+  const newPw = h('input', { type: 'password', autocomplete: 'new-password' });
+  const confirmPw = h('input', { type: 'password', autocomplete: 'new-password' });
+
+  openDialog('改密碼', [
+    dialogField('新密碼（至少 6 個字）', newPw),
+    dialogField('再輸入一次', confirmPw)
+  ], [
+    h('button', { class: 'btn', onclick: closeDialog }, '取消'),
+    h('button', {
+      class: 'btn btn-primary',
+      onclick: () => {
+        if (newPw.value.length < 6) { toast('密碼至少要 6 個字', 'error'); return; }
+        if (newPw.value !== confirmPw.value) { toast('兩次輸入的密碼不一樣', 'error'); return; }
+        run(async () => {
+          await api('changePassword', { newPassword: newPw.value });
+          closeDialog();
+        }, { success: '密碼改好了，下次登入請用新密碼' });
+      }
+    }, '確定')
+  ]);
 }
 
 // ── 繪製 ────────────────────────────────────────────────
