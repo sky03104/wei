@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v45';
+const APP_VERSION = 'v46';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1151,22 +1151,28 @@ function exportLedgerImage(data) {
   // 圖片」），share() 一定要在點擊當下同步呼叫，不能等 toDataURL 之後的
   // 非同步流程，不然手機會判定不是使用者主動觸發而擋下來——所以上面轉
   // Blob 用同步的 _dataUrlToBlob，不是用非同步的 canvas.toBlob。
+  // 桌機／不支援分享面板的瀏覽器：走原本的下載連結，但一定要先把 <a>
+  // 掛進畫面再點擊——沒掛進畫面點擊在部分瀏覽器一樣會被吃掉沒反應。
+  // canShare() 過了不保證 share() 真的會成功（例如檔案太大被系統分享
+  // 面板拒絕），share() 失敗時退回這條路，不要整個吞掉沒反應。
+  function downloadFallback() {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
   const file = (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : null;
   if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-    navigator.share({ files: [file] }).catch(function () {});
+    navigator.share({ files: [file] }).catch(downloadFallback);
     return;
   }
 
-  // 桌機／不支援分享面板的瀏覽器：走原本的下載連結，但一定要先把 <a>
-  // 掛進畫面再點擊——沒掛進畫面點擊在部分瀏覽器一樣會被吃掉沒反應。
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  downloadFallback();
 }
 
 /** 同步把 data: URL 轉成 Blob——刻意不用非同步的 canvas.toBlob()，見上面呼叫端註解。 */
@@ -2425,9 +2431,23 @@ function exportLedgerScreenshots() {
     // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
     // 一次可能有好幾個檔案，先試分享面板一次全部帶走，不支援的裝置
     // 才退回一張一張各自觸發下載。
+    //
+    // canShare({files}) 過了不代表 share() 一定會成功——瀏覽器對「這批
+    // 檔案能不能分享」跟「系統分享面板實際能不能處理這個總大小」是
+    // 兩層不同的檢查，機台一多、圖檔總大小超過系統分享面板上限時，
+    // canShare() 仍然回 true，但 share() 會直接被系統拒絕（Chrome
+    // DevTools 主控台看到的「Share too large」就是這個）。原本這裡把
+    // share() 失敗整個吞掉、直接 return，使用者會看到「按了沒反應」；
+    // 改成失敗就繼續往下走，退回一張一張各自觸發下載，不會真的沒反應。
     if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
-      navigator.share({ files }).catch(function () {});
-      return;
+      try {
+        await navigator.share({ files });
+        return;
+      } catch (err) {
+        // 使用者自己按取消分享也會走到這裡，同樣退回下載——不完美，
+        // 但比「按了完全沒反應」好，且取消分享的人通常也不介意多跳出
+        // 幾個下載提示。
+      }
     }
 
     files.forEach((file) => {
