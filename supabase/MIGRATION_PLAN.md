@@ -352,6 +352,45 @@
       `docs/app.js` 裡，切 `BACKEND` 這個開關就能切換，兩邊都實測
       跑得動。
 
+## 追趕 main 分支的進度
+
+這個分支是從 `main` 某個時間點切出來的，`main` 上正式系統會持續有新的
+修 bug、新功能——**這個分支不會自動跟著更新**，要定期手動把 `main`
+合併進來，確認 `main` 上任何動到業務邏輯的改動也同步搬進對應的
+Postgres function，不然這個分支的 Supabase 版本會漸漸跟正式系統的
+行為兜不起來。
+
+第一次追趕（合併 `main` 到這個分支，涵蓋 5 個 commit）：
+- 兩個純 GAS/前端的改動不需要搬：跨執行快取排除 `Records` 表（純
+  Sheets 效能優化，Postgres 版本本來就不需要這種快取）；`saveDailyLedger`
+  的版號規則變動說明。
+- 一個業務邏輯修正**不需要額外動作，因為早就對齊了**：GAS 修正
+  `_validSignedAmount()` 對缺席欄位（`transport`／`returnedToHouse`
+  這兩個已棄用欄位）從「當非法輸入丟錯」改成「當 0」——這支對應的
+  Postgres `valid_signed_amount()` 從 Phase 3 寫的時候就已經是「缺值當
+  0」（見該 function 上面的註解，寫的時候就注意到 GAS 原本這個行為
+  可能是沒設計過的副作用，一開始就直接寫成比較合理的版本），這次
+  GAS 修的正好補齊了跟 Postgres 版本的行為差異，不用再改 Postgres
+  那邊。
+- 一個真的要搬的欄位：`getDashboard()` 新增 `todayOpenedByName`（加總
+  分頁日期前面顯示「今日開始營業的人」暱稱），`dashboard()` 這支
+  Postgres function 補上對應的 `today_opener` CTE，查法跟
+  `public_biz_day()` 的 `openedByName` 一致（優先顯示 `display_name`，
+  沒填用 `username`）。已用本機 Postgres 測過：還沒開始營業日時是
+  空字串，`start_business_day()` 之後正確顯示開帳的人。
+- `docs/app.js`／`docs/sw.js` 合併時只有版本號那一行衝突（`ledgerRows`／
+  `exportLedgerImage` 那幾處改動跟這個分支自己在 Phase 5 加的
+  `supabaseApi()` 段落完全不重疊，自動合併成功），版本號手動接續成
+  `v47`（這個分支自己也有前端改動，不是單純接 `main` 的 `v46.1`）。
+
+**以後每次要追趕 main 時的流程**：`git fetch origin main`、看
+`git log feature/supabase-migration..origin/main` 有哪些新 commit、
+逐一看有沒有動到 `apps-script/Service.gs`／`Reports.gs`／`Auth.gs`
+這些業務邏輯檔案（動到才需要比對搬進 Postgres function），`git merge
+origin/main`，衝突通常只會在版本號那幾行（兩個分支各自都有前端改動時），
+合併完重新 `npm run bundle`、`npm test`，Postgres 那邊有對應變動的話
+在本機 Postgres 測過再 push。
+
 ## Auth & RLS——已拍板：前端直連 + RLS
 
 現有系統是**自製**帳密登入＋session token（`apps-script/Auth.gs`），

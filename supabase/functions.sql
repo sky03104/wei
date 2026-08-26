@@ -473,6 +473,14 @@ as $$
   ),
   ledger_json as (
     select public_daily_ledger((select l from daily_ledger_row_for_today() l limit 1)) as val
+  ),
+  -- 對照 getDashboard() 的 todayOpenedByName：加總分頁日期前面顯示的
+  -- 「今日開始營業的人」暱稱，跟 public_biz_day() 的 openedByName 同一套
+  -- 查法（優先顯示 display_name，沒填就用 username）。
+  today_opener as (
+    select coalesce(nullif(p.display_name, ''), p.username) as name
+    from relevant_biz_day_for_today() b
+    join profiles p on p.id = b.opened_by
   )
   select jsonb_build_object(
     'machines', (select val from machines_json),
@@ -513,6 +521,7 @@ as $$
       + coalesce(((select val from ledger_json) ->> 'returnedToHouse')::numeric, 0)
     )::numeric, 2),
     'today', (select today_ref from ctx)::text,
+    'todayOpenedByName', coalesce((select name from today_opener), ''),
     'businessDay', business_day_status()
   );
 $$;
