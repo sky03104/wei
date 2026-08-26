@@ -246,21 +246,25 @@ create policy config_admin_only on config
 -- 查表，只能靠這支函式繞過去，但只回傳 email 這一個欄位，不會洩漏
 -- 其他使用者資料。
 --
--- create or replace function resolve_username_email(p_username text)
--- returns text
--- language sql
--- security definer
--- set search_path = public, auth
--- as $$
---   select au.email
---   from profiles p
---   join auth.users au on au.id = p.id
---   where p.username = p_username
---     and p.status = 'active';
--- $$;
---
--- grant execute on function resolve_username_email(text) to anon, authenticated;
---
+-- Phase 5（docs/app.js 改接）已經要用到「打帳號登入」了，所以這支從
+-- 草稿轉正、實際啟用（下面幾行不再是註解）。帳號不存在或帳號被停用都
+-- 回傳 null（跟查得到但密碼打錯，前端看到的錯誤訊息要一樣，不能讓人
+-- 從錯誤訊息猜出「這個帳號存不存在」）。
+create or replace function resolve_username_email(p_username text)
+returns text
+language sql
+security definer
+set search_path = public, auth
+as $$
+  select au.email
+  from profiles p
+  join auth.users au on au.id = p.id
+  where p.username = p_username
+    and p.status = 'active';
+$$;
+
+grant execute on function resolve_username_email(text) to anon, authenticated;
+
 -- 這支函式讀得到 auth.users，代表建立它的角色要有這個 schema 的存取
 -- 權限——在 Supabase SQL editor 用專案自己的管理連線跑就沒問題，用一般
 -- migration CLI 跑之前先確認權限，這塊在不同 Supabase 專案設定下偶爾

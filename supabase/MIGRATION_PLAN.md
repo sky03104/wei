@@ -232,9 +232,67 @@
       讀 Sheets 原始儲存格。
       **還沒做的**：拿正式資料實跑一次（需要使用者的 GAS 部署、
       Supabase 專案），跑完用 `verify-migration.sql` 核對。
-- [ ] **Phase 5：雙軌驗證＋切換**——新舊系統並行一段時間（兩邊都寫入，
-      只從舊系統讀，比對兩邊算出來的數字），確認一致才正式切過去；
-      切換之後 Sheets 資料保留一段時間當備份，不要立刻刪。
+- [~] **Phase 5：雙軌驗證＋切換**——前端改接的部分寫好了，還沒拿真的
+      Supabase 專案在瀏覽器裡跑過一次。
+      **架構決定：加一支後端開關，不是直接砍掉 GAS 路徑**——
+      `docs/config.js` 新增 `BACKEND`（預設 `'gas'`，行為跟現在完全
+      一樣）跟 `SUPABASE_URL`／`SUPABASE_ANON_KEY`；`docs/app.js` 原本
+      的 `api(action, payload)` 改成薄薄一層分派：`BACKEND==='gas'`
+      走原本的實作（改名 `apiGas()`，程式碼一行都沒變），
+      `BACKEND==='supabase'` 走新的 `supabaseApi()`。這正是這一節
+      標題「雙軌驗證」原本設想的做法——两條路徑可以同時存在同一份
+      程式碼裡，之後真的要驗證兩邊算出來的數字一不一致時，直接切
+      這個開關重新整理就能切換，不用維護兩個分支。
+      **`supabaseApi()` 做的事**：28 個 `api()` action 裡，好幾個是
+      單純的「一個 action 對一支 Postgres function」（用一份
+      `RPC_MAP` 對照表做參數改名，例如 `machineId`→`p_machine_id`），
+      其餘幾個是 GAS 版本本來就會組合好幾支邏輯回傳一份資料的，前端
+      改成組合好幾次 Supabase 呼叫達到同樣效果：
+      - `login`：`resolve_username_email()` 換出合成 email → 
+        `signInWithPassword()` → 查 `profiles` → 呼叫 `dashboard()`，
+        組成跟 GAS `login()` 一樣的 `{token, remember, user, dashboard}`。
+      - `logout`：`sb.auth.signOut()`。
+      - `homeBootstrap`：查目前使用者的 `profiles` ＋數看得到幾台
+        機台（`machines` 本身已經被 RLS 篩過，直接 count）＋
+        `dashboard()`。
+      - `exportLedgerGrids`：查該分類看得到的機台清單，一台一台各自
+        呼叫 `ledger_grid()`，組成跟 GAS 版本一樣的 `{range, machines[]}`。
+      - `exportLedgerXlsx`：刻意沒接，丟出明確的「這個後端還沒支援」
+        錯誤——真的產生 .xlsx 檔案這件事還沒決定要不要做、什麼時候做
+        （見 Phase 3 那節的決定：前端用瀏覽器端套件現場組出檔案）。
+      - `adminSaveUser`／`adminResetPassword`：刻意沒接，丟出明確的
+        「需要 Edge Function」錯誤（見下面 Auth & RLS 那節）。
+      **同時啟用了 `resolve_username_email()`**（`supabase/policies.sql`
+      原本是註解掉的設計草稿，現在轉正）：帳號不存在或被停用都回傳
+      null，錯誤訊息前端統一顯示成「帳號或密碼錯誤」，不會讓人從
+      回應內容猜出帳號存不存在。已用本機 Postgres＋`anon` 角色測過：
+      查得到 active 帳號的 email、查不到／帳號被停用都回傳 null。
+      **Session／「記住我」**：Supabase Auth 自己管 session（JWT +
+      refresh token），不是原本 GAS 版本手刻的 token／Sessions 表，所以
+      沒辦法直接沿用 `saveSession()`/`loadSession()`。改用一個自訂
+      `storage` adapter 接給 supabase-js（`_sbStorageAdapter`），依
+      `state.remember` 決定寫 localStorage（跨關閉瀏覽器仍有效）還是
+      sessionStorage（分頁關閉即失效）——效果跟原本規則一致，只是
+      換一套機制達成。Token 過期或被撤銷會讓 SDK 觸發 `SIGNED_OUT`，
+      監聽這個事件、比照 GAS 版本 `AUTH` 錯誤碼的效果，靜靜清掉狀態
+      退回登入頁。
+      **測試方式**：因為要有真的 Supabase 專案（或至少一個能跑
+      PostgREST 的環境）才能整合測試，這個 sandbox 環境做不到——改用
+      `vm` 模組把 `docs/app.js` 整份載進一個模擬瀏覽器環境（假的
+      `window`/`document`/`localStorage`），再用一個記錄呼叫內容、
+      回傳固定值的假 `supabaseClient()` 取代真正的實作，驗證了：
+      全部 28 個 action 各自對到正確的 RPC 名稱與參數改名、`login`／
+      `homeBootstrap`／`exportLedgerGrids` 這幾個組合流程回傳的形狀
+      正確、`exportLedgerXlsx`／`adminSaveUser` 正確丟出「還沒支援」
+      而不是靜默失敗、`api()` 本身依 `BACKEND` 正確分派。`npm test`
+      （GAS 那邊的自我測試）全部通過，確認 `BACKEND` 預設 `'gas'` 時
+      GAS 路徑一行邏輯都沒被動到。
+      **還沒做、沒辦法在這裡做的**：實際在瀏覽器裡對著真的 Supabase
+      專案跑一輪（登入、記帳、報表、系統管理全部點過一次），確認
+      `RPC_MAP` 裡每一組參數改名跟 Postgres function 的實際簽章都對得
+      起來——本機測試驗證的是「呼叫的參數形狀符合我寫的預期」，不是
+      「Postgres 那邊真的接受這組參數」，這兩件事只有接上真專案才能
+      完整驗證到。
 
 ## Auth & RLS——已拍板：前端直連 + RLS
 
@@ -258,9 +316,12 @@ key 呼叫，這把 key 絕對不能出現在前端——所以「管理員新�
 整套後端）。除此之外（機台、紀錄、獎型、報表這些）都可以是純前端＋
 RLS，不需要後端轉發。
 
-`policies.sql` 檔案最後兩節（新使用者怎麼進系統／username 怎麼換成
-email 登入）先寫成註解掉的 SQL 草稿，設計想法都寫在註解裡，等真的接上
-一個 Supabase 專案時要拉出來實測——這兩塊碰到 `auth.users`／service
+`policies.sql` 檔案最後一節「username 怎麼換成 email 登入」
+（`resolve_username_email()`）已經在 Phase 5 轉正、實際啟用了——
+`docs/app.js` 的登入流程用得到，已用本機 Postgres＋`anon` 角色測過。
+「新使用者怎麼進系統」（`handle_new_user()` trigger）還是註解掉的
+草稿，設計想法寫在註解裡，等真的要做 Phase 3 提到的那支 Edge Function
+（`adminSaveUser`）時再拉出來套用——這塊碰到 `auth.users`／service
 role，沒有真的專案沒辦法完整驗證。
 
 ## 目前風險與待決定事項

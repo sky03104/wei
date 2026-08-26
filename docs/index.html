@@ -45,6 +45,10 @@
   <span>處理中…</span>
 </div>
 
+<!-- Phase 5 雙軌驗證用：BACKEND 預設 'gas' 時完全用不到這個 SDK，
+     留著載入也不影響原本的 GAS 路徑，只有 config.js 把 BACKEND 改成
+     'supabase' 才會實際初始化 client（見 app.js 的 supabaseClient()）。 -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>

@@ -183,9 +183,13 @@ const STORAGE_TOKEN = 'claw_token';
 const STORAGE_REMEMBER = 'claw_remember';
 const POLL_MS = 300000;
 
+/** Phase 5 雙軌驗證用（supabase/MIGRATION_PLAN.md）：'gas'（預設，跟現在
+ *  完全一樣）或 'supabase'（改走 supabaseApi()，見 api() 附近的說明）。 */
+const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
+
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v44';
+const APP_VERSION = 'v45';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -386,13 +390,27 @@ function ApiError(message, code) {
 }
 
 /**
+ * 統一的 API 入口，兩條後端路徑的唯一分岔點。
+ *
+ * BACKEND 預設 'gas'（config.js），走原本打 GAS 的路徑，行為完全不變。
+ * 改成 'supabase' 才會走 supabaseApi()（見下面「Supabase 後端」那段）。
+ * 兩條路徑對外是同一份合約：成功回傳 data；失敗丟
+ * ApiError(message, code)，code==='AUTH' 的處理方式（強制退回登入頁）
+ * 對兩條路徑一致，呼叫端（畫面邏輯）完全不用知道現在是哪條後端。
+ */
+async function api(action, payload) {
+  if (BACKEND === 'supabase') return supabaseApi(action, payload);
+  return apiGas(action, payload);
+}
+
+/**
  * 打去 GAS。
  *
  * 用 form-urlencoded POST 是刻意的：這屬於 CORS simple request，
  * 瀏覽器不會先發 preflight，而 GAS 沒辦法回應 preflight。
  * 換成 application/json 會直接壞掉。
  */
-async function api(action, payload) {
+async function apiGas(action, payload) {
   const url = (window.APP_CONFIG && window.APP_CONFIG.GAS_API_URL) || '';
   if (!url) throw ApiError('尚未設定後端網址', 'NO_CONFIG');
 
@@ -427,6 +445,221 @@ async function api(action, payload) {
     throw ApiError(json.error || '操作失敗', json.code);
   }
   return json.data;
+}
+
+// ── Supabase 後端（Phase 5 雙軌驗證，supabase/MIGRATION_PLAN.md）──
+//
+// 只有 config.js 的 BACKEND 設成 'supabase' 才會用到這一段。
+// 設計原則：api(action, payload) 的合約不變（成功回傳 data，失敗丟
+// ApiError），這裡只是把同一份合約換一種方式兌現——一部分 action 對
+// 一支 Postgres function 的 rpc()，少數幾個（login／logout／
+// homeBootstrap／exportLedgerGrids）在 GAS 版本本來就是「後端組合好幾
+// 支邏輯回傳一份」，這裡改成前端組合好幾次 Supabase 呼叫，效果一樣。
+
+const SB_SESSION_KEY = 'claw-sb-session';
+let _sb = null;
+
+/**
+ * 讓 Supabase session 存 localStorage 還是 sessionStorage 跟著
+ * state.remember 走，跟現有 GAS 版本 saveSession() 的「記住我」規則
+ * 一致（勾了留到關瀏覽器也還在，沒勾分頁關掉就失效）。
+ */
+const _sbStorageAdapter = {
+  getItem(key) {
+    try { return localStorage.getItem(key) || sessionStorage.getItem(key); } catch (e) { return null; }
+  },
+  setItem(key, value) {
+    try {
+      if (state.remember) { localStorage.setItem(key, value); sessionStorage.removeItem(key); }
+      else { sessionStorage.setItem(key, value); localStorage.removeItem(key); }
+    } catch (e) { /* 無痕模式寫不進去，這次啟動仍可正常使用 */ }
+  },
+  removeItem(key) {
+    try { localStorage.removeItem(key); sessionStorage.removeItem(key); } catch (e) { /* 忽略 */ }
+  }
+};
+
+function supabaseClient() {
+  if (_sb) return _sb;
+  const cfg = window.APP_CONFIG || {};
+  if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY) throw ApiError('尚未設定 Supabase 網址／金鑰', 'NO_CONFIG');
+  _sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true, storageKey: SB_SESSION_KEY, storage: _sbStorageAdapter }
+  });
+  // Token 更新失敗（例如在別的裝置改了密碼、refresh token 被撤銷）會讓
+  // SDK 自己觸發 SIGNED_OUT——跟 GAS 版本 AUTH 錯誤碼同一個效果：靜靜
+  // 清掉本機狀態、退回登入頁，不用等使用者下一次操作才發現連不上。
+  _sb.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT' && state.token) {
+      clearSession();
+      state.view = 'login';
+      render();
+    }
+  });
+  return _sb;
+}
+
+/**
+ * 把 PostgREST／rpc() 的錯誤轉成 ApiError，code 對照 GAS 版本的語意：
+ * 42501（insufficient_privilege，can_record()/is_admin()/can_see_machine()
+ * 明確擋下的）對應 GAS 的 PermissionError → 'PERMISSION'；JWT 過期或
+ * 被撤銷對應 AuthError → 'AUTH'；其餘一律 'ERROR'（對照一般驗證錯誤
+ * 那種 throw new Error()）。
+ */
+function _pgError(err) {
+  if (!err) return ApiError('操作失敗', 'ERROR');
+  if (err.code === '42501') return ApiError(err.message, 'PERMISSION');
+  if (err.code === 'PGRST301' || err.status === 401) return ApiError('請重新登入', 'AUTH');
+  return ApiError(err.message || '操作失敗', 'ERROR');
+}
+
+async function _rpc(sb, name, params) {
+  const { data, error } = await sb.rpc(name, params);
+  if (error) throw _pgError(error);
+  return data;
+}
+
+const ROLE_LABELS_FE = { admin: '管理員', patrol: '巡邏人員', owner: '台主' };
+
+/** 目前登入者的 profiles 資料，轉成跟 GAS _publicUser() 一致的形狀。 */
+async function _currentProfile(sb) {
+  const { data: authData, error: authErr } = await sb.auth.getUser();
+  if (authErr || !authData.user) throw ApiError('請重新登入', 'AUTH');
+  const { data: p, error: pErr } = await sb.from('profiles').select('*').eq('id', authData.user.id).single();
+  if (pErr || !p) throw ApiError('請重新登入', 'AUTH');
+  return {
+    userId: p.id, username: p.username, displayName: p.display_name || p.username,
+    role: p.role, roleLabel: ROLE_LABELS_FE[p.role] || p.role, status: p.status
+  };
+}
+
+/** forkScope/resetScope 的 sheet 名稱（GAS 分頁名）→ Postgres 資料表名稱。 */
+const SCOPE_SHEET_TO_TABLE = { QuickAmounts: 'quick_amounts', Prizes: 'prizes', MeterRates: 'meter_rates' };
+
+/**
+ * 對照 GAS 的 exportLedgerGrids()：不指定機台、只指定分類，一台一台
+ * 各自呼叫 ledger_grid()，組成跟 GAS 版本一樣的 {range, machines[]} 形狀。
+ * machines 資料表本身已經被 RLS 篩過，這裡查到的就是「看得到的」那些。
+ */
+async function _exportLedgerGridsSupabase(sb, p) {
+  if (p.machineId || !p.category) {
+    throw ApiError('這個功能只支援「全部骰台」／「全部電子機台」這種分類查詢', 'ERROR');
+  }
+  const { data: machines, error: mErr } = await sb.from('machines').select('machine_id, name, sort_order').eq('category', p.category);
+  if (mErr) throw _pgError(mErr);
+  if (!machines || !machines.length) {
+    const label = p.category === 'electronic' ? '電子機台' : '骰台';
+    throw ApiError('目前沒有看得到的' + label + '，無法匯出', 'ERROR');
+  }
+  machines.sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+
+  const rangeRows = await _rpc(sb, 'resolve_range', { p_preset: p.preset || 'day', p_from: p.from || null, p_to: p.to || null });
+  const rangeRow = Array.isArray(rangeRows) ? rangeRows[0] : rangeRows;
+  const range = { from: rangeRow.range_from, to: rangeRow.range_to, preset: rangeRow.preset };
+
+  const grids = [];
+  for (const m of machines) {
+    const grid = await _rpc(sb, 'ledger_grid', {
+      p_machine_id: m.machine_id, p_category: null, p_preset: p.preset || 'day',
+      p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
+    });
+    grids.push({
+      machineId: m.machine_id, machineName: m.name,
+      headerRow: grid.headerRow, outRows: grid.outRows, summaryRows: grid.summaryRows,
+      colCount: grid.colCount, rowCount: grid.rowCount
+    });
+  }
+  return { range: range, machines: grids };
+}
+
+async function supabaseApi(action, payload) {
+  const p = payload || {};
+  const sb = supabaseClient();
+
+  if (action === 'login') {
+    state.remember = !!p.remember; // 要在 signInWithPassword 之前設好，_sbStorageAdapter 才知道存哪個 storage
+    const email = await _rpc(sb, 'resolve_username_email', { p_username: p.username });
+    if (!email) throw ApiError('帳號或密碼錯誤', 'AUTH');
+    const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({ email: email, password: p.password });
+    if (signInErr) throw ApiError('帳號或密碼錯誤', 'AUTH');
+    const user = await _currentProfile(sb);
+    const dashboard = await _rpc(sb, 'dashboard', {});
+    return { token: signInData.session.access_token, remember: state.remember, user: user, dashboard: dashboard };
+  }
+
+  if (action === 'logout') {
+    await sb.auth.signOut();
+    return {};
+  }
+
+  if (action === 'homeBootstrap') {
+    const user = await _currentProfile(sb);
+    const { count, error: cErr } = await sb.from('machines').select('*', { count: 'exact', head: true });
+    if (cErr) throw _pgError(cErr);
+    const dashboard = await _rpc(sb, 'dashboard', {});
+    return { user: user, machineCount: count || 0, dashboard: dashboard };
+  }
+
+  if (action === 'exportLedgerGrids') return _exportLedgerGridsSupabase(sb, p);
+
+  // exportLedgerXlsx 刻意沒接：真的產生 .xlsx 檔案這件事決定留給前端
+  // 用瀏覽器端套件現場組出檔案（見 MIGRATION_PLAN.md Phase 3 那節），
+  // 還沒實作；adminSaveUser／adminResetPassword 需要 Supabase Auth
+  // Admin API 的 service role key，得靠另外部署的 Edge Function，純
+  // 前端＋RLS 做不到（見 MIGRATION_PLAN.md「Auth & RLS」那節）。
+  if (action === 'exportLedgerXlsx') {
+    throw ApiError('這個後端還沒支援匯出 Excel，請改用「📷 匯出截圖」，或切回 GAS 後端', 'ERROR');
+  }
+  if (action === 'adminSaveUser' || action === 'adminResetPassword') {
+    throw ApiError('新增帳號／改密碼需要另外部署的 Edge Function，這個後端還沒接上', 'ERROR');
+  }
+
+  const RPC_MAP = {
+    dashboard: () => ['dashboard', {}],
+    machineDetail: () => ['machine_detail', { p_machine_id: p.machineId, p_record_limit: p.recordLimit || null }],
+    allMachineDetails: () => ['all_machine_details', { p_record_limit: p.recordLimit || null }],
+    report: () => ['report', {
+      p_machine_id: p.machineId || null, p_category: p.category || null, p_preset: p.preset || 'day',
+      p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
+    }],
+    activityQuery: () => ['activity_query', { p_from: p.from, p_to: p.to }],
+    addRecord: () => ['add_record', { p_machine_id: p.machineId, p_type: p.type, p_amount: p.amount, p_note: p.note || null, p_client_token: p.clientToken || '' }],
+    addMeterRecord: () => ['add_meter_record', { p_machine_id: p.machineId, p_meter_start: p.meterStart, p_meter_end: p.meterEnd, p_note: p.note || null, p_client_token: p.clientToken || '' }],
+    addPrizeRecord: () => ['add_prize_record', { p_machine_id: p.machineId, p_items: p.items, p_note: p.note || null, p_client_token: p.clientToken || '' }],
+    startBusinessDay: () => ['start_business_day', {}],
+    endBusinessDay: () => ['end_business_day', {}],
+    saveDailyLedger: () => ['save_daily_ledger', {
+      p_turnover: p.turnover || 0, p_manual_expense: p.manualExpense || 0, p_manual432: p.manual432 || 0,
+      p_manual441: p.manual441 || 0, p_given_to_owner_items: p.givenToOwnerItems || [], p_taken_by_owner_items: p.takenByOwnerItems || [],
+      p_returned_to_house: 0
+    }],
+    voidRecord: () => ['void_record', { p_record_id: p.recordId }],
+    saveQuickAmount: () => ['save_quick_amount', {
+      p_qa_id: p.qaId || null, p_machine_id: p.machineId || '', p_type: p.type, p_amount: p.amount, p_label: p.label || '', p_sort_order: p.sortOrder || 0
+    }],
+    deleteQuickAmount: () => ['delete_quick_amount', { p_qa_id: p.qaId }],
+    savePrize: () => ['save_prize', {
+      p_prize_id: p.prizeId || null, p_machine_id: p.machineId || '', p_name: p.name, p_amount: p.amount,
+      p_sort_order: p.sortOrder || 0, p_active: p.active === undefined ? null : p.active
+    }],
+    deletePrize: () => ['delete_prize', { p_prize_id: p.prizeId }],
+    saveMeterRate: () => ['save_meter_rate', { p_machine_id: p.machineId || '', p_rate: p.rate }],
+    forkScope: () => ['fork_scope_to_machine', { p_table: SCOPE_SHEET_TO_TABLE[p.sheet], p_machine_id: p.machineId }],
+    resetScope: () => ['reset_scope_to_global', { p_table: SCOPE_SHEET_TO_TABLE[p.sheet], p_machine_id: p.machineId }],
+    adminListUsers: () => ['admin_list_users', {}],
+    adminSaveMachine: () => ['admin_save_machine', {
+      p_machine_id: p.machineId || null, p_name: p.name, p_location: p.location || '', p_status: p.status,
+      p_color: p.color, p_sort_order: p.sortOrder || 0, p_note: p.note || '', p_icon: p.icon, p_category: p.category || null
+    }],
+    adminListPermissions: () => ['admin_list_permissions', {}],
+    adminSetPermission: () => ['admin_set_permission', { p_user_id: p.userId, p_machine_id: p.machineId, p_granted: !!p.granted }],
+    adminBootstrap: () => ['admin_bootstrap', {}]
+  };
+
+  const entry = RPC_MAP[action];
+  if (!entry) throw ApiError('不支援的操作：' + action, 'ERROR');
+  const [rpcName, rpcParams] = entry();
+  return _rpc(sb, rpcName, rpcParams);
 }
 
 /**
@@ -492,7 +725,28 @@ function saveSession(token, remember) {
   } catch (err) { /* 無痕模式下寫不進去，這次啟動仍可正常使用 */ }
 }
 
-function loadSession() {
+/**
+ * Supabase 後端的 session 是 supabase-js 自己管的（_sbStorageAdapter），
+ * 不是這裡的 STORAGE_TOKEN——開機時要另外問 SDK「有沒有已經存好的
+ * session」，而且這是非同步的（可能要驗一下 token 有沒有過期），跟 GAS
+ * 版本純讀 localStorage 是同步的不一樣，所以 loadSession() 整支改成
+ * async，boot() 那邊要 await。
+ */
+async function loadSession() {
+  if (BACKEND === 'supabase') {
+    try {
+      const sb = supabaseClient();
+      const { data } = await sb.auth.getSession();
+      if (data && data.session) {
+        state.token = data.session.access_token;
+        // Supabase session 本身不記得當初登入時有沒有勾「記住我」，
+        // 用「localStorage 裡找不找得到」反推：勾了才會寫進 localStorage
+        // （見 _sbStorageAdapter），沒勾只會在 sessionStorage。
+        state.remember = !!(function () { try { return localStorage.getItem(SB_SESSION_KEY); } catch (e) { return null; } })();
+      }
+    } catch (err) { /* 讀不到就當沒登入 */ }
+    return;
+  }
   try {
     const remembered = localStorage.getItem(STORAGE_TOKEN);
     if (remembered) { state.token = remembered; state.remember = true; return; }
@@ -2842,9 +3096,11 @@ async function boot() {
     if (!document.hidden && state.token) refreshCurrent();
   });
 
-  if (!(window.APP_CONFIG && window.APP_CONFIG.GAS_API_URL)) { render(); return; }
+  const cfg = window.APP_CONFIG || {};
+  const configReady = BACKEND === 'supabase' ? !!(cfg.SUPABASE_URL && cfg.SUPABASE_ANON_KEY) : !!cfg.GAS_API_URL;
+  if (!configReady) { render(); return; }
 
-  loadSession();
+  await loadSession();
   if (!state.token) { state.view = 'login'; render(); return; }
 
   try {
