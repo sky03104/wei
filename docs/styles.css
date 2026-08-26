@@ -548,7 +548,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .ledger-row.ledger-total .ledger-label { color: var(--text); font-weight: 700; }
 .ledger-row.ledger-total .ledger-value { font-size: 18px; }
 .ledger-section-title {
-  padding: 10px 0 4px; font-size: 13px; font-weight: 700; color: var(--muted);
+  padding: 10px 0 4px; font-size: 13px; font-weight: 700; color: var(--warn);
 }
 .ledger-section-title:first-child { padding-top: 0; }
 

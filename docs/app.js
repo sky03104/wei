@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v40';
+const APP_VERSION = 'v41';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -809,6 +809,7 @@ function exportLedgerImage(data) {
   const colorBorder = '#263049';
   const colorText = '#E8ECF5';
   const colorMuted = '#8B96AD';
+  const colorSection = '#FBBF24';
   const colorPos = '#4ADE80';
   const colorNeg = '#F87171';
   const valueColor = (v) => (v > 0 ? colorPos : v < 0 ? colorNeg : colorMuted);
@@ -834,7 +835,7 @@ function exportLedgerImage(data) {
   rows.forEach((row) => {
     if (row.section) {
       ctx.font = 'bold 13px ' + font;
-      ctx.fillStyle = colorMuted;
+      ctx.fillStyle = colorSection;
       ctx.textAlign = 'left';
       ctx.fillText(row.section, padX, y + rowH / 2);
       y += rowH;
