@@ -24,10 +24,23 @@ const ANON_KEY = Deno.env.get('SUPABASE_ANON_KEY')!;
 // 折衷做法，域名選什麼不重要，重要的是全站只有一個，不能兩邊各用一個。
 const EMAIL_DOMAIN = 'migrated.local';
 
+// Edge Function 預設不會自動附加 CORS 標頭——前端是瀏覽器直接呼叫
+// （不是伺服器對伺服器），跨網域的 POST + Authorization/apikey 標頭
+// 一定會先觸發瀏覽器的 CORS 預檢（OPTIONS），沒處理的話真正的請求
+// 根本送不出去；就算送出去了，回應沒帶 Access-Control-Allow-Origin
+// 一樣會被瀏覽器擋下來讀不到內容——這時候後端其實已經執行完成
+// （密碼真的改了、帳號真的建了），但前端會看到一個看似失敗的網路
+// 錯誤，變成「畫面顯示失敗，但實際上成功了」這種最容易誤判的狀況。
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, apikey, content-type, x-client-info',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
   });
 }
 
@@ -37,6 +50,7 @@ function assertPasswordStrength(password: string) {
 }
 
 Deno.serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
   // 呼叫者的身分只能信 Authorization header 裡的 JWT，不能信 body
