@@ -148,22 +148,24 @@ function _recordBusinessDate(r) {
   return r.business_date || localDateKey(r.created_at);
 }
 
+/** 依 user_id 查顯示名稱，查不到回傳空字串。 */
+function _userDisplayName(id) {
+  if (!id) return '';
+  const users = dbReadAll('Users');
+  for (let i = 0; i < users.length; i++) {
+    if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
+  }
+  return '';
+}
+
 function _publicBizDay(row) {
   if (!row) return null;
-  const users = dbReadAll('Users');
-  const nameOf = function (id) {
-    if (!id) return '';
-    for (let i = 0; i < users.length; i++) {
-      if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
-    }
-    return '';
-  };
   return {
     businessDate: String(row.business_date),
     openedAt: row.opened_at,
-    openedByName: nameOf(row.opened_by),
+    openedByName: _userDisplayName(row.opened_by),
     closedAt: row.closed_at || null,
-    closedByName: row.closed_by ? nameOf(row.closed_by) : null,
+    closedByName: row.closed_by ? _userDisplayName(row.closed_by) : null,
     autoClosed: toBool(row.auto_closed)
   };
 }
@@ -592,6 +594,7 @@ function getDashboard(user) {
     ledger: ledger,
     ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,
+    todayOpenedByName: openBiz ? _userDisplayName(openBiz.opened_by) : '',
     businessDay: businessDayStatus(user)
   };
 }
