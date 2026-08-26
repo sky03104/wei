@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v52';
+const APP_VERSION = 'v53';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -545,16 +545,17 @@ async function _invokeAdminUsersFn(sb, body) {
 
 const ROLE_LABELS_FE = { admin: '管理員', patrol: '巡邏人員', owner: '台主' };
 
-/** 目前登入者的 profiles 資料，轉成跟 GAS _publicUser() 一致的形狀。 */
-async function _currentProfile(sb) {
-  const { data: authData, error: authErr } = await sb.auth.getUser();
-  if (authErr || !authData.user) throw ApiError('請重新登入', 'AUTH');
-  const { data: p, error: pErr } = await sb.from('profiles').select('*').eq('id', authData.user.id).single();
-  if (pErr || !p) throw ApiError('請重新登入', 'AUTH');
-  return {
-    userId: p.id, username: p.username, displayName: p.display_name || p.username,
-    role: p.role, roleLabel: ROLE_LABELS_FE[p.role] || p.role, status: p.status
-  };
+/**
+ * 登入／開啟 App 共用：一次 RPC 拿回使用者資料＋首頁 dashboard
+ * （對照 supabase/functions.sql 的 me_and_dashboard()）。
+ * 原本這裡分開打「查 profile」＋「算 dashboard」共 3 趟網路來回
+ * （auth.getUser() + profiles 查詢 + dashboard RPC），合成一支
+ * function 後只要 1 趟，登入/開啟 App 明顯變快。
+ */
+async function _meAndDashboard(sb) {
+  const data = await _rpc(sb, 'me_and_dashboard', {});
+  if (!data.user) throw ApiError('請重新登入', 'AUTH');
+  return data;
 }
 
 /** forkScope/resetScope 的 sheet 名稱（GAS 分頁名）→ Postgres 資料表名稱。 */
@@ -733,8 +734,7 @@ async function supabaseApi(action, payload) {
     if (!email) throw ApiError('帳號或密碼錯誤', 'AUTH');
     const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({ email: email, password: p.password });
     if (signInErr) throw ApiError('帳號或密碼錯誤', 'AUTH');
-    const user = await _currentProfile(sb);
-    const dashboard = await _rpc(sb, 'dashboard', {});
+    const { user, dashboard } = await _meAndDashboard(sb);
     return { token: signInData.session.access_token, remember: state.remember, user: user, dashboard: dashboard };
   }
 
@@ -753,11 +753,8 @@ async function supabaseApi(action, payload) {
   }
 
   if (action === 'homeBootstrap') {
-    const user = await _currentProfile(sb);
-    const { count, error: cErr } = await sb.from('machines').select('*', { count: 'exact', head: true });
-    if (cErr) throw _pgError(cErr);
-    const dashboard = await _rpc(sb, 'dashboard', {});
-    return { user: user, machineCount: count || 0, dashboard: dashboard };
+    const { user, dashboard } = await _meAndDashboard(sb);
+    return { user: user, dashboard: dashboard };
   }
 
   if (action === 'exportLedgerGrids') return _exportLedgerGridsSupabase(sb, p);

@@ -526,6 +526,34 @@ as $$
   );
 $$;
 
+-- 登入／開啟 App 時「拿使用者資料」＋「拿首頁資料」揉成一次呼叫。
+-- 對照前端 _currentProfile()＋dashboard() 分兩趟打的舊寫法：Supabase 沒有
+-- 像 GAS /exec 那樣單一進入點自己組合回應，每一趟 RPC／查詢都是獨立一次
+-- 網路來回，登入時分開打會變成「查 email→signIn→查 profile→查
+-- dashboard」四趟序列化的來回，明顯比 GAS 慢。這裡把「查 profile」跟
+-- 「算 dashboard」合成一支 function，登入／開啟 App 就只再需要一趟。
+-- 'user' 是 null 表示 auth.uid() 對應不到啟用中的 profile（例如帳號被
+-- 停用到一半），呼叫端要視同 AUTH 錯誤處理。
+create or replace function me_and_dashboard()
+returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_object(
+    'user', (
+      select jsonb_build_object(
+        'userId', id, 'username', username,
+        'displayName', coalesce(nullif(display_name, ''), username),
+        'role', role,
+        'roleLabel', case role when 'admin' then '管理員' when 'patrol' then '巡邏人員' when 'owner' then '台主' else role end,
+        'status', status
+      )
+      from profiles where id = auth.uid()
+    ),
+    'dashboard', dashboard()
+  );
+$$;
+
 -- ── 寫入端：營業日開始／結單、每日手動帳目 ──────────────
 --
 -- 對照 apps-script/Service.gs 的 startBusinessDay()／endBusinessDay()／
