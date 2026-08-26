@@ -91,8 +91,16 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 把後端網址指到本機，不用改動 repo 裡的 config.js
+  // 把後端網址指到本機，不用改動 repo 裡的 config.js——但這只適用於
+  // BACKEND='gas'（預設）那條路。Phase 5 雙軌驗證要測 Supabase 後端時，
+  // 這裡沒有對應的本機模擬（Supabase 本身就是真的雲端服務，不需要也
+  // 沒辦法模擬），改成照原樣把 docs/config.js serve 出去，讓瀏覽器直接
+  // 打真正的 Supabase 專案。
   if (url.pathname === '/config.js') {
+    const real = fs.readFileSync(path.join(DOCS, 'config.js'), 'utf8');
+    if (/BACKEND\s*:\s*['"]supabase['"]/.test(real)) {
+      return send(res, 200, real, MIME['.js']);
+    }
     return send(res, 200, "window.APP_CONFIG = { GAS_API_URL: '/api' };\n", MIME['.js']);
   }
 
