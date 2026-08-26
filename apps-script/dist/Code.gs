@@ -135,10 +135,23 @@ function _clearSheetCache() {
  * Sessions／Users 這兩張表刻意不進這層快取：登入驗證、登出、改密碼
  * 要求「立刻生效」，不能有任何一段快取窗口讓已經失效的 token／舊密碼
  * 還能通過驗證；這兩張表本來就很小，讀取成本不高，不快取也無妨。
+ *
+ * Records 也刻意不進這層快取，跟其他表理由不一樣：這張表是全系統寫入
+ * 最頻繁的一張（每筆入幣/出幣/開獎都在寫），而且幾乎每次寫入後緊接著
+ * 就要重讀（addRecord 等寫入動作回應要附上最新的 machineDetail，見
+ * Service.gs 的說明），也就是「這次執行剛把它的快取砍掉，馬上又要
+ * 重新整張讀一次、重新整張寫回快取」——快取在這張表上幾乎沒有機會被
+ * 別的請求命中就先被自己的下一次寫入砍掉，等於白白多付一次
+ * JSON.stringify 整張表＋CacheService.put() 的成本，卻換不到對應的
+ * 讀取加速，反而讓「入幣/出幣送出」這種寫入動作因為回應前多了這段
+ * 序列化／網路呼叫而變慢。這張表通常也是所有分頁裡筆數最多的一張，
+ * 序列化成本最貴，不快取它是目前這幾張表裡投資報酬率最差的一個，
+ * 其餘寫入頻率低很多的表（機台設定／獎型／快捷金額／入幣費率／
+ * 台主授權／營業日／每日手動帳目／系統設定）快取效益才划算。
  */
 const CROSS_EXEC_CACHE_TTL_SEC = 300;
 const CROSS_EXEC_CACHEABLE = {
-  Machines: true, Records: true, Prizes: true, QuickAmounts: true,
+  Machines: true, Prizes: true, QuickAmounts: true,
   MeterRates: true, Permissions: true, Config: true, BizDays: true, DailyLedger: true
 };
 
