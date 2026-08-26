@@ -33,7 +33,7 @@
       `visibleMachineIds()`。還沒接上任何真的 Supabase 專案跑過，也還沒
       實作「新增帳號」「username 登入」這兩塊（policies.sql 底部有寫
       設計、註解掉的 SQL，等真的接專案時再拉出來套用＋測試）。
-- [~] **Phase 3：業務邏輯搬進 Postgres function（`rpc()`），前端再改接**——
+- [x] **Phase 3：業務邏輯搬進 Postgres function（`rpc()`），前端再改接**——
       決定：`Service.gs`／`Reports.gs` 裡不是單純 CRUD、需要「算出來」
       的邏輯（淨收益公式、跨夜營業日邊界、報表彙總、對帳表格線）搬成
       Postgres SQL/plpgsql function，前端用 Supabase client SDK 的
@@ -173,18 +173,27 @@
       `detail.lastMeterReading` 正確帶出最近一筆入幣紀錄的下班表讀數、
       `all_machine_details()` 回傳的 key 集合等於這個帳號看得到的
       機台集合。
-      **剩下還沒搬的**：`exportLedgerXlsx()`（真的產生 .xlsx 檔案的部分，
-      這需要一個能寫 Excel 檔案格式的地方，不是純 SQL 能做的——目前傾向
-      前端直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端的 xlsx
-      產生套件現場組出檔案，不需要後端）；`adminBootstrap`（純聚合，
-      前端可以直接分開打 `adminListUsers`/`adminListMachines`/... 對應
-      的 4 條查詢，不一定需要包成一支 function）；`adminSaveUser`／
-      `adminResetPassword`（建立新帳號、改密碼——需要 Supabase Auth
-      Admin API 的 service role key，純 SQL function 做不到，要用
-      Edge Function，見下面 Auth & RLS 那節）。Phase 3 到這裡，記帳/
-      查詢/報表/系統管理這幾條主線的 SQL function 大致都搬完了，剩下
-      的幾項都是「刻意留給前端」或「刻意留給 Edge Function」的，不是
-      還沒想到怎麼搬。
+      **系統管理頁查詢也搬完了**：`admin_list_users()`／
+      `admin_list_machines()`／`admin_list_prizes()`／
+      `admin_list_permissions()`／`admin_bootstrap()`，對照同名的
+      `adminList*`／`adminBootstrap()`，形狀（欄位名稱、`roleLabel`
+      中文標籤、`prizes.overrides` 覆寫筆數統計、`permissions.grants`
+      用 userId 當 key）都跟 GAS 版本一致。已驗證：管理員能拿到完整
+      四組資料、`overrides` 正確反映機台專屬獎型的筆數與名稱、巡邏
+      人員打 `admin_bootstrap()` 被 `is_admin()` 擋下。
+      **到此 Phase 3 的 SQL function 全部搬完**：`Service.gs`／
+      `Reports.gs` 裡所有「需要算」的邏輯（dashboard、機台詳細頁、
+      記帳寫入、報表、對帳表格線、全局預設/單台覆寫、系統管理 CRUD
+      與查詢）都有對應的 Postgres function，每一支都在本機 Postgres
+      用非 superuser 角色測過驗證邏輯、錯誤訊息、RLS 邊界。
+      **刻意留到 Phase 3 以外的**：`exportLedgerXlsx()`（真的產生
+      .xlsx 檔案，這需要能寫 Excel 檔案格式的地方，不是純 SQL 能做
+      的——決定前端直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端
+      的 xlsx 產生套件現場組出檔案，不需要後端，屬於 Phase 5 前端
+      改接時的工作）；`adminSaveUser`／`adminResetPassword`（建立新
+      帳號、改密碼——需要 Supabase Auth Admin API 的 service role
+      key，純 SQL function 做不到，要用 Edge Function，見下面
+      Auth & RLS 那節，等真的接上 Supabase 專案才能實作+測試）。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
       那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／

@@ -1996,3 +1996,149 @@ begin
   return v_result;
 end;
 $$;
+
+-- ── 系統管理頁查詢 ───────────────────────────────────────────
+-- 對照 adminListUsers/adminListMachines/adminListPrizes/adminListPermissions/
+-- adminBootstrap。全部 SECURITY INVOKER，靠 is_admin() 明確擋（RLS 本身
+-- 對 profiles/permissions 這幾張表也會篩，這裡的檢查一樣是為了跟 GAS
+-- 一致的錯誤訊息，不是唯一防線）。
+
+create or replace function admin_list_users()
+returns jsonb
+language plpgsql
+stable
+as $$
+begin
+  if not is_admin() then
+    raise exception '只有管理員能查看帳號列表' using errcode = '42501';
+  end if;
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'userId', id,
+      'username', username,
+      'displayName', coalesce(nullif(display_name, ''), username),
+      'role', role,
+      'roleLabel', case role when 'admin' then '管理員' when 'patrol' then '巡邏人員' when 'owner' then '台主' else role end,
+      'status', status,
+      'lastLoginAt', coalesce(last_login_at::text, ''),
+      'createdAt', coalesce(created_at::text, '')
+    ))
+    from profiles
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- 對照 adminListMachines()：跟 machines 表的公開形狀一致，直接查表就是。
+create or replace function admin_list_machines()
+returns jsonb
+language plpgsql
+stable
+as $$
+begin
+  if not is_admin() then
+    raise exception '只有管理員能查看機台列表' using errcode = '42501';
+  end if;
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'machineId', machine_id, 'name', name, 'location', coalesce(location, ''),
+      'status', coalesce(status, 'running'), 'color', coalesce(color, '#4F7BE8'),
+      'sortOrder', sort_order, 'note', coalesce(note, ''),
+      'category', coalesce(category, 'dice'), 'icon', coalesce(icon, 'classic')
+    ) order by sort_order)
+    from machines
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- 對照 adminListPrizes()：回傳全局獎型本身，另外附上哪些機台設了專屬
+-- 獎型（覆寫筆數），讓管理員一眼看出改全局會不會影響到某幾台。
+create or replace function admin_list_prizes()
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_global jsonb;
+  v_overrides jsonb;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能查看獎型列表' using errcode = '42501';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'prizeId', prize_id, 'name', name, 'amount', amount, 'sortOrder', sort_order
+  ) order by sort_order, amount), '[]'::jsonb)
+  into v_global
+  from prizes where machine_id = '' and active;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'machineId', o.machine_id, 'name', coalesce(m.name, o.machine_id), 'count', o.cnt
+  )), '[]'::jsonb)
+  into v_overrides
+  from (
+    select machine_id, count(*) as cnt from prizes
+    where machine_id <> '' and active
+    group by machine_id
+  ) o
+  left join machines m on m.machine_id = o.machine_id;
+
+  return jsonb_build_object('global', v_global, 'overrides', v_overrides);
+end;
+$$;
+
+-- 對照 adminListPermissions()：每個台主帳號 + 授權到的機台清單。
+create or replace function admin_list_permissions()
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_owners jsonb;
+  v_grants jsonb;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能查看授權列表' using errcode = '42501';
+  end if;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'userId', id, 'username', username, 'displayName', coalesce(nullif(display_name, ''), username), 'status', status
+  )), '[]'::jsonb)
+  into v_owners
+  from profiles where role = 'owner';
+
+  select coalesce(jsonb_object_agg(o.id::text, coalesce(g.machine_ids, '[]'::jsonb)), '{}'::jsonb)
+  into v_grants
+  from profiles o
+  left join (
+    select user_id, jsonb_agg(machine_id) as machine_ids
+    from permissions
+    group by user_id
+  ) g on g.user_id = o.id
+  where o.role = 'owner';
+
+  return jsonb_build_object('owners', v_owners, 'machines', admin_list_machines(), 'grants', v_grants);
+end;
+$$;
+
+-- 對照 adminBootstrap()：系統管理頁一次進頁面需要的四組資料，合併成
+-- 一次呼叫，省掉分開打 4 次 API 各自要付的固定成本。
+create or replace function admin_bootstrap()
+returns jsonb
+language plpgsql
+stable
+as $$
+begin
+  if not is_admin() then
+    raise exception '只有管理員能進入系統管理頁' using errcode = '42501';
+  end if;
+
+  return jsonb_build_object(
+    'users', admin_list_users(),
+    'machines', admin_list_machines(),
+    'prizes', admin_list_prizes(),
+    'perms', admin_list_permissions()
+  );
+end;
+$$;
