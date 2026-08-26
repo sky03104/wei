@@ -1410,7 +1410,7 @@ function _selfTestBody(results) {
     _assertEq(grid.summaryRows[4].join(','), '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
   });
 
-  _t(results, '骰台查詢匯出：不指定機台改指定分類時，各骰台各自算好的小計要加總成整體 rowCount，電子機台不算進去', function () {
+  _t(results, '骰台查詢匯出：不指定機台改指定分類時，各骰台各自算好的小計要加總成整體 rowCount，電子機台不算進去；exportLedgerGrids（匯出截圖用）內容要跟 xlsx 各分頁一致', function () {
     const diceX = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試X', sortOrder: 95 }).machineId;
     const diceY = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Y', sortOrder: 94 }).machineId;
     const elecZ = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Z（電子）', category: 'electronic', sortOrder: 93 }).machineId;
@@ -1436,6 +1436,25 @@ function _selfTestBody(results) {
     _assert(xlsx.filename.indexOf('全部骰台') >= 0, '檔名應該標示「全部骰台」，跟單一機台的檔名區分開來：' + xlsx.filename);
     _assertEq(xlsx.rowCount, xGrid.rowCount + yGrid.rowCount,
       '骰台查詢的 rowCount 應該等於各骰台分頁各自的 rowCount 加總（電子機台不算）');
+
+    // 「📷 匯出截圖」exportLedgerGrids：不用建立/轉存真的 Excel，直接把
+    // 每台機台的格線資料整批回傳給前端畫 canvas，內容要跟 exportLedgerXlsx
+    // 每個分頁一模一樣。
+    const grids = _ok({ action: 'exportLedgerGrids', token: scopedTok, category: 'dice', preset: 'day' });
+    _assertEq(grids.machines.length, 2, '只看得到這個台主被授權的兩台骰台，電子機台不算進來');
+    _assertEq(grids.machines[0].machineName, '骰台查詢測試Y', '排序照 sort_order，Y（94）排在 X（95）前面');
+    _assertEq(grids.machines[1].machineName, '骰台查詢測試X', '排序照 sort_order，X（95）排在 Y 後面');
+
+    const byName = {};
+    grids.machines.forEach(function (g) { byName[g.machineName] = g; });
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].headerRow), JSON.stringify(xGrid.headerRow), 'X 的表頭應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].outRows), JSON.stringify(xGrid.outRows), 'X 的出幣逐筆列應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].summaryRows), JSON.stringify(xGrid.summaryRows), 'X 的五列小計應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試Y'].summaryRows), JSON.stringify(yGrid.summaryRows), 'Y 的五列小計應該跟 exportLedgerXlsx 那個分頁一致');
+
+    // 指定單一機台，或完全沒指定分類，都不是這支的使用情境，該直接報錯。
+    _fails({ action: 'exportLedgerGrids', token: scopedTok, machineId: diceX, preset: 'day' });
+    _fails({ action: 'exportLedgerGrids', token: scopedTok, preset: 'day' });
   });
 
   _t(results, '骰台查詢匯出：機台名稱含 Sheets 分頁名不准用的字元（/ \\ : * ? [ ]）不會匯出失敗', function () {
@@ -1518,18 +1537,18 @@ function _selfTestBody(results) {
     _assertEq(again.archived, 0, '天生冪等：再跑一次不該重複封存');
   });
 
-  _t(results, '機台詳細頁「累計淨收益」是本週（週一到今天），不是全部歷史；跨夜營業日的紀錄照 business_date（記帳當下 snapshot 好的營業日期）歸類進哪一週，不是看實際寫入的時間戳', function () {
+  _t(results, '機台詳細頁「累計淨收益」是本週（週日到今天），不是全部歷史；跨夜營業日的紀錄照 business_date（記帳當下 snapshot 好的營業日期）歸類進哪一週，不是看實際寫入的時間戳', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '本週淨收益測試台', sortOrder: 97 }).machineId;
     const weekRange = resolveRange('week');
 
-    // 上週最後一天：模擬「上週記的帳」，不該被算進本週的累計淨收益。
+    // 上週最後一天（週六）：模擬「上週記的帳」，不該被算進本週的累計淨收益。
     const lastWeekRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 700, clientToken: newId('ct') }).records[0];
     dbUpdate('Records', dbFind('Records', 'record_id', lastWeekRec.recordId)._row, { business_date: _addDays(weekRange.from, -1) });
     _clearSheetCache();
 
-    // 本週的第一天（週一）：模擬跨夜營業日——營業日是週一晚上開始、跨過
+    // 本週的第一天（週日）：模擬跨夜營業日——營業日是週日晚上開始、跨過
     // 午夜才記帳，記帳當下的實際時間戳已經是「今天」，但 business_date
-    // 快照的是營業日開始那天（週一），不是實際寫入當下的日期。
+    // 快照的是營業日開始那天（週日），不是實際寫入當下的日期。
     const started = _ok({ action: 'startBusinessDay', token: patrolTok });
     _assert(started.open, '應該成功開始營業日');
     const bizRow = _openBizDay();
@@ -1544,7 +1563,7 @@ function _selfTestBody(results) {
 
     const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(detail.total.in, 400,
-      '本週淨收益應該是週一那筆跨夜營業日記的 300 ＋今天的 100 ＝400，上週那筆 700 不該算進來，實際 ' + detail.total.in);
+      '本週淨收益應該是週日那筆跨夜營業日記的 300 ＋今天的 100 ＝400，上週那筆 700 不該算進來，實際 ' + detail.total.in);
   });
 
   _t(results, '封存：每月自動檢查的觸發器，setup() 只會裝一次，不會重複裝', function () {

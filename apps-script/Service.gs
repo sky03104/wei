@@ -621,11 +621,11 @@ function homeBootstrap(user) {
  *
  * 回傳的 total（畫面上顯示「累計淨收益」）算的是「本週」，不是機台開帳
  * 以來的全部歷史——跟報表頁「本週」查詢同一套 resolveRange('week') 邊界
- * （週一到今天，今天照營業日期算，不是行事曆日期）。
+ * （週日到今天，今天照營業日期算，不是行事曆日期）。
  */
 function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const today = openBiz ? String(openBiz.business_date) : todayKey();
-  // 「累計淨收益」改成本週（週一起算，跟報表頁 week 這個 preset 用同一套
+  // 「累計淨收益」改成本週（週日起算，跟報表頁 week 這個 preset 用同一套
   // resolveRange() 邊界，不用重複寫一次），不是像以前那樣算機台開帳以來
   // 的全部歷史。用營業日期（_recordBusinessDate，記帳當下就snapshot好的）
   // 判斷落在哪一天，不是看記錄時間戳——跨過午夜才打烊的營業日，這筆帳
