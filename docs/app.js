@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v50';
+const APP_VERSION = 'v51';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2480,7 +2480,25 @@ function downloadLedgerXlsx() {
     const binary = atob(xlsx.base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    const blob = new Blob([bytes], { type: mime });
+
+    // 手機上想直接分享去 LINE 之類的 App，不是先存到裝置裡再自己找檔案——
+    // 跟 exportLedgerImage()／exportLedgerScreenshots() 同一套做法：先試
+    // 系統分享面板，不支援（或使用者取消／分享失敗）才退回下載連結。
+    const file = (typeof File !== 'undefined') ? new File([blob], xlsx.filename, { type: mime }) : null;
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+        toast('已匯出 ' + xlsx.rowCount + ' 筆', 'success');
+        return;
+      } catch (err) {
+        // 使用者取消分享或分享失敗（例如檔案太大）都退回下載，不要
+        // 整個吞掉沒反應——跟 exportLedgerScreenshots() 那個 bug 修法
+        // 同一個道理。
+      }
+    }
+
     const url = URL.createObjectURL(blob);
     const a = h('a', { href: url, download: xlsx.filename });
     document.body.appendChild(a);
