@@ -135,10 +135,23 @@ function _clearSheetCache() {
  * Sessions／Users 這兩張表刻意不進這層快取：登入驗證、登出、改密碼
  * 要求「立刻生效」，不能有任何一段快取窗口讓已經失效的 token／舊密碼
  * 還能通過驗證；這兩張表本來就很小，讀取成本不高，不快取也無妨。
+ *
+ * Records 也刻意不進這層快取，跟其他表理由不一樣：這張表是全系統寫入
+ * 最頻繁的一張（每筆入幣/出幣/開獎都在寫），而且幾乎每次寫入後緊接著
+ * 就要重讀（addRecord 等寫入動作回應要附上最新的 machineDetail，見
+ * Service.gs 的說明），也就是「這次執行剛把它的快取砍掉，馬上又要
+ * 重新整張讀一次、重新整張寫回快取」——快取在這張表上幾乎沒有機會被
+ * 別的請求命中就先被自己的下一次寫入砍掉，等於白白多付一次
+ * JSON.stringify 整張表＋CacheService.put() 的成本，卻換不到對應的
+ * 讀取加速，反而讓「入幣/出幣送出」這種寫入動作因為回應前多了這段
+ * 序列化／網路呼叫而變慢。這張表通常也是所有分頁裡筆數最多的一張，
+ * 序列化成本最貴，不快取它是目前這幾張表裡投資報酬率最差的一個，
+ * 其餘寫入頻率低很多的表（機台設定／獎型／快捷金額／入幣費率／
+ * 台主授權／營業日／每日手動帳目／系統設定）快取效益才划算。
  */
 const CROSS_EXEC_CACHE_TTL_SEC = 300;
 const CROSS_EXEC_CACHEABLE = {
-  Machines: true, Records: true, Prizes: true, QuickAmounts: true,
+  Machines: true, Prizes: true, QuickAmounts: true,
   MeterRates: true, Permissions: true, Config: true, BizDays: true, DailyLedger: true
 };
 
@@ -1024,22 +1037,24 @@ function _recordBusinessDate(r) {
   return r.business_date || localDateKey(r.created_at);
 }
 
+/** 依 user_id 查顯示名稱，查不到回傳空字串。 */
+function _userDisplayName(id) {
+  if (!id) return '';
+  const users = dbReadAll('Users');
+  for (let i = 0; i < users.length; i++) {
+    if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
+  }
+  return '';
+}
+
 function _publicBizDay(row) {
   if (!row) return null;
-  const users = dbReadAll('Users');
-  const nameOf = function (id) {
-    if (!id) return '';
-    for (let i = 0; i < users.length; i++) {
-      if (String(users[i].user_id) === String(id)) return users[i].display_name || users[i].username;
-    }
-    return '';
-  };
   return {
     businessDate: String(row.business_date),
     openedAt: row.opened_at,
-    openedByName: nameOf(row.opened_by),
+    openedByName: _userDisplayName(row.opened_by),
     closedAt: row.closed_at || null,
-    closedByName: row.closed_by ? nameOf(row.closed_by) : null,
+    closedByName: row.closed_by ? _userDisplayName(row.closed_by) : null,
     autoClosed: toBool(row.auto_closed)
   };
 }
@@ -1206,9 +1221,13 @@ function _publicDailyLedger(row) {
   };
 }
 
-/** 跟 _validAmount 不同：允許輸入負數（用於偶爾需要沖正的修正），只限制數字的大小。 */
+/**
+ * 跟 _validAmount 不同：允許輸入負數（用於偶爾需要沖正的修正），只限制數字的大小。
+ * raw 沒帶（undefined/null/''）當 0 處理，不當成非法輸入——運拿／還內場
+ * 這兩個舊欄位前端已經不再收集、不會送這個 key，不能因為缺席就整個請求失敗。
+ */
 function _validSignedAmount(raw) {
-  const n = Number(raw);
+  const n = Number(raw || 0);
   if (!isFinite(n)) throw new Error('金額必須是數字');
   if (Math.abs(n) > MAX_AMOUNT) throw new Error('金額超出上限');
   return Math.round(n * 100) / 100;
@@ -1468,6 +1487,7 @@ function getDashboard(user) {
     ledger: ledger,
     ledgerTotal: Math.round(ledgerTotal * 100) / 100,
     today: today,
+    todayOpenedByName: openBiz ? _userDisplayName(openBiz.opened_by) : '',
     businessDay: businessDayStatus(user)
   };
 }
@@ -4471,6 +4491,18 @@ function _selfTestBody(results) {
       turnover: 1, transport: 1, givenToOwnerItems: [{ name: '老王', amount: 1 }],
       takenByOwnerItems: [{ name: '老王', amount: 1 }], returnedToHouse: 1
     }, 'PERMISSION');
+  });
+
+  _t(results, '每日手動帳目：前端「設定今日數字」已經不收運拿／還內場這兩個舊欄位，不帶這兩個 key 也要能存成功（曾經因為 undefined 被當非法數字擋掉整個請求）', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 416000, manualExpense: 500,
+      givenToOwnerItems: [{ name: '老王', amount: 1000 }],
+      takenByOwnerItems: [], manual432: 0, manual441: 0
+    });
+    _assertEq(saved.transport, 0, '沒帶運拿時應該當 0，不報錯');
+    _assertEq(saved.returnedToHouse, 0, '沒帶還內場時應該當 0，不報錯');
+    _assertEq(saved.turnover, 416000, '週轉金要正常存下來');
   });
 
   _t(results, '每日手動帳目：運拿／台主領／手動活動支出輸入負數會被擋（這幾項一律當正數的現金流出，系統自動扣除）', function () {

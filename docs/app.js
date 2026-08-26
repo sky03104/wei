@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v46';
+const APP_VERSION = 'v47';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -969,8 +969,8 @@ function homeTabBar() {
  * 退回顯示「台主給／台主領 $0」這一行占位，維持跟其他固定項目一樣的排版。
  * 「運拿」「還內場」都已經用不到了，不列在這裡，總結餘也不會扣（DailyLedger
  * 分頁還留著這兩欄只是為了讀舊資料，新存的值不影響這裡）。
- * 週轉金／入幣／電子總結／出幣是每天一定會有、獨立列出的項目（電子總結
- * 放在入幣跟出幣中間，方便對照電子機台當天的開分/洗分淨額）；其餘手動
+ * 週轉金／入幣／出幣／電子總結是每天一定會有、獨立列出的項目（電子總結
+ * 放在出幣下面）；其餘手動
  * 輸入、會加回或扣掉總結餘的項目再拆成「收入（+）」「支出（-）」兩個
  * 小分類，方便現場核對明細時知道哪些是加、哪些是扣。
  *
@@ -987,8 +987,8 @@ function ledgerRows(data) {
   return [
     ['週轉金', l.turnover],
     ['入幣', data.diceTotal.in],
-    ['電子總結', data.electronicTotal.chipNet],
     ['出幣', -data.diceTotal.out],
+    ['電子總結', data.electronicTotal.chipNet],
     { section: '收入（+）' },
     ...givenRows,
     { section: '支出（-）' },
@@ -1017,7 +1017,7 @@ function ledgerCard(data) {
   return h('div', { class: 'card' }, [
     actionsRow,
     h('div', { class: 'panel-head' }, [
-      h('h3', { text: dayKeyToLabel(data.today) + ' 今日現金結餘明細' })
+      h('h3', { text: (data.todayOpenedByName ? data.todayOpenedByName + ' ' : '') + dayKeyToLabel(data.today) })
     ]),
     h('div', {}, rows.map((row) => row.section
       ? h('div', { class: 'ledger-section-title', text: row.section })
@@ -1084,7 +1084,7 @@ function exportLedgerImage(data) {
   ctx.font = 'bold 17px ' + font;
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
-  ctx.fillText(dayKeyToLabel(data.today) + ' 今日現金結餘明細', padX, headerH / 2 + 4);
+  ctx.fillText((data.todayOpenedByName ? data.todayOpenedByName + ' ' : '') + dayKeyToLabel(data.today), padX, headerH / 2 + 4);
 
   let y = headerH;
   rows.forEach((row) => {
