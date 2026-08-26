@@ -25,52 +25,76 @@
 
 - [x] **Phase 1：Schema 設計**（`supabase/schema.sql`）——把 `apps-script/Db.gs`
       的 `SCHEMA` 逐表翻譯成 Postgres 表，欄位型別對應好，`records` 表
-      加上索引。目前完成，還沒接上任何真的 Supabase 專案。
-- [ ] **Phase 2：Auth & 權限模型定案**——這是整個遷移風險最高的一塊，見
-      下面單獨一節，要先想清楚再往下做，不然後面的 API 層會做兩次。
-- [ ] **Phase 3：後端邏輯搬家**——把 `Service.gs`／`Reports.gs`／`Archive.gs`
-      裡的商業邏輯（權限檢查、淨收益公式、營業日邊界、報表彙總、
-      對帳表格線）重寫成 Supabase Edge Functions（TypeScript/Deno）。
-      逐一對照每一支 `action`（見 `apps-script/Code.gs` 的 `ACTION_ROLES`／
-      `_dispatch`），確保新舊兩邊算出來的數字一致。
+      加上索引。
+- [x] **Phase 2：Auth & 權限模型——已拍板，走「前端直連 + RLS」**（見下面
+      單獨一節）。`profiles` 表＋`supabase/policies.sql` 的 helper function
+      跟每張表的 policy 已經寫好，對照的是 `apps-script/Code.gs` 的
+      `ACTION_ROLES` 跟 `Service.gs` 的 `canRecord()`／`isAdmin()`／
+      `visibleMachineIds()`。還沒接上任何真的 Supabase 專案跑過，也還沒
+      實作「新增帳號」「username 登入」這兩塊（policies.sql 底部有寫
+      設計、註解掉的 SQL，等真的接專案時再拉出來套用＋測試）。
+- [ ] **Phase 3：前端改接**——因為走的是前端直連，這裡不用寫 Edge
+      Functions 重寫商業邏輯，改成把 `docs/app.js` 的 `api()`（現在是打
+      GAS `doPost`）換成 Supabase client SDK 的 `from(...).select()`／
+      `.insert()`／`.rpc()`。但 `Service.gs`／`Reports.gs` 裡不是單純
+      CRUD、需要「算出來」的邏輯（淨收益公式、跨夜營業日邊界、報表
+      彙總、對帳表格線）沒有後端可以放了，得想清楚要嘛搬成 Postgres
+      function／view（`rpc()` 呼叫），要嘛前端跟資料庫追平之後在瀏覽器
+      端自己算——這是 Phase 3 最花工夫、風險也最高的部分，比 Phase 2
+      的 RLS policy 更需要一支一支對照著搬，不能圖快跳過。
+      「新增帳號」這個動作是唯一确定要留一小塊後端的地方（見下面
+      Auth & RLS 那節最後一小段），不算違反「前端直連」的大方向。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
       那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／
-      `_migrateRecordsMeterColumns` 修過的那幾類問題）不要帶過去。
-- [ ] **Phase 5：前端改接**——`docs/app.js` 的 `api()` 目前是打 GAS 的
-      `doPost`（form-urlencoded），換成打 Supabase 的 REST/RPC 或 Edge
-      Function，每個 `action` 對應關係盡量不變，把改動範圍限制在
-      `api()` 這一支函式，其餘畫面邏輯不用跟著大改。
-- [ ] **Phase 6：雙軌驗證＋切換**——新舊系統並行一段時間（兩邊都寫入，
+      `_migrateRecordsMeterColumns` 修過的那幾類問題）不要帶過去；帳號
+      資料要另外處理——舊系統的 `password_hash`／`salt` 沒辦法直接匯入
+      Supabase Auth（雜湊演算法不同），現有帳號要嘛請每個人在新系統
+      重新設一次密碼，要嘛用「忘記密碼」流程重發驗證信，兩種都要事先
+      跟使用者說清楚，不是純資料庫層面能解決的事。
+- [ ] **Phase 5：雙軌驗證＋切換**——新舊系統並行一段時間（兩邊都寫入，
       只從舊系統讀，比對兩邊算出來的數字），確認一致才正式切過去；
       切換之後 Sheets 資料保留一段時間當備份，不要立刻刪。
 
-## Auth & RLS——先想清楚再做
+## Auth & RLS——已拍板：前端直連 + RLS
 
 現有系統是**自製**帳密登入＋session token（`apps-script/Auth.gs`），
-不是 Supabase Auth（`auth.users`／`auth.uid()`）。這代表 `supabase/schema.sql`
-裡雖然每張表都開了 Row Level Security，但**目前故意沒有寫任何 policy**——
-在決定怎麼處理 auth 之前先寫死 policy，遷移到一半很可能要整套重寫。
+不是 Supabase Auth。決定走「前端直連＋RLS」之後，這兩塊都要換成
+Supabase 原生的東西：
 
-兩條路可以選，要先決定：
+- **帳密／session** → Supabase Auth（`auth.users`）。舊的 `users` 表
+  拿掉，改成 `profiles` 表（`id uuid references auth.users(id)`）只存
+  app 自己的欄位（username／display_name／role／status）；`sessions`
+  表整個拿掉，Supabase Auth 自己發、自己驗 JWT。
+- **權限判斷** → Row Level Security。管理員／巡邏／台主三種角色、
+  「台主只看得到被授權的機台」這條規則，寫成 `supabase/policies.sql`
+  的 policy＋三個 helper function（`is_admin()`／`can_record()`／
+  `can_see_machine()`），對照的是現有 `Service.gs` 的同名邏輯。
 
-1. **繼續自製 auth，權限檢查留在後端（Edge Function）**：前端不直接碰
-   Supabase 資料庫，一律透過 Edge Function（用 service role key），跟
-   現在 GAS 的角色一樣，只是換一個執行環境。RLS policy 可以留空或設成
-   「只有 service role 能碰」，權限邏輯（`assertMachineAccess`／
-   `visibleMachineIds` 這些）原封不動搬過去。**風險最低、跟現有邏輯最
-   接近**，是目前建議的方向。
-2. **改用 Supabase Auth，前端直連資料庫，靠 RLS 做權限控管**：能讓前端
-   讀取直接打資料庫、省掉一層 API 轉發，讀取會更快，但要把「管理員／
-   巡邏／台主」這套角色＋「台主只看得到被授權的機台」這種需要 JOIN
-   `permissions` 表的權限邏輯，整個改寫成 RLS policy（用 Postgres 的
-   `current_setting`／自訂 JWT claims），還要把現有帳號的密碼／session
-   遷移到 Supabase Auth。**改動範圍最大，但長期效能最好**。
+**這個決定唯一留下的例外**：建立新帳號這個動作，不能完全靠前端＋RLS
+完成。Supabase Auth 的 `auth.admin.createUser()` 只能用 service role
+key 呼叫，這把 key 絕對不能出現在前端——所以「管理員新增帳號」還是
+需要一小塊有 service role 權限的後端（一支 Edge Function 就夠，不需要
+整套後端）。除此之外（機台、紀錄、獎型、報表這些）都可以是純前端＋
+RLS，不需要後端轉發。
+
+`policies.sql` 檔案最後兩節（新使用者怎麼進系統／username 怎麼換成
+email 登入）先寫成註解掉的 SQL 草稿，設計想法都寫在註解裡，等真的接上
+一個 Supabase 專案時要拉出來實測——這兩塊碰到 `auth.users`／service
+role，沒有真的專案沒辦法完整驗證。
 
 ## 目前風險與待決定事項
 
-- **Phase 2 還沒定案**：走哪一條 auth 路線會決定 Edge Function 怎麼寫、
-  RLS policy 怎麼寫，是接下來第一件要拍板的事。
+- **Phase 3 是接下來最大的一塊**：前端直連代表沒有後端可以放「算出來」
+  的邏輯，`Service.gs`／`Reports.gs` 裡不是單純查表的部分要想清楚搬去
+  哪裡（Postgres function/view，或前端自己算），這決定會回頭影響
+  `policies.sql` 要不要再加 view 專用的 policy。
+- 「新增帳號」的 Edge Function、「username 登入」的 `resolve_username_email()`
+  都還沒實測——這兩個碰到 `auth.users`／service role key，是`policies.sql`
+  裡最需要在真的 Supabase 專案上小心驗證的部分，不要直接照抄貼到
+  正式環境用。
+- 舊帳號的密碼沒辦法遷移（雜湊方式不同），Phase 4 要先想好怎麼跟
+  使用者溝通「這次要重設密碼」。
 - `records.client_token` 設了 `unique` 約束，直接對應 `addRecord` 的
   冪等去重邏輯（同一個 clientToken 送兩次只寫一筆）——比原本 Sheets
   版本（程式手動查重）更省事，但要確認前端每次送出真的都帶新的
@@ -80,5 +104,6 @@
   再往上加——遷移完成後要不要整個拿掉這幾欄，等 Phase 4 資料遷移
   跑完、確認新系統穩定運作一段時間後再決定。
 - 目前 `supabase/` 底下還沒有實際連上任何 Supabase 專案（沒有
-  `.env`、沒有 project ref、沒有跑過 `supabase db push`）——Phase 1
-  只是把 schema 設計寫好，還沒真的建立任何雲端資源。
+  `.env`、沒有 project ref、沒有跑過 `supabase db push`）——Phase 1／2
+  只是把 schema 跟 policy 設計寫好，還沒真的建立任何雲端資源，也還
+  沒實測過任何一條 policy 真的擋不擋得住。
