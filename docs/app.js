@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v48';
+const APP_VERSION = 'v49';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -519,6 +519,30 @@ async function _rpc(sb, name, params) {
   return data;
 }
 
+/**
+ * 呼叫 supabase/functions/admin-users/ 這支 Edge Function（建立帳號／
+ * 重設密碼，見該檔案開頭的說明）。supabase-js 打 Edge Function 失敗時
+ * error 本身的 message 通常只有「Edge Function returned a non-2xx
+ * status code」這種沒有意義的話，真正的錯誤訊息在 error.context 這個
+ * Response 物件的 body 裡，要另外解析出來才看得到我們自己在 Function
+ * 裡回的中文錯誤訊息。
+ */
+async function _invokeAdminUsersFn(sb, body) {
+  const { data, error } = await sb.functions.invoke('admin-users', { body: body });
+  if (error) {
+    let msg = error.message || '操作失敗';
+    try {
+      if (error.context && typeof error.context.json === 'function') {
+        const parsed = await error.context.json();
+        if (parsed && parsed.error) msg = parsed.error;
+      }
+    } catch (e) { /* 解析不出來就用預設訊息 */ }
+    throw ApiError(msg, 'ERROR');
+  }
+  if (data && data.error) throw ApiError(data.error, 'ERROR');
+  return data;
+}
+
 const ROLE_LABELS_FE = { admin: '管理員', patrol: '巡邏人員', owner: '台主' };
 
 /** 目前登入者的 profiles 資料，轉成跟 GAS _publicUser() 一致的形狀。 */
@@ -613,14 +637,28 @@ async function supabaseApi(action, payload) {
 
   // exportLedgerXlsx 刻意沒接：真的產生 .xlsx 檔案這件事決定留給前端
   // 用瀏覽器端套件現場組出檔案（見 MIGRATION_PLAN.md Phase 3 那節），
-  // 還沒實作；adminSaveUser／adminResetPassword 需要 Supabase Auth
-  // Admin API 的 service role key，得靠另外部署的 Edge Function，純
-  // 前端＋RLS 做不到（見 MIGRATION_PLAN.md「Auth & RLS」那節）。
+  // 還沒實作。
   if (action === 'exportLedgerXlsx') {
     throw ApiError('這個後端還沒支援匯出 Excel，請改用「📷 匯出截圖」，或切回 GAS 後端', 'ERROR');
   }
-  if (action === 'adminSaveUser' || action === 'adminResetPassword') {
-    throw ApiError('新增帳號／改密碼需要另外部署的 Edge Function，這個後端還沒接上', 'ERROR');
+
+  // adminSaveUser：改已存在帳號（有 userId）不需要 service role，走一般
+  // RPC；建立全新帳號（沒有 userId）要呼叫 Supabase Auth Admin API，
+  // 只能靠 supabase/functions/admin-users/ 這支 Edge Function（見
+  // MIGRATION_PLAN.md「Auth & RLS」那節）。adminResetPassword 同理，
+  // 一律要走 Edge Function。
+  if (action === 'adminSaveUser') {
+    if (p.userId) {
+      return _rpc(sb, 'admin_update_user', {
+        p_user_id: p.userId, p_display_name: p.displayName || null, p_role: p.role, p_status: p.status || 'active'
+      });
+    }
+    return _invokeAdminUsersFn(sb, {
+      action: 'createUser', username: p.username, password: p.password, role: p.role, displayName: p.displayName
+    });
+  }
+  if (action === 'adminResetPassword') {
+    return _invokeAdminUsersFn(sb, { action: 'resetPassword', userId: p.userId, password: p.password });
   }
 
   const RPC_MAP = {

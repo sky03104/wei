@@ -371,11 +371,32 @@
    遷移腳本產生的隨機臨時密碼，切換前還是要提醒每個人：**登入後第
    一件事先點「🔑 改密碼」換成自己的密碼**，不是資料庫層面能自動
    解決的事，這一步一定要事先口頭／訊息通知到每一個帳號的使用者。
-2. **新增帳號的 Edge Function**：`adminSaveUser`／`adminResetPassword`
-   目前在 `supabaseApi()` 裡是刻意丟出「還沒支援」的錯誤（見 Phase 5
-   那節）。如果切換後短期內不會有新增帳號的需求，這個可以延後補；
-   如果會（例如快要有新台主要加入），要先把這支 Edge Function 做出來
-   再切換，不然系統管理頁那半個功能等於是壞的。
+2. **新增帳號的 Edge Function**：✅ 已經寫好（`supabase/functions/admin-users/index.ts`），
+   還沒部署。系統管理頁的「新增帳號」「重設密碼」按鈕完全不用改，
+   `supabaseApi()` 會依情況分流：改已存在帳號的角色/狀態/顯示名稱
+   （有 `userId`）走一般的 `admin_update_user()` RPC，不需要 service
+   role；建立全新帳號、重設密碼這兩件事才會呼叫這支 Edge Function。
+
+   **部署步驟**（Supabase 網頁後台就能做，不用裝 CLI）：
+   1. 左側選單 **Edge Functions → Deploy a new function**。
+   2. 名稱填 `admin-users`，把 `supabase/functions/admin-users/index.ts`
+      的內容整份貼進去。
+   3. 部署完成後，這支 function 預設就是要求呼叫者帶有效的登入
+      JWT（Supabase 專案預設的 `verify_jwt` 設定），不用另外調整。
+   4. `SUPABASE_URL`／`SUPABASE_SERVICE_ROLE_KEY`／`SUPABASE_ANON_KEY`
+      這三個環境變數 Supabase 的 Edge Functions 執行環境會自動注入，
+      不用自己去 Settings 手動加。
+
+   已經用 `npx tsc --noEmit`（搭配一份最小的 Deno/`npm:` 型別 shim）
+   對這個檔案做過型別檢查，語法沒問題；沒辦法在這個環境實際部署／
+   打真的 Edge Function 測試（一樣是網路限制，這支要連 Supabase Auth
+   Admin API），部署完務必實際在系統管理頁試一次「新增帳號」跟
+   「重設密碼」再放心用。
+   前端呼叫端已經驗證過（`vm` 模擬環境 + 假的 `sb.functions.invoke()`）：
+   有 `userId` 走 `admin_update_user` RPC、沒有 `userId` 走 Edge
+   Function 的 `createUser`、`adminResetPassword` 一律走 `resetPassword`、
+   Edge Function 回傳的錯誤訊息能正確解析出來顯示給使用者看（不是
+   顯示一句沒意義的「non-2xx status code」）。
 3. **匯出 Excel**：`exportLedgerXlsx` 一樣是「還沒支援」，改用
    「📷 匯出截圖」代替目前堪用，要不要在切換前補上瀏覽器端產生
    .xlsx 檔案這個功能，看使用習慣上有多依賴匯出 Excel 這個功能決定。
