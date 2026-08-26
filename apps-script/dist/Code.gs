@@ -1415,16 +1415,26 @@ function homeBootstrap(user) {
  * 單一機台的詳細頁資料——getMachineDetail（單台）跟 getAllMachineDetails
  * （一次算全部，見下方）共用同一份組裝邏輯，差別只在呼叫端怎麼把這台的
  * 紀錄篩出來，避免兩邊各寫一份、改一邊忘了改另一邊。
+ *
+ * 回傳的 total（畫面上顯示「累計淨收益」）算的是「本週」，不是機台開帳
+ * 以來的全部歷史——跟報表頁「本週」查詢同一套 resolveRange('week') 邊界
+ * （週一到今天，今天照營業日期算，不是行事曆日期）。
  */
 function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const today = openBiz ? String(openBiz.business_date) : todayKey();
-  // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
-  const total = _seedSummary(m);
+  // 「累計淨收益」改成本週（週一起算，跟報表頁 week 這個 preset 用同一套
+  // resolveRange() 邊界，不用重複寫一次），不是像以前那樣算機台開帳以來
+  // 的全部歷史。用營業日期（_recordBusinessDate，記帳當下就snapshot好的）
+  // 判斷落在哪一天，不是看記錄時間戳——跨過午夜才打烊的營業日，這筆帳
+  // 的營業日期還是「昨天」，不會因為實際寫入時間是凌晨就被算進下一週。
+  const weekRange = resolveRange('week');
+  const total = emptySummary();
   const todaySum = emptySummary();
   let today432Count = 0;
 
   records.forEach(function (r) {
-    _accumulate(total, r);
+    const bd = _recordBusinessDate(r);
+    if (bd >= weekRange.from && bd <= weekRange.to) _accumulate(total, r);
     const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todaySum, r);
@@ -2838,10 +2848,15 @@ function _exportLedgerWorkbook(filenameBase, fillFn) {
  * （例如「封存_2026Q1」），Records 只留「目前這一季」，讀取速度就
  * 只跟「這一季的筆數」有關，不會隨著開店年數一直往上疊加。
  *
- * 封存前累計（carry_in/out/prize/chip_in/chip_out）：機台詳細頁的
- * 「累計淨收益」是歷史全部加總，紀錄搬去封存分頁之後這個數字不能
+ * 封存前累計（carry_in/out/prize/chip_in/chip_out）：首頁 getDashboard()
+ * 每台機台的 total 是歷史全部加總，紀錄搬去封存分頁之後這個數字不能
  * 憑空掉下去——封存當下先把要搬走的那批紀錄加總進 Machines 分頁的
- * 這幾欄，之後「累計」＝這幾欄＋目前還留在 Records 裡的量。
+ * 這幾欄，之後「累計」＝這幾欄＋目前還留在 Records 裡的量。機台詳細頁
+ * 顯示的「累計淨收益」則是本週（見 Service.gs 的 _buildMachineDetail()），
+ * 只讀目前這一季的 Records、不會用到這幾欄——跟「本月432/441支數」那幾張
+ * 卡片一樣的簡化：跨季度那一週（例如新的一季剛開始沒幾天，週一還在
+ * 上一季）如果剛好遇到每月 2 號的封存已經跑過，本週淨收益會少算被搬去
+ * 封存分頁那幾天，一年只會發生在季初那一週，先不處理。
  *
  * 觸發方式：setup() 會確保一個「每月 2 號凌晨 3 點」的時間觸發器存在，
  * 呼叫 archiveOldRecords()。這支函式本身天生冪等（只會搬「目前這一季」
@@ -4928,9 +4943,9 @@ function _selfTestBody(results) {
     _assertEq(_quarterKey('2026-12-31'), '2026Q4', '12月屬於Q4');
   });
 
-  _t(results, '封存：把上一季以前的紀錄搬到封存分頁，且不影響今天的紀錄', function () {
+  _t(results, '封存：把上一季以前的紀錄搬到封存分頁，不影響今天的紀錄；機台詳細頁的「本週淨收益」本來就不看 200 天前的舊紀錄，封存前後都不變', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存測試台', sortOrder: 96 }).machineId;
-    const oldDate = _addDays(todayKey(), -200); // 200 天前，保證是更早的季度
+    const oldDate = _addDays(todayKey(), -200); // 200 天前，保證是更早的季度，也遠在本週範圍之外
 
     const oldIn = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 1000, clientToken: newId('ct') }).records[0];
     const oldOut = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 300, clientToken: newId('ct') }).records[0];
@@ -4943,8 +4958,8 @@ function _selfTestBody(results) {
     _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 50, clientToken: newId('ct') });
 
     const before = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
-    _assertEq(before.total.in, 1050, '封存前：累計入幣應該包含舊紀錄跟今天的紀錄');
-    _assertEq(before.total.out, 300, '封存前：累計出幣應該包含舊紀錄');
+    _assertEq(before.total.in, 50, '封存前：本週淨收益不算 200 天前的舊紀錄，只有今天這 50');
+    _assertEq(before.total.out, 0, '封存前：本週累計出幣不受舊紀錄影響');
     _assertEq(before.records.length, 3, '封存前：明細應該看得到全部 3 筆');
 
     const oldQ = _quarterKey(oldDate);
@@ -4953,8 +4968,8 @@ function _selfTestBody(results) {
     _assert(result.quarters.indexOf(oldQ) >= 0, '回傳的季度清單應該包含 ' + oldQ);
 
     const after = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
-    _assertEq(after.total.in, 1050, '封存後：累計入幣要靠封存前累計補回來，不能掉回 50');
-    _assertEq(after.total.out, 300, '封存後：累計出幣一樣要對');
+    _assertEq(after.total.in, 50, '封存後：本週淨收益不變，本來就沒把舊紀錄算進去');
+    _assertEq(after.total.out, 0, '封存後：本週累計出幣一樣不變');
     _assertEq(after.records.length, 1, '封存後：明細應該只剩今天那 1 筆，舊的已經搬走');
     _assertEq(after.today.in, 50, '今日彙總不該被封存動到');
 
@@ -4965,6 +4980,35 @@ function _selfTestBody(results) {
 
     const again = archiveOldRecords();
     _assertEq(again.archived, 0, '天生冪等：再跑一次不該重複封存');
+  });
+
+  _t(results, '機台詳細頁「累計淨收益」是本週（週一到今天），不是全部歷史；跨夜營業日的紀錄照 business_date（記帳當下 snapshot 好的營業日期）歸類進哪一週，不是看實際寫入的時間戳', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '本週淨收益測試台', sortOrder: 97 }).machineId;
+    const weekRange = resolveRange('week');
+
+    // 上週最後一天：模擬「上週記的帳」，不該被算進本週的累計淨收益。
+    const lastWeekRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 700, clientToken: newId('ct') }).records[0];
+    dbUpdate('Records', dbFind('Records', 'record_id', lastWeekRec.recordId)._row, { business_date: _addDays(weekRange.from, -1) });
+    _clearSheetCache();
+
+    // 本週的第一天（週一）：模擬跨夜營業日——營業日是週一晚上開始、跨過
+    // 午夜才記帳，記帳當下的實際時間戳已經是「今天」，但 business_date
+    // 快照的是營業日開始那天（週一），不是實際寫入當下的日期。
+    const started = _ok({ action: 'startBusinessDay', token: patrolTok });
+    _assert(started.open, '應該成功開始營業日');
+    const bizRow = _openBizDay();
+    dbUpdate('BizDays', bizRow._row, { business_date: weekRange.from });
+    _clearSheetCache();
+    _ok({ action: 'addRecord', token: patrolTok, machineId: mid, type: 'in', amount: 300, clientToken: newId('ct') });
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    _clearSheetCache();
+
+    // 今天再記一筆，確定也算進本週。
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 100, clientToken: newId('ct') });
+
+    const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
+    _assertEq(detail.total.in, 400,
+      '本週淨收益應該是週一那筆跨夜營業日記的 300 ＋今天的 100 ＝400，上週那筆 700 不該算進來，實際 ' + detail.total.in);
   });
 
   _t(results, '封存：每月自動檢查的觸發器，setup() 只會裝一次，不會重複裝', function () {

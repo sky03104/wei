@@ -618,16 +618,26 @@ function homeBootstrap(user) {
  * 單一機台的詳細頁資料——getMachineDetail（單台）跟 getAllMachineDetails
  * （一次算全部，見下方）共用同一份組裝邏輯，差別只在呼叫端怎麼把這台的
  * 紀錄篩出來，避免兩邊各寫一份、改一邊忘了改另一邊。
+ *
+ * 回傳的 total（畫面上顯示「累計淨收益」）算的是「本週」，不是機台開帳
+ * 以來的全部歷史——跟報表頁「本週」查詢同一套 resolveRange('week') 邊界
+ * （週一到今天，今天照營業日期算，不是行事曆日期）。
  */
 function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const today = openBiz ? String(openBiz.business_date) : todayKey();
-  // 「累計」要從封存前累計開始疊，不然舊紀錄搬去封存分頁之後這個數字會憑空掉下去。
-  const total = _seedSummary(m);
+  // 「累計淨收益」改成本週（週一起算，跟報表頁 week 這個 preset 用同一套
+  // resolveRange() 邊界，不用重複寫一次），不是像以前那樣算機台開帳以來
+  // 的全部歷史。用營業日期（_recordBusinessDate，記帳當下就snapshot好的）
+  // 判斷落在哪一天，不是看記錄時間戳——跨過午夜才打烊的營業日，這筆帳
+  // 的營業日期還是「昨天」，不會因為實際寫入時間是凌晨就被算進下一週。
+  const weekRange = resolveRange('week');
+  const total = emptySummary();
   const todaySum = emptySummary();
   let today432Count = 0;
 
   records.forEach(function (r) {
-    _accumulate(total, r);
+    const bd = _recordBusinessDate(r);
+    if (bd >= weekRange.from && bd <= weekRange.to) _accumulate(total, r);
     const isToday = _isTodayRecord(r, today, openBiz);
     if (isToday) {
       _accumulate(todaySum, r);
