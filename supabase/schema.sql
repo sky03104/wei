@@ -184,6 +184,7 @@ create index if not exists biz_days_business_date_idx on biz_days (business_date
 -- ── daily_ledger（每日手動帳目：週轉金／台主給／台主領…）─
 
 create table if not exists daily_ledger (
+  seq                    bigserial, -- 插入順序決勝點，見 records.seq 的說明
   ledger_id              text primary key,
   business_date          date not null,
   turnover               numeric not null default 0,

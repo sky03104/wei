@@ -53,15 +53,33 @@
       `auth.users`/`auth.uid()` stub 實測過，包含模擬跨夜營業日、
       驗證 RLS 真的擋得住沒授權的台主、驗證有授權的台主透過真的 RLS
       （非 superuser）也能拿到正確數字。
-      **還沒做**：`dashboard`（`getDashboard()`，全部機台彙總＋本月432/441
-      支數）、`report`（`getReport()`，日/週/月/自訂/歷史）、
-      `exportLedgerGrids` 對應的逐日對帳表格線、`daily_ledger` 的
-      加總分頁現金結餘公式——這幾個都可以照 `machine_today_and_week()`
-      同一套模式（`today_key()`/`current_business_date()`/
-      `is_today_record()` 當地基）逐一搬，工作量大但風險低，因為地基
-      已經驗證過。`docs/app.js` 的 `api()` 目前完全還沒開始改，等這批
-      function 搬得差不多、每支都跟 GAS 版本比對過數字再動前端，避免
-      前端一半打新 API、一半打舊 API 的過渡期混亂狀態。
+      **也完成了**：`dashboard()` 對照 `getDashboard()`——回傳單一 jsonb，
+      形狀刻意跟現有 GAS API 回傳的 JSON 一模一樣（`machines`／
+      `todayTotal`／`diceTotal`／`electronicTotal`／`today432Count`／
+      `month432Count`／`ledger`／`ledgerTotal`／`today`／`businessDay`），
+      這樣 Phase 5 前端改接時，這支的呼叫端幾乎不用改動 `app.js` 讀取
+      資料的那段程式碼，只要換掉呼叫方式。額外搬了幾支小的（
+      `public_biz_day()`／`business_day_status()`／
+      `daily_ledger_row_for_today()`／`ledger_items_or_legacy()`／
+      `sum_ledger_items()`／`public_daily_ledger()`）當 `dashboard()`
+      的積木，對照 GAS 同名函式。SECURITY INVOKER，`machines`／`records`
+      兩張表靠呼叫者的 RLS 自動篩成「看得到的機台」，不用像 GAS 版本
+      那樣自己先查一輪 `visibleMachineIds()`——這是走「前端直連＋RLS」
+      比原本 GAS 架構單純的地方。已在本機 Postgres 用多機台（骰台＋
+      電子）、多筆紀錄、每日手動帳目、跨夜營業日情境完整跑過一遍手算
+      比對，也用非 superuser 角色驗證過 RLS：沒授權的台主看到
+      `machines:[]`、有授權的台主只看到被授權的那台，數字都對得起來。
+      **還沒做**：`report`（`getReport()`，日/週/月/自訂/歷史）、
+      `exportLedgerGrids` 對應的逐日對帳表格線、`saveDailyLedger()`／
+      `startBusinessDay()`／`endBusinessDay()` 這幾個「寫入」動作（目前
+      只搬了讀取端，寫入端因為要保證 upsert／自動結單這種操作的原子性，
+      也建議包成 RPC function 而不是讓前端直接 `.insert()`，還沒做）——
+      這幾個都可以照 `machine_today_and_week()`／`dashboard()` 同一套
+      模式（`today_key()`/`current_business_date()`/`is_today_record()`
+      當地基）逐一搬，工作量大但風險低，因為地基已經驗證過。
+      `docs/app.js` 的 `api()` 目前完全還沒開始改，等這批 function 搬得
+      差不多、每支都跟 GAS 版本比對過數字再動前端，避免前端一半打新
+      API、一半打舊 API 的過渡期混亂狀態。
       「新增帳號」這個動作是唯一確定要留一小塊後端的地方（見下面
       Auth & RLS 那節最後一小段），不算違反「前端直連」的大方向。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的

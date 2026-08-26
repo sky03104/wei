@@ -236,3 +236,283 @@ begin
   from base;
 end;
 $$;
+
+-- ── 首頁 dashboard ───────────────────────────────────────
+--
+-- 對照 apps-script/Service.gs 的 getDashboard()／businessDayStatus()／
+-- _publicBizDay()／_dailyLedgerRow()／_publicDailyLedger()。回傳單一
+-- jsonb（不是 table），刻意跟現有 GAS API 回傳的 JSON 形狀一模一樣
+-- （machines/todayTotal/diceTotal/electronicTotal/today432Count/...），
+-- Phase 5 前端改接的時候，這支的呼叫端幾乎不用改動 app.js 讀取資料的
+-- 那段程式碼，只要換掉呼叫方式（api('dashboard') → rpc('dashboard')）。
+
+-- 營業日的公開形狀（openedByName／closedByName 要 join profiles 換成
+-- 顯示名稱，同一個道理也用在下面的 business_day_status()）。
+create or replace function public_biz_day(p_biz biz_days)
+returns jsonb
+language sql
+stable
+as $$
+  select case when p_biz is null then null else
+    jsonb_build_object(
+      'businessDate', p_biz.business_date::text,
+      'openedAt', p_biz.opened_at,
+      'openedByName', coalesce((select coalesce(nullif(display_name, ''), username) from profiles where id = p_biz.opened_by), ''),
+      'closedAt', p_biz.closed_at,
+      'closedByName', case when p_biz.closed_by is null then null
+        else (select coalesce(nullif(display_name, ''), username) from profiles where id = p_biz.closed_by) end,
+      'autoClosed', p_biz.auto_closed
+    )
+  end;
+$$;
+
+-- 首頁「今日營業開始／結單」按鈕狀態——刻意只看「目前進行中」的營業日
+-- （open_biz_day()），不是 relevant_biz_day_for_today()：這兩個概念不
+-- 一樣，結單後這裡要顯示「沒有進行中」，即使今日彙總（dashboard() 的
+-- 'today' 那個邊界）還在沿用剛結束那個 session。
+create or replace function business_day_status()
+returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_object(
+    'open', exists(select 1 from open_biz_day()),
+    'current', (select public_biz_day(b) from open_biz_day() b)
+  );
+$$;
+
+-- 今天（相關營業日邊界）的每日手動帳目那一列，沒設定過就是零筆。
+-- 對照 _dailyLedgerRow()：只認相關營業日 session 自己存的那一列（biz_id
+-- 要對得上），沒有相關 session 才退回單純比對日期、取最新一列。
+create or replace function daily_ledger_row_for_today()
+returns setof daily_ledger
+language sql
+stable
+as $$
+  with today_ref as (
+    select coalesce((select business_date from relevant_biz_day_for_today()), today_key()) as d
+  ),
+  relevant_biz as (
+    select biz_id from relevant_biz_day_for_today()
+  )
+  select dl.*
+  from daily_ledger dl, today_ref
+  where dl.business_date = today_ref.d
+    and (
+      (exists (select 1 from relevant_biz) and dl.biz_id = (select biz_id from relevant_biz))
+      or not exists (select 1 from relevant_biz)
+    )
+  order by dl.seq desc
+  limit 1;
+$$;
+
+-- 台主給／台主領明細：新欄位（jsonb 陣列）沒有資料（或全是金額 0 的
+-- 項目）時，退回舊欄位（單一數字）給一個預設名稱；金額 0 的項目一律
+-- 濾掉，不用留著佔位子。對照 _parseLedgerItems()／_ledgerItemsOrLegacy()。
+create or replace function ledger_items_or_legacy(p_items jsonb, p_legacy_amount numeric, p_legacy_name text)
+returns jsonb
+language sql
+immutable
+as $$
+  with filtered as (
+    select coalesce(jsonb_agg(elem), '[]'::jsonb) as arr
+    from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) elem
+    where coalesce((elem->>'amount')::numeric, 0) <> 0
+  )
+  select case
+    when jsonb_array_length((select arr from filtered)) > 0 then (select arr from filtered)
+    when coalesce(p_legacy_amount, 0) <> 0 then jsonb_build_array(jsonb_build_object('name', p_legacy_name, 'amount', p_legacy_amount))
+    else '[]'::jsonb
+  end;
+$$;
+
+create or replace function sum_ledger_items(p_items jsonb)
+returns numeric
+language sql
+immutable
+as $$
+  select coalesce(sum((elem->>'amount')::numeric), 0)
+  from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) elem;
+$$;
+
+-- 轉成前端要的形狀，沒設定過的營業日（p_row 是 null）各項都當 0／空
+-- 清單，不是回傳 null 讓前端自己判斷。對照 _publicDailyLedger()。
+create or replace function public_daily_ledger(p_row daily_ledger)
+returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_object(
+    'turnover', coalesce(p_row.turnover, 0),
+    'transport', coalesce(p_row.transport, 0),
+    'givenToOwnerItems', ledger_items_or_legacy(p_row.given_to_owner_items, p_row.given_to_owner, '台主給'),
+    'givenToOwner', sum_ledger_items(ledger_items_or_legacy(p_row.given_to_owner_items, p_row.given_to_owner, '台主給')),
+    'takenByOwnerItems', ledger_items_or_legacy(p_row.taken_by_owner_items, p_row.taken_by_owner, '台主領'),
+    'takenByOwner', sum_ledger_items(ledger_items_or_legacy(p_row.taken_by_owner_items, p_row.taken_by_owner, '台主領')),
+    'returnedToHouse', coalesce(p_row.returned_to_house, 0),
+    'manual432', coalesce(p_row.manual_432, 0),
+    'manual441', coalesce(p_row.manual_441, 0),
+    'manualExpense', coalesce(p_row.manual_expense, 0),
+    'updatedAt', coalesce(p_row.updated_at::text, '')
+  );
+$$;
+
+-- 首頁本體。SECURITY INVOKER（預設）：records/machines 兩張表都靠呼叫者
+-- 的 RLS 自動篩成「看得到的機台」，不用像 GAS 版本那樣自己先查一輪
+-- visibleMachineIds() 再逐一比對——這是走「前端直連＋RLS」比原本 GAS
+-- 架構單純的地方，篩選權限的程式碼完全不用在這裡重複一次。
+create or replace function dashboard()
+returns jsonb
+language sql
+stable
+as $$
+  with ctx as (
+    select
+      today_key() as calendar_today,
+      coalesce((select business_date from relevant_biz_day_for_today()), today_key()) as today_ref,
+      (select opened_at from relevant_biz_day_for_today()) as biz_opened_at,
+      (select business_date from relevant_biz_day_for_today()) as biz_business_date
+  ),
+  rec as (
+    select
+      r.*,
+      is_today_record(
+        r.business_date, r.created_at,
+        (select today_ref from ctx),
+        (select calendar_today from ctx),
+        (select biz_business_date from ctx),
+        (select biz_opened_at from ctx)
+      ) as is_today,
+      date_trunc('month', r.business_date) = date_trunc('month', (select today_ref from ctx)) as is_this_month
+    from records r
+    where r.voided = false
+      -- RLS 已經把看不到的機台的紀錄濾掉；這裡不用再另外 join machines
+      -- 限一次範圍，records 表自己的 policy 就是 can_see_machine()。
+  ),
+  per_machine_today as (
+    select
+      machine_id,
+      coalesce(sum(amount) filter (where type = 'in'), 0) as in_amt,
+      coalesce(sum(amount) filter (where type = 'out'), 0) as out_amt,
+      coalesce(sum(amount) filter (where type = 'prize'), 0) as prize_amt,
+      coalesce(sum(amount) filter (where type = 'chip_in'), 0) as chip_in_amt,
+      coalesce(sum(amount) filter (where type = 'chip_out'), 0) as chip_out_amt
+    from rec
+    where is_today
+    group by machine_id
+  ),
+  per_machine_total as (
+    select
+      machine_id,
+      coalesce(sum(amount) filter (where type = 'in'), 0) as in_amt,
+      coalesce(sum(amount) filter (where type = 'out'), 0) as out_amt,
+      coalesce(sum(amount) filter (where type = 'prize'), 0) as prize_amt,
+      coalesce(sum(amount) filter (where type = 'chip_in'), 0) as chip_in_amt,
+      coalesce(sum(amount) filter (where type = 'chip_out'), 0) as chip_out_amt
+    from rec
+    group by machine_id
+  ),
+  machine_list as (
+    select
+      m.machine_id, m.name, m.location, m.status, m.color, m.sort_order, m.category, m.icon,
+      coalesce(t.in_amt, 0) as today_in, coalesce(t.out_amt, 0) as today_out, coalesce(t.prize_amt, 0) as today_prize,
+      coalesce(t.chip_in_amt, 0) as today_chip_in, coalesce(t.chip_out_amt, 0) as today_chip_out,
+      jsonb_build_object(
+        'in', coalesce(t.in_amt, 0), 'out', coalesce(t.out_amt, 0), 'prize', coalesce(t.prize_amt, 0),
+        'net', coalesce(t.in_amt, 0) - coalesce(t.out_amt, 0) - coalesce(t.prize_amt, 0),
+        'chipIn', coalesce(t.chip_in_amt, 0), 'chipOut', coalesce(t.chip_out_amt, 0),
+        'chipNet', coalesce(t.chip_in_amt, 0) - coalesce(t.chip_out_amt, 0)
+      ) as today_json,
+      jsonb_build_object(
+        'in', m.carry_in + coalesce(a.in_amt, 0), 'out', m.carry_out + coalesce(a.out_amt, 0),
+        'prize', m.carry_prize + coalesce(a.prize_amt, 0),
+        'net', (m.carry_in + coalesce(a.in_amt, 0)) - (m.carry_out + coalesce(a.out_amt, 0)) - (m.carry_prize + coalesce(a.prize_amt, 0)),
+        'chipIn', m.carry_chip_in + coalesce(a.chip_in_amt, 0), 'chipOut', m.carry_chip_out + coalesce(a.chip_out_amt, 0),
+        'chipNet', (m.carry_chip_in + coalesce(a.chip_in_amt, 0)) - (m.carry_chip_out + coalesce(a.chip_out_amt, 0))
+      ) as total_json
+    from machines m
+    left join per_machine_today t on t.machine_id = m.machine_id
+    left join per_machine_total a on a.machine_id = m.machine_id
+  ),
+  machines_json as (
+    select coalesce(jsonb_agg(
+      jsonb_build_object(
+        'machineId', machine_id, 'name', name, 'location', location, 'status', status,
+        'color', color, 'sortOrder', sort_order, 'category', category, 'icon', icon,
+        'today', today_json, 'total', total_json
+      ) order by sort_order, name
+    ), '[]'::jsonb) as val
+    from machine_list
+  ),
+  dice_total as (
+    select
+      coalesce(sum(today_in) filter (where category <> 'electronic'), 0) as in_amt,
+      coalesce(sum(today_out) filter (where category <> 'electronic'), 0) as out_amt,
+      coalesce(sum(today_prize) filter (where category <> 'electronic'), 0) as prize_amt
+    from machine_list
+  ),
+  electronic_total as (
+    select
+      coalesce(sum(today_chip_in) filter (where category = 'electronic'), 0) as chip_in_amt,
+      coalesce(sum(today_chip_out) filter (where category = 'electronic'), 0) as chip_out_amt
+    from machine_list
+  ),
+  today_prize_stats as (
+    select
+      coalesce(sum(count) filter (where type = 'prize' and is_today and prize_name = '432'), 0) as count432,
+      coalesce(sum(amount) filter (where type = 'prize' and is_today and prize_name = '432'), 0) as amount432,
+      coalesce(sum(count) filter (where type = 'prize' and is_today and prize_name = '441'), 0) as count441,
+      coalesce(count(*) filter (where type = 'out' and is_today), 0) as out_count
+    from rec
+  ),
+  month_prize_stats as (
+    select
+      coalesce(sum(count) filter (where type = 'prize' and is_this_month and prize_name = '432'), 0) as count432,
+      coalesce(sum(count) filter (where type = 'prize' and is_this_month and prize_name = '441'), 0) as count441
+    from rec
+  ),
+  ledger_json as (
+    select public_daily_ledger((select l from daily_ledger_row_for_today() l limit 1)) as val
+  )
+  select jsonb_build_object(
+    'machines', (select val from machines_json),
+    'todayTotal', jsonb_build_object(
+      'in', (select in_amt from dice_total), 'out', (select out_amt from dice_total),
+      'prize', (select prize_amt from dice_total),
+      'net', (select in_amt from dice_total) - (select out_amt from dice_total) - (select prize_amt from dice_total),
+      'chipIn', (select chip_in_amt from electronic_total), 'chipOut', (select chip_out_amt from electronic_total),
+      'chipNet', (select chip_in_amt from electronic_total) - (select chip_out_amt from electronic_total)
+    ),
+    'diceTotal', jsonb_build_object(
+      'in', (select in_amt from dice_total), 'out', (select out_amt from dice_total),
+      'prize', (select prize_amt from dice_total),
+      'net', (select in_amt from dice_total) - (select out_amt from dice_total) - (select prize_amt from dice_total),
+      'chipIn', 0, 'chipOut', 0, 'chipNet', 0
+    ),
+    'electronicTotal', jsonb_build_object(
+      'in', 0, 'out', 0, 'prize', 0, 'net', 0,
+      'chipIn', (select chip_in_amt from electronic_total), 'chipOut', (select chip_out_amt from electronic_total),
+      'chipNet', (select chip_in_amt from electronic_total) - (select chip_out_amt from electronic_total)
+    ),
+    'today432Count', (select count432 from today_prize_stats),
+    'today432Amount', (select amount432 from today_prize_stats),
+    'today441Count', (select count441 from today_prize_stats),
+    'todayOutCount', (select out_count from today_prize_stats),
+    'month432Count', (select count432 from month_prize_stats),
+    'month441Count', (select count441 from month_prize_stats),
+    'ledger', (select val from ledger_json),
+    'ledgerTotal', round((
+      (select in_amt from dice_total) - (select out_amt from dice_total)
+      - coalesce(((select val from ledger_json) ->> 'manual432')::numeric, 0)
+      - coalesce(((select val from ledger_json) ->> 'manual441')::numeric, 0)
+      - coalesce(((select val from ledger_json) ->> 'manualExpense')::numeric, 0)
+      + coalesce(((select val from ledger_json) ->> 'turnover')::numeric, 0)
+      + coalesce(((select val from ledger_json) ->> 'givenToOwner')::numeric, 0)
+      + ((select chip_in_amt from electronic_total) - (select chip_out_amt from electronic_total))
+      - coalesce(((select val from ledger_json) ->> 'takenByOwner')::numeric, 0)
+      + coalesce(((select val from ledger_json) ->> 'returnedToHouse')::numeric, 0)
+    )::numeric, 2),
+    'today', (select today_ref from ctx)::text,
+    'businessDay', business_day_status()
+  );
+$$;
