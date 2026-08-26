@@ -15,7 +15,7 @@ window.APP_CONFIG = {
   // 要切去測試 Supabase 後端時改成 'supabase'，並填好下面兩個值
   // （Supabase 專案的 Settings → API Keys：Project URL／anon public
   // key，anon key 是公開的沒關係，真正的權限控管在資料庫的 RLS）。
-  BACKEND: 'gas',
-  SUPABASE_URL: '',
-  SUPABASE_ANON_KEY: ''
+  BACKEND: 'supabase',
+  SUPABASE_URL: 'https://gwwuzmspgvpzlstvafov.supabase.co',
+  SUPABASE_ANON_KEY: 'sb_publishable_47e2AZYATL2emOv5B-gYjg_5MKCMem3'
 };
