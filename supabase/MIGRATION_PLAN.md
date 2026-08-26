@@ -122,14 +122,49 @@
       API、一半打舊 API 的過渡期混亂狀態。
       「新增帳號」這個動作是唯一確定要留一小塊後端的地方（見下面
       Auth & RLS 那節最後一小段），不算違反「前端直連」的大方向。
+      **記帳寫入＋設定 CRUD 也搬完了**：`add_record()`／
+      `add_meter_record()`／`add_prize_record()`／`void_record()`
+      對照 `addRecord`／`addMeterRecord`／`addPrizeRecord`／`voidRecord`；
+      `resolve_quick_amounts()`／`resolve_prizes()`／`resolve_meter_rate()`
+      對照 `_scopedRows()` 那套「全局預設＋單台覆寫」規則；系統管理頁
+      CRUD（`save_meter_rate`／`save_quick_amount`／`delete_quick_amount`／
+      `fork_scope_to_machine`／`reset_scope_to_global`／`save_prize`／
+      `delete_prize`／`admin_save_machine`／`admin_set_permission`）也都
+      搬完，對照 `SCOPED_ID_FIELD` 那批同名 GAS function。
+      過程中發現並修掉兩個 schema 問題：`prizes`／`quick_amounts` 原本
+      的 `machine_id` 設了外鍵參照 `machines(machine_id)`，但空字串代表
+      「全局設定」，不是真的機台，外鍵會直接擋掉這個設計——改成跟
+      `meter_rates` 一樣不設外鍵；`records.client_token` 原本設成
+      `not null unique`，但 `add_prize_record()` 一次登錄多個獎型時會
+      用同一個 `client_token` 寫入好幾列（跟 GAS/Sheets 版本一致），
+      `unique` 約束會讓第二列直接撞號失敗——改成不設 unique，去重邏輯
+      改成跟 GAS 一樣在 function 裡「先查有沒有這個 token、有就直接
+      回傳既有紀錄，不然才寫入」，`records` 表另外補一支非唯一索引
+      幫這個查詢加速就好。
+      已在本機 Postgres 用非 superuser 的 `authenticated` 角色測過：
+      入幣/出幣/碼表/開獎的金額與型別驗證（骰台不能開分洗分、電子機台
+      不能碼表入幣或開獎、碼表下班表要大於上班表）、`client_token` 重複
+      送出正確回傳 `duplicated:true` 且不重複寫入、`void_record` 重複
+      作廢正確回傳 `alreadyVoided:true`、巡邏人員打得動記帳但打不動
+      `void_record`／`admin_save_machine`（被 `is_admin()` 擋下，錯誤
+      訊息跟 GAS 一致）、台主對沒授權的機台被 RLS 直接擋到看不見（
+      `select * from machines` 查不到該台，`add_record` 也被
+      `can_see_machine()` 明確擋掉）、`schema.sql`／`policies.sql`／
+      `functions.sql` 三個檔案重覆執行兩次都不報錯（`create or replace`／
+      `drop policy if exists` 都是冪等的）。
       **剩下還沒搬的**：`exportLedgerXlsx()`（真的產生 .xlsx 檔案的部分，
-      這需要一個能寫 Excel 檔案格式的地方，不是純 SQL 能做的，屬於
-      Phase 3 最後才需要決定「這段邏輯要放哪」的一小塊——目前傾向前端
-      直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端的 xlsx 產生
-      套件現場組出檔案，不需要後端）；`adminBootstrap`／`adminSaveUser`
-      等系統管理頁的一批 CRUD 動作（多半是單純查表/寫表，可能不需要包
-      成 function，直接讓前端用 `.from(...).select()/.insert()` 打，
-      交給 Phase 5 前端改接時再個別確認）。
+      這需要一個能寫 Excel 檔案格式的地方，不是純 SQL 能做的——目前傾向
+      前端直接用 `ledger_grid()` 拿到的格線資料，改用瀏覽器端的 xlsx
+      產生套件現場組出檔案，不需要後端）；`machine_detail()`（完整的
+      單台詳細頁：分頁紀錄清單＋今日/本週統計＋營業日狀態，對照
+      `getMachineDetail()`/`_buildMachineDetail()`——`add_record()` 等
+      寫入 function 目前也還沒像 GAS 版本那樣把這份資料一起回傳省一趟
+      來回，等這支搬完再補上）；`adminBootstrap`（純聚合，前端可以直接
+      分開打 `adminListUsers`/`adminListMachines`/... 對應的 4 條
+      查詢，不一定需要包成一支 function）；`adminSaveUser`／
+      `adminResetPassword`（建立新帳號、改密碼——需要 Supabase Auth
+      Admin API 的 service role key，純 SQL function 做不到，要用
+      Edge Function，見下面 Auth & RLS 那節）。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
       那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／
@@ -187,10 +222,14 @@ role，沒有真的專案沒辦法完整驗證。
   正式環境用。
 - 舊帳號的密碼沒辦法遷移（雜湊方式不同），Phase 4 要先想好怎麼跟
   使用者溝通「這次要重設密碼」。
-- `records.client_token` 設了 `unique` 約束，直接對應 `addRecord` 的
-  冪等去重邏輯（同一個 clientToken 送兩次只寫一筆）——比原本 Sheets
-  版本（程式手動查重）更省事，但要確認前端每次送出真的都帶新的
-  clientToken，不然合法的兩筆不同紀錄可能撞號被擋。
+- `records.client_token` 沒有設資料庫層的 `unique` 約束（設計原因見
+  上面「記帳寫入」那段），去重完全靠 `add_record()`/`add_meter_record()`/
+  `add_prize_record()` 裡「先查再寫」的 app 層邏輯，跟 GAS/Sheets 版本
+  是同一套機制、同一種弱點：兩個請求幾乎同時打進來、都還沒查到對方寫的
+  那筆時，理論上還是有極小機率兩邊都判定「沒有重複」而各自寫入一筆。
+  GAS 版本靠 `withLock()`（Sheets 的 LockService）杜絕這個競態；
+  Postgres 版本目前還沒有對應的鎖，如果之後要補，可以在 function 裡
+  對同一個 `client_token` 做 `select ... for update` 或用 advisory lock。
 - 季度封存機制（`封存_2026Q1` 這種額外分頁）在新架構完全不需要，
   `carry_in`/`carry_out`/... 這幾欄只是遷移過渡用，新資料寫入不會
   再往上加——遷移完成後要不要整個拿掉這幾欄，等 Phase 4 資料遷移

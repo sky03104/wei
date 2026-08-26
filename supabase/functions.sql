@@ -1157,3 +1157,742 @@ begin
   return v_result;
 end;
 $$;
+
+-- ═══════════════════════════════════════════════════════════════════════
+-- 記帳寫入 + 全局預設/單台覆寫設定 + 系統管理 CRUD
+-- 對照 apps-script/Service.gs 的 addRecord/addMeterRecord/addPrizeRecord/
+-- voidRecord、_scopedRows() 系列、以及系統管理頁那一批 admin* 動作。
+-- 全部 SECURITY INVOKER：寫入型的表本身也有對應的 RLS policy
+-- （can_record()/is_admin()），這裡的檢查是為了給出跟 GAS 一致的錯誤訊息，
+-- RLS 是最後一道防線，不是唯一一道。
+-- ═══════════════════════════════════════════════════════════════════════
+
+-- 對照 _validAmount()：正數、四捨五入到分、有上限。
+create or replace function valid_amount(p_raw numeric)
+returns numeric
+language plpgsql
+immutable
+as $$
+begin
+  if p_raw is null or p_raw <= 0 then
+    raise exception '金額必須是大於 0 的數字';
+  end if;
+  if p_raw > 10000000 then
+    raise exception '金額超出上限';
+  end if;
+  return round(p_raw, 2);
+end;
+$$;
+
+-- 對照 _validMeterReading()：非負整數，機械式計數器不會有小數或負數。
+create or replace function valid_meter_reading(p_raw numeric)
+returns numeric
+language plpgsql
+immutable
+as $$
+begin
+  if p_raw is null then
+    raise exception '碼表讀數必須是數字';
+  end if;
+  if p_raw < 0 then
+    raise exception '碼表讀數不能是負數';
+  end if;
+  if p_raw <> floor(p_raw) then
+    raise exception '碼表讀數必須是整數';
+  end if;
+  if p_raw > 99999999 then
+    raise exception '碼表讀數超出上限';
+  end if;
+  return p_raw;
+end;
+$$;
+
+-- 對照 _validCount()：開獎次數，非負整數。
+create or replace function valid_count(p_raw numeric)
+returns numeric
+language plpgsql
+immutable
+as $$
+begin
+  if p_raw is null then
+    raise exception '次數必須是數字';
+  end if;
+  if p_raw < 0 then
+    raise exception '次數不能是負數';
+  end if;
+  if p_raw <> floor(p_raw) then
+    raise exception '次數必須是整數';
+  end if;
+  if p_raw > 9999 then
+    raise exception '次數超出上限';
+  end if;
+  return p_raw;
+end;
+$$;
+
+-- 單筆紀錄的公開形狀，對照 _publicRecord()。
+create or replace function public_record(p_row records)
+returns jsonb
+language sql
+stable
+as $$
+  select jsonb_build_object(
+    'recordId', p_row.record_id,
+    'machineId', p_row.machine_id,
+    'type', p_row.type,
+    'amount', p_row.amount,
+    'prizeName', coalesce(p_row.prize_name, ''),
+    'unitAmount', p_row.unit_amount,
+    'count', p_row.count,
+    'meterStart', p_row.meter_start,
+    'meterEnd', p_row.meter_end,
+    'userName', (select coalesce(nullif(display_name, ''), username) from profiles where id = p_row.user_id),
+    'createdAt', p_row.created_at,
+    'businessDate', p_row.business_date,
+    'note', coalesce(p_row.note, '')
+  );
+$$;
+
+-- ── 全局預設 + 單台覆寫（快捷金額／獎型／碼表費率）────────────
+-- 共用規則：該機台有自己的設定就用它，完全沒有才落回全局（machine_id=''）。
+-- 對照 _scopedRows()。這三張表各自欄位形狀不同，分開寫成三支而不是共用
+-- 一支動態 SQL，圖個型別安全、也跟 GAS 版本一樣一支只管一種設定。
+
+create or replace function resolve_quick_amounts(p_machine_id text)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_scope text;
+  v_pick_machine text;
+  v_in jsonb;
+  v_out jsonb;
+begin
+  v_scope := case when exists(select 1 from quick_amounts where machine_id = p_machine_id) then 'machine' else 'global' end;
+  v_pick_machine := case when v_scope = 'machine' then p_machine_id else '' end;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'qaId', qa_id, 'machineId', machine_id, 'type', type, 'amount', amount,
+    'label', coalesce(nullif(label, ''), '$' || amount::text), 'sortOrder', sort_order
+  ) order by sort_order, amount), '[]'::jsonb)
+  into v_in
+  from quick_amounts where machine_id = v_pick_machine and type = 'in';
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'qaId', qa_id, 'machineId', machine_id, 'type', type, 'amount', amount,
+    'label', coalesce(nullif(label, ''), '$' || amount::text), 'sortOrder', sort_order
+  ) order by sort_order, amount), '[]'::jsonb)
+  into v_out
+  from quick_amounts where machine_id = v_pick_machine and type = 'out';
+
+  return jsonb_build_object('scope', v_scope, 'in', v_in, 'out', v_out);
+end;
+$$;
+
+create or replace function resolve_prizes(p_machine_id text)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_scope text;
+  v_pick_machine text;
+  v_prizes jsonb;
+begin
+  v_scope := case when exists(select 1 from prizes where machine_id = p_machine_id) then 'machine' else 'global' end;
+  v_pick_machine := case when v_scope = 'machine' then p_machine_id else '' end;
+
+  select coalesce(jsonb_agg(jsonb_build_object(
+    'prizeId', prize_id, 'machineId', machine_id, 'name', name, 'amount', amount,
+    'sortOrder', sort_order, 'scope', v_scope
+  ) order by sort_order, amount), '[]'::jsonb)
+  into v_prizes
+  from prizes where machine_id = v_pick_machine and active;
+
+  return jsonb_build_object('scope', v_scope, 'prizes', v_prizes);
+end;
+$$;
+
+create or replace function resolve_meter_rate(p_machine_id text)
+returns jsonb
+language plpgsql
+stable
+as $$
+declare
+  v_scope text;
+  v_row meter_rates;
+begin
+  v_scope := case when exists(select 1 from meter_rates where machine_id = p_machine_id) then 'machine' else 'global' end;
+  select * into v_row from meter_rates
+  where machine_id = (case when v_scope = 'machine' then p_machine_id else '' end)
+  limit 1;
+  return jsonb_build_object('scope', v_scope, 'rate', coalesce(v_row.rate, 100));
+end;
+$$;
+
+-- ── 記帳（入幣／出幣／碼表／開獎）───────────────────────────
+
+-- 對照 addRecord()。跟 GAS 版本不同的是：這裡不像 GAS 那樣把
+-- getMachineDetail() 一併塞進回傳值省一趟來回——machine_detail()（完整
+-- 詳細頁：分頁紀錄清單＋今日/本週統計＋營業日狀態）還沒搬過來，前端
+-- 目前得自己在寫入成功後再叫一次查詢。見 MIGRATION_PLAN.md 的待辦。
+create or replace function add_record(
+  p_machine_id text, p_type text, p_amount numeric, p_note text, p_client_token text
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_category text;
+  v_amount numeric;
+  v_token text := coalesce(p_client_token, '');
+  v_dup records;
+  v_rec records;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有記帳權限' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  select category into v_category from machines where machine_id = p_machine_id;
+  if v_category is null then
+    raise exception '找不到這台機台';
+  end if;
+  if v_category = 'electronic' and p_type not in ('chip_in', 'chip_out') then
+    raise exception '電子機台只能記錄開分或洗分';
+  end if;
+  if v_category <> 'electronic' and p_type not in ('in', 'out') then
+    raise exception '骰台機台不能記錄開分或洗分';
+  end if;
+
+  v_amount := valid_amount(p_amount);
+
+  if v_token <> '' then
+    select * into v_dup from records where client_token = v_token limit 1;
+    if found then
+      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)));
+    end if;
+  end if;
+
+  insert into records (
+    record_id, machine_id, type, amount, user_id, created_at, note, client_token, business_date
+  ) values (
+    new_id('rec'), p_machine_id, p_type, v_amount, auth.uid(), now(),
+    left(coalesce(p_note, ''), 200), v_token, current_business_date()
+  ) returning * into v_rec;
+
+  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)));
+end;
+$$;
+
+-- 對照 addMeterRecord()：入幣金額 = (下班表 − 上班表) × 費率（_resolveMeterRate）。
+create or replace function add_meter_record(
+  p_machine_id text, p_meter_start numeric, p_meter_end numeric, p_note text, p_client_token text
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_category text;
+  v_meter_start numeric;
+  v_meter_end numeric;
+  v_rate numeric;
+  v_amount numeric;
+  v_token text := coalesce(p_client_token, '');
+  v_dup records;
+  v_rec records;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有記帳權限' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  select category into v_category from machines where machine_id = p_machine_id;
+  if v_category is null then
+    raise exception '找不到這台機台';
+  end if;
+  if v_category = 'electronic' then
+    raise exception '電子機台不能用碼表入幣，請用開分/洗分';
+  end if;
+
+  v_meter_start := valid_meter_reading(p_meter_start);
+  v_meter_end := valid_meter_reading(p_meter_end);
+  if v_meter_end <= v_meter_start then
+    raise exception '下班表必須大於上班表';
+  end if;
+
+  v_rate := (resolve_meter_rate(p_machine_id) ->> 'rate')::numeric;
+  v_amount := valid_amount((v_meter_end - v_meter_start) * v_rate);
+
+  if v_token <> '' then
+    select * into v_dup from records where client_token = v_token limit 1;
+    if found then
+      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)));
+    end if;
+  end if;
+
+  insert into records (
+    record_id, machine_id, type, amount, meter_start, meter_end,
+    user_id, created_at, note, client_token, business_date
+  ) values (
+    new_id('rec'), p_machine_id, 'in', v_amount, v_meter_start, v_meter_end,
+    auth.uid(), now(), left(coalesce(p_note, ''), 200), v_token, current_business_date()
+  ) returning * into v_rec;
+
+  return jsonb_build_object('duplicated', false, 'records', jsonb_build_array(public_record(v_rec)));
+end;
+$$;
+
+-- 對照 addPrizeRecord()：一次登錄多個獎型，單價/名稱一律從 Prizes 表
+-- 快照，不採信前端傳來的金額。整支函式在同一個 statement 裡執行，
+-- 中途 raise exception 會讓 Postgres 自動把這個 statement 已經寫入的
+-- 所有列一起復原，等同 GAS 版本「先驗證全部、再一次寫入」的效果。
+create or replace function add_prize_record(
+  p_machine_id text, p_items jsonb, p_note text, p_client_token text
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_category text;
+  v_token text := coalesce(p_client_token, '');
+  v_dup records;
+  v_item jsonb;
+  v_count numeric;
+  v_prize prizes;
+  v_note text := left(coalesce(p_note, ''), 200);
+  v_business_date date := current_business_date();
+  v_rec records;
+  v_rows jsonb := '[]'::jsonb;
+  v_sum numeric := 0;
+  v_any boolean := false;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有記帳權限' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  select category into v_category from machines where machine_id = p_machine_id;
+  if v_category is null then
+    raise exception '找不到這台機台';
+  end if;
+  if v_category = 'electronic' then
+    raise exception '電子機台沒有活動登錄';
+  end if;
+
+  if p_items is null or jsonb_typeof(p_items) <> 'array' or jsonb_array_length(p_items) = 0 then
+    raise exception '請至少輸入一個獎型的次數';
+  end if;
+
+  if v_token <> '' then
+    select * into v_dup from records where client_token = v_token limit 1;
+    if found then
+      return jsonb_build_object('duplicated', true, 'records', jsonb_build_array(public_record(v_dup)));
+    end if;
+  end if;
+
+  for v_item in select * from jsonb_array_elements(p_items)
+  loop
+    v_count := valid_count((v_item ->> 'count')::numeric);
+    if v_count = 0 then
+      continue;
+    end if;
+
+    select * into v_prize from prizes
+    where prize_id = (v_item ->> 'prizeId')
+      and (machine_id = p_machine_id or machine_id = '')
+      and active
+    order by (machine_id = p_machine_id) desc
+    limit 1;
+    if not found then
+      raise exception '獎型不存在或已停用，請重新整理後再試';
+    end if;
+
+    insert into records (
+      record_id, machine_id, type, amount, prize_id, prize_name, unit_amount, count,
+      user_id, created_at, note, client_token, business_date
+    ) values (
+      new_id('rec'), p_machine_id, 'prize', round(v_prize.amount * v_count, 2),
+      v_prize.prize_id, v_prize.name, v_prize.amount, v_count,
+      auth.uid(), now(), v_note, v_token, v_business_date
+    ) returning * into v_rec;
+
+    v_any := true;
+    v_sum := v_sum + v_rec.amount;
+    v_rows := v_rows || jsonb_build_array(public_record(v_rec));
+  end loop;
+
+  if not v_any then
+    raise exception '請至少輸入一個獎型的次數';
+  end if;
+
+  return jsonb_build_object('duplicated', false, 'total', v_sum, 'records', v_rows);
+end;
+$$;
+
+-- 對照 voidRecord()：只有管理員能作廢，不是真的刪列。
+create or replace function void_record(p_record_id text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_row records;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能作廢紀錄' using errcode = '42501';
+  end if;
+  select * into v_row from records where record_id = p_record_id;
+  if not found then
+    raise exception '找不到這筆紀錄';
+  end if;
+  if v_row.voided then
+    return jsonb_build_object('alreadyVoided', true);
+  end if;
+  update records set voided = true, voided_by = auth.uid(), voided_at = now()
+  where record_id = p_record_id;
+  return jsonb_build_object('alreadyVoided', false);
+end;
+$$;
+
+-- ── 系統管理頁 CRUD ──────────────────────────────────────────
+-- adminSaveUser/adminResetPassword 沒有搬過來：那兩支要建立/改
+-- Supabase Auth 帳號，得用 service role 的 Auth Admin API，純 SQL
+-- function 做不到，要用 Edge Function（見 MIGRATION_PLAN.md）。
+
+create or replace function save_meter_rate(p_machine_id text, p_rate numeric)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_scope text := coalesce(p_machine_id, '');
+  v_rate numeric;
+  v_existing meter_rates;
+  v_new_id text;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定費率' using errcode = '42501';
+  end if;
+  if v_scope <> '' and not can_see_machine(v_scope) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+  v_rate := valid_amount(p_rate);
+
+  select * into v_existing from meter_rates where machine_id = v_scope limit 1;
+  if found then
+    update meter_rates set rate = v_rate where rate_id = v_existing.rate_id;
+    return jsonb_build_object('rateId', v_existing.rate_id, 'rate', v_rate);
+  end if;
+
+  insert into meter_rates (rate_id, machine_id, rate)
+  values (new_id('mr'), v_scope, v_rate)
+  returning rate_id into v_new_id;
+  return jsonb_build_object('rateId', v_new_id, 'rate', v_rate);
+end;
+$$;
+
+create or replace function save_quick_amount(
+  p_qa_id text, p_machine_id text, p_type text, p_amount numeric, p_label text, p_sort_order numeric
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_scope text := coalesce(p_machine_id, '');
+  v_amount numeric;
+  v_row quick_amounts;
+  v_new_id text;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定快捷金額' using errcode = '42501';
+  end if;
+  if v_scope <> '' and not can_see_machine(v_scope) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+  if p_type not in ('in', 'out') then
+    raise exception '快捷鍵類型只能是入幣或出幣';
+  end if;
+  v_amount := valid_amount(p_amount);
+
+  if p_qa_id is not null and p_qa_id <> '' then
+    select * into v_row from quick_amounts where qa_id = p_qa_id;
+    if not found then
+      raise exception '找不到這個快捷鍵';
+    end if;
+    update quick_amounts
+    set amount = v_amount, label = left(coalesce(p_label, ''), 20), sort_order = coalesce(p_sort_order, 0)
+    where qa_id = p_qa_id;
+    return jsonb_build_object('qaId', p_qa_id);
+  end if;
+
+  insert into quick_amounts (qa_id, machine_id, type, amount, label, sort_order)
+  values (new_id('qa'), v_scope, p_type, v_amount, left(coalesce(p_label, ''), 20), coalesce(p_sort_order, 0))
+  returning qa_id into v_new_id;
+  return jsonb_build_object('qaId', v_new_id);
+end;
+$$;
+
+create or replace function delete_quick_amount(p_qa_id text)
+returns jsonb
+language plpgsql
+as $$
+begin
+  if not is_admin() then
+    raise exception '只有管理員能刪除快捷鍵' using errcode = '42501';
+  end if;
+  if not exists(select 1 from quick_amounts where qa_id = p_qa_id) then
+    raise exception '找不到這個快捷鍵';
+  end if;
+  delete from quick_amounts where qa_id = p_qa_id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- 對照 forkScopeToMachine()：把全局設定複製一份成這台機台的專屬設定。
+-- p_table 限定白名單（quick_amounts/prizes/meter_rates），不接受任意字串，
+-- 避免動態 SQL 被用來打其他表。
+create or replace function fork_scope_to_machine(p_table text, p_machine_id text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_created int := 0;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能操作' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+  if p_table not in ('quick_amounts', 'prizes', 'meter_rates') then
+    raise exception '不支援的設定類型';
+  end if;
+
+  if p_table = 'quick_amounts' then
+    if exists(select 1 from quick_amounts where machine_id = p_machine_id) then
+      return jsonb_build_object('scope', 'machine', 'created', 0);
+    end if;
+    if not exists(select 1 from quick_amounts where machine_id = '') then
+      raise exception '全局設定是空的，沒有東西可以複製';
+    end if;
+    insert into quick_amounts (qa_id, machine_id, type, amount, label, sort_order)
+    select new_id('qa'), p_machine_id, type, amount, label, sort_order
+    from quick_amounts where machine_id = '';
+    get diagnostics v_created = row_count;
+  elsif p_table = 'prizes' then
+    if exists(select 1 from prizes where machine_id = p_machine_id) then
+      return jsonb_build_object('scope', 'machine', 'created', 0);
+    end if;
+    if not exists(select 1 from prizes where machine_id = '') then
+      raise exception '全局設定是空的，沒有東西可以複製';
+    end if;
+    insert into prizes (prize_id, machine_id, name, amount, sort_order, active)
+    select new_id('prz'), p_machine_id, name, amount, sort_order, active
+    from prizes where machine_id = '';
+    get diagnostics v_created = row_count;
+  else
+    if exists(select 1 from meter_rates where machine_id = p_machine_id) then
+      return jsonb_build_object('scope', 'machine', 'created', 0);
+    end if;
+    if not exists(select 1 from meter_rates where machine_id = '') then
+      raise exception '全局設定是空的，沒有東西可以複製';
+    end if;
+    insert into meter_rates (rate_id, machine_id, rate)
+    select new_id('mr'), p_machine_id, rate
+    from meter_rates where machine_id = '';
+    get diagnostics v_created = row_count;
+  end if;
+
+  return jsonb_build_object('scope', 'machine', 'created', v_created);
+end;
+$$;
+
+-- 對照 resetScopeToGlobal()：刪掉這台的專屬設定，回頭沿用全局。
+create or replace function reset_scope_to_global(p_table text, p_machine_id text)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_removed int := 0;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能操作' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  if p_table = 'quick_amounts' then
+    delete from quick_amounts where machine_id = p_machine_id;
+  elsif p_table = 'prizes' then
+    delete from prizes where machine_id = p_machine_id;
+  elsif p_table = 'meter_rates' then
+    delete from meter_rates where machine_id = p_machine_id;
+  else
+    raise exception '不支援的設定類型';
+  end if;
+  get diagnostics v_removed = row_count;
+
+  return jsonb_build_object('scope', 'global', 'removed', v_removed);
+end;
+$$;
+
+create or replace function save_prize(
+  p_prize_id text, p_machine_id text, p_name text, p_amount numeric, p_sort_order numeric, p_active boolean
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_scope text := coalesce(p_machine_id, '');
+  v_name text := trim(both from coalesce(p_name, ''));
+  v_amount numeric;
+  v_row prizes;
+  v_new_id text;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定獎型' using errcode = '42501';
+  end if;
+  if v_scope <> '' and not can_see_machine(v_scope) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+  if v_name = '' then
+    raise exception '請輸入獎型名稱';
+  end if;
+  if length(v_name) > 30 then
+    raise exception '獎型名稱請在 30 字以內';
+  end if;
+  v_amount := valid_amount(p_amount);
+
+  if p_prize_id is not null and p_prize_id <> '' then
+    select * into v_row from prizes where prize_id = p_prize_id;
+    if not found then
+      raise exception '找不到這個獎型';
+    end if;
+    update prizes
+    set name = v_name, amount = v_amount, sort_order = coalesce(p_sort_order, 0),
+        active = coalesce(p_active, v_row.active)
+    where prize_id = p_prize_id;
+    return jsonb_build_object('prizeId', p_prize_id);
+  end if;
+
+  insert into prizes (prize_id, machine_id, name, amount, sort_order, active)
+  values (new_id('prz'), v_scope, v_name, v_amount, coalesce(p_sort_order, 0), true)
+  returning prize_id into v_new_id;
+  return jsonb_build_object('prizeId', v_new_id);
+end;
+$$;
+
+-- 對照 deletePrize()：刪除＝停用，歷史帳仍算得出來。
+create or replace function delete_prize(p_prize_id text)
+returns jsonb
+language plpgsql
+as $$
+begin
+  if not is_admin() then
+    raise exception '只有管理員能刪除獎型' using errcode = '42501';
+  end if;
+  if not exists(select 1 from prizes where prize_id = p_prize_id) then
+    raise exception '找不到這個獎型';
+  end if;
+  update prizes set active = false where prize_id = p_prize_id;
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
+-- 對照 adminSaveMachine()：分類（骰台／電子）只在新增當下決定，
+-- 更新分支完全不動 category，換分類會讓歷史紀錄的型別對不上。
+create or replace function admin_save_machine(
+  p_machine_id text, p_name text, p_location text, p_status text, p_color text,
+  p_sort_order numeric, p_note text, p_icon text, p_category text
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_name text := trim(both from coalesce(p_name, ''));
+  v_status text := coalesce(p_status, 'running');
+  v_color text := coalesce(p_color, '#4F7BE8');
+  v_icon text := case when p_icon = any(array['classic','round','twin','tall','dice','sixdice']) then p_icon else 'classic' end;
+  v_category text;
+  v_row machines;
+  v_new_id text;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定機台' using errcode = '42501';
+  end if;
+  if v_name = '' then
+    raise exception '請輸入機台名稱';
+  end if;
+  if length(v_name) > 30 then
+    raise exception '機台名稱請在 30 字以內';
+  end if;
+  if v_status not in ('running', 'maintenance', 'offline') then
+    raise exception '機台狀態不正確';
+  end if;
+  if v_color !~ '^#[0-9a-fA-F]{6}$' then
+    v_color := '#4F7BE8';
+  end if;
+
+  if p_machine_id is not null and p_machine_id <> '' then
+    select * into v_row from machines where machine_id = p_machine_id;
+    if not found then
+      raise exception '找不到這台機台';
+    end if;
+    update machines
+    set name = v_name, location = left(coalesce(p_location, ''), 50), status = v_status,
+        color = v_color, sort_order = coalesce(p_sort_order, 0), note = left(coalesce(p_note, ''), 200),
+        icon = v_icon
+    where machine_id = p_machine_id;
+    return jsonb_build_object('machineId', p_machine_id);
+  end if;
+
+  v_category := case when p_category = 'electronic' then 'electronic' else 'dice' end;
+  insert into machines (machine_id, name, location, status, color, sort_order, note, created_at, category, icon)
+  values (new_id('mch'), v_name, left(coalesce(p_location, ''), 50), v_status, v_color,
+    coalesce(p_sort_order, 0), left(coalesce(p_note, ''), 200), now(), v_category, v_icon)
+  returning machine_id into v_new_id;
+  return jsonb_build_object('machineId', v_new_id);
+end;
+$$;
+
+-- 對照 adminSetPermission()：只有台主需要逐台授權。
+create or replace function admin_set_permission(p_user_id uuid, p_machine_id text, p_granted boolean)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_target profiles;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能設定授權' using errcode = '42501';
+  end if;
+  if not can_see_machine(p_machine_id) then
+    raise exception '沒有這台機台的權限' using errcode = '42501';
+  end if;
+
+  select * into v_target from profiles where id = p_user_id;
+  if not found then
+    raise exception '找不到這個帳號';
+  end if;
+  if v_target.role <> 'owner' then
+    raise exception '只有台主需要逐台授權，管理員與巡邏人員本來就看得到全部機台';
+  end if;
+
+  if p_granted then
+    insert into permissions (user_id, machine_id, granted_by, granted_at)
+    values (p_user_id, p_machine_id, auth.uid(), now())
+    on conflict (user_id, machine_id) do nothing;
+  else
+    delete from permissions where user_id = p_user_id and machine_id = p_machine_id;
+  end if;
+
+  return jsonb_build_object('userId', p_user_id, 'machineId', p_machine_id, 'granted', p_granted);
+end;
+$$;

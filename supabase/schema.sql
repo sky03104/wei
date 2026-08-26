@@ -95,7 +95,11 @@ create table if not exists records (
   voided         boolean not null default false,
   voided_by      uuid references profiles(id),
   voided_at      timestamptz,
-  client_token   text not null unique, -- 冪等鍵，對應 addRecord 的 clientToken 去重機制
+  client_token   text, -- 冪等鍵，對應 addRecord 的 clientToken 去重機制。
+    -- 刻意不設 unique：addPrizeRecord 一次送多個獎型會用「同一個 client_token」
+    -- 寫入好幾列（跟 GAS/Sheets 版本一致，Sheets 本來就沒有唯一約束），
+    -- 去重靠 add_record()/add_prize_record() 裡先 select 再 insert 的
+    -- app 層檢查（對照 _findByClientToken），不是靠資料庫約束。
   meter_start    numeric,
   meter_end      numeric,
   business_date  date not null -- 記帳當下 snapshot 好的營業日期，見 Service.gs 的 _currentBusinessDate()
@@ -111,12 +115,14 @@ create index if not exists records_business_date_idx
   on records (business_date);
 create index if not exists records_voided_idx
   on records (voided) where voided = false;
+create index if not exists records_client_token_idx
+  on records (client_token) where client_token is not null and client_token <> '';
 
 -- ── prizes ──────────────────────────────────────────────
 
 create table if not exists prizes (
   prize_id    text primary key,
-  machine_id  text not null references machines(machine_id),
+  machine_id  text not null default '', -- 空字串＝全局預設，跟 meter_rates 一樣不能設外鍵（'' 不是真的機台）
   name        text not null,
   amount      numeric not null default 0,
   sort_order  numeric not null default 0,
@@ -129,7 +135,7 @@ create index if not exists prizes_machine_idx on prizes (machine_id);
 
 create table if not exists quick_amounts (
   qa_id       text primary key,
-  machine_id  text not null references machines(machine_id),
+  machine_id  text not null default '', -- 空字串＝全局預設，跟 meter_rates 一樣不能設外鍵（'' 不是真的機台）
   type        text not null check (type in ('in', 'out')),
   amount      numeric not null,
   label       text not null default '',
