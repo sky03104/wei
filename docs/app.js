@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v49';
+const APP_VERSION = 'v50';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -596,6 +596,133 @@ async function _exportLedgerGridsSupabase(sb, p) {
   return { range: range, machines: grids };
 }
 
+// ── 匯出 Excel（Supabase 後端）─────────────────────────────
+//
+// GAS 版本是後端借 Google 試算表的服務現場轉存 .xlsx（_exportLedgerWorkbook()：
+// 建一份暫時試算表、填資料、flush、打匯出網址、刪掉暫時試算表），
+// Postgres 沒有等價的服務可以借，改成瀏覽器端用 ExcelJS（docs/index.html
+// 用 CDN 載入的 `ExcelJS` 全域）現場組出檔案，回傳的形狀
+// {filename, base64, rowCount} 跟 GAS 版本一模一樣，downloadLedgerXlsx()
+// 完全不用改。樣式對照 apps-script/Reports.gs 的 _writeLedgerSheet()：
+// 表頭粗體置中、全部資料置中、凍結首列、出幣列跟小計列中間一條黑色
+// 分隔列、小計列倒數第二欄粉紅底、「+/-」那列紅字。
+
+/** 對照 _sanitizeSheetName()：Excel 分頁名稱不能有這幾個字元，上限 28 字
+ *  （留空間給撞名時加的 "(2)" 後綴，Excel 分頁名稱本身上限 31 字）。 */
+function _sanitizeSheetName(name) {
+  const cleaned = String(name || '機台').replace(/[[\]*?/\\:]/g, '-').trim();
+  return (cleaned || '機台').substring(0, 28);
+}
+
+/** 對照 _uniqueSheetName()：分頁名稱不能重複，撞名就加 (2)(3)... 後綴。 */
+function _uniqueSheetName(used, name) {
+  const base = _sanitizeSheetName(name);
+  let candidate = base;
+  let n = 2;
+  while (used[candidate]) {
+    candidate = base + '(' + n + ')';
+    n++;
+  }
+  used[candidate] = true;
+  return candidate;
+}
+
+/** ArrayBuffer → base64，downloadLedgerXlsx() 是照 GAS 版本的形狀寫的，
+ *  預期拿到的是 base64 字串（用 atob() 解碼），不是原始的 ArrayBuffer。 */
+function _arrayBufferToBase64(buffer) {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000; // 一次太大會爆 String.fromCharCode 的參數上限
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+/** 把一份 ledger_grid() 的格線資料寫進一個新的分頁，樣式對照 _writeLedgerSheet()。 */
+function _writeLedgerWorksheet(workbook, sheetName, grid) {
+  const ws = workbook.addWorksheet(sheetName);
+  const numCols = grid.colCount;
+  ws.columns = new Array(numCols).fill(0).map(() => ({ width: 13 })); // 對照 setColumnWidths(1, numCols, 90) 的比例換算
+
+  const headerRow = ws.addRow(grid.headerRow);
+  headerRow.font = { bold: true };
+  headerRow.alignment = { horizontal: 'center' };
+
+  grid.outRows.forEach((row) => {
+    ws.addRow(row).alignment = { horizontal: 'center' };
+  });
+
+  // 分隔列整列沒有任何文字內容，只塗黑——用 addRow() 塞一整排空字串會
+  // 被 ExcelJS 判定成「這列沒有內容」，寫出 .xlsx 時整列（含樣式）都會
+  // 被丟掉（實測確認過的行為，不是猜的）。改成直接用 getRow()/getCell()
+  // 逐一取出儲存格設定樣式，不透過 addRow()，樣式才會真的寫進檔案。
+  const dividerRowIndex = 1 + grid.outRows.length + 1;
+  const dividerRow = ws.getRow(dividerRowIndex);
+  for (let c = 1; c <= numCols; c++) {
+    dividerRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF000000' } };
+  }
+  dividerRow.commit();
+
+  grid.summaryRows.forEach((row) => {
+    const r = ws.addRow(row);
+    r.alignment = { horizontal: 'center' };
+    r.getCell(numCols - 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8CBCB' } };
+    if (row[0] === '+/-') {
+      r.eachCell({ includeEmpty: true }, (cell) => { cell.font = { color: { argb: 'FFC00000' } }; });
+    }
+  });
+
+  ws.views = [{ state: 'frozen', ySplit: 1 }];
+}
+
+async function _exportLedgerXlsxSupabase(sb, p) {
+  if (typeof ExcelJS === 'undefined') {
+    throw ApiError('缺少產生 Excel 檔案需要的套件（ExcelJS 沒載入成功，檢查網路連線或重新整理頁面）', 'ERROR');
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  const isCategoryScope = !p.machineId && p.category;
+  let filenameBase;
+  let totalRowCount = 0;
+
+  if (!isCategoryScope) {
+    const grid = await _rpc(sb, 'ledger_grid', {
+      p_machine_id: p.machineId || null, p_category: p.category || null, p_preset: p.preset || 'day',
+      p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
+    });
+    filenameBase = grid.filenameBase;
+    totalRowCount = grid.rowCount;
+    _writeLedgerWorksheet(workbook, '對帳表', grid);
+  } else {
+    const { data: machines, error: mErr } = await sb.from('machines').select('machine_id, name, sort_order').eq('category', p.category);
+    if (mErr) throw _pgError(mErr);
+    if (!machines || !machines.length) {
+      const label = p.category === 'electronic' ? '電子機台' : '骰台';
+      throw ApiError('目前沒有看得到的' + label + '，無法匯出', 'ERROR');
+    }
+    machines.sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+
+    const rangeRows = await _rpc(sb, 'resolve_range', { p_preset: p.preset || 'day', p_from: p.from || null, p_to: p.to || null });
+    const rangeRow = Array.isArray(rangeRows) ? rangeRows[0] : rangeRows;
+    const categoryLabel = p.category === 'electronic' ? '全部電子機台' : '全部骰台';
+    filenameBase = '娃娃機對帳表_' + categoryLabel + '_' + rangeRow.range_from + '_' + rangeRow.range_to;
+
+    const usedNames = {};
+    for (const m of machines) {
+      const grid = await _rpc(sb, 'ledger_grid', {
+        p_machine_id: m.machine_id, p_category: null, p_preset: p.preset || 'day',
+        p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
+      });
+      totalRowCount += grid.rowCount;
+      _writeLedgerWorksheet(workbook, _uniqueSheetName(usedNames, m.name), grid);
+    }
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  return { filename: filenameBase + '.xlsx', base64: _arrayBufferToBase64(buffer), rowCount: totalRowCount };
+}
+
 async function supabaseApi(action, payload) {
   const p = payload || {};
   const sb = supabaseClient();
@@ -634,13 +761,7 @@ async function supabaseApi(action, payload) {
   }
 
   if (action === 'exportLedgerGrids') return _exportLedgerGridsSupabase(sb, p);
-
-  // exportLedgerXlsx 刻意沒接：真的產生 .xlsx 檔案這件事決定留給前端
-  // 用瀏覽器端套件現場組出檔案（見 MIGRATION_PLAN.md Phase 3 那節），
-  // 還沒實作。
-  if (action === 'exportLedgerXlsx') {
-    throw ApiError('這個後端還沒支援匯出 Excel，請改用「📷 匯出截圖」，或切回 GAS 後端', 'ERROR');
-  }
+  if (action === 'exportLedgerXlsx') return _exportLedgerXlsxSupabase(sb, p);
 
   // adminSaveUser：改已存在帳號（有 userId）不需要 service role，走一般
   // RPC；建立全新帳號（沒有 userId）要呼叫 Supabase Auth Admin API，

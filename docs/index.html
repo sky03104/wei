@@ -49,6 +49,11 @@
      留著載入也不影響原本的 GAS 路徑，只有 config.js 把 BACKEND 改成
      'supabase' 才會實際初始化 client（見 app.js 的 supabaseClient()）。 -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<!-- Supabase 後端的「匯出Excel」用：GAS 版本是後端用 Google 試算表
+     現場轉存 .xlsx，Postgres 版本沒有等價的服務可以借，改成瀏覽器端
+     用 ExcelJS 現場組出檔案（見 app.js 的 _exportLedgerXlsxSupabase()）。
+     只有 BACKEND==='supabase' 才會用到，GAS 路徑完全不受影響。 -->
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>
