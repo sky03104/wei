@@ -75,6 +75,12 @@ create table if not exists machines (
 -- ── records（單一最重要、資料量最大的表；所有查詢熱點都靠索引）──
 
 create table if not exists records (
+  -- 插入順序的決勝點，對應 apps-script/Db.gs dbReadAll() 附掛的 _row（試算
+  -- 表列號）——GAS 那邊排序「最新一筆」（例如撈上一次入幣的下班表）用
+  -- _byCreatedAtDesc()：created_at 字串比較，同一毫秒才用 _row 決勝。
+  -- Postgres 沒有天然的「實體列號」，用 bigserial 給每一列一個嚴格遞增的
+  -- 插入序號，效果相同。
+  seq            bigserial,
   record_id      text primary key,
   machine_id     text not null references machines(machine_id),
   type           text not null check (type in ('in', 'out', 'prize', 'chip_in', 'chip_out')),
@@ -162,6 +168,7 @@ create table if not exists config (
 -- ── biz_days（手動營業日 session，處理跨夜）──────────────
 
 create table if not exists biz_days (
+  seq            bigserial, -- 插入順序決勝點，見 records.seq 的說明
   biz_id         text primary key,
   business_date  date not null,
   opened_at      timestamptz not null,

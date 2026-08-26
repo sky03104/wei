@@ -33,16 +33,36 @@
       `visibleMachineIds()`。還沒接上任何真的 Supabase 專案跑過，也還沒
       實作「新增帳號」「username 登入」這兩塊（policies.sql 底部有寫
       設計、註解掉的 SQL，等真的接專案時再拉出來套用＋測試）。
-- [ ] **Phase 3：前端改接**——因為走的是前端直連，這裡不用寫 Edge
-      Functions 重寫商業邏輯，改成把 `docs/app.js` 的 `api()`（現在是打
-      GAS `doPost`）換成 Supabase client SDK 的 `from(...).select()`／
-      `.insert()`／`.rpc()`。但 `Service.gs`／`Reports.gs` 裡不是單純
-      CRUD、需要「算出來」的邏輯（淨收益公式、跨夜營業日邊界、報表
-      彙總、對帳表格線）沒有後端可以放了，得想清楚要嘛搬成 Postgres
-      function／view（`rpc()` 呼叫），要嘛前端跟資料庫追平之後在瀏覽器
-      端自己算——這是 Phase 3 最花工夫、風險也最高的部分，比 Phase 2
-      的 RLS policy 更需要一支一支對照著搬，不能圖快跳過。
-      「新增帳號」這個動作是唯一确定要留一小塊後端的地方（見下面
+- [~] **Phase 3：業務邏輯搬進 Postgres function（`rpc()`），前端再改接**——
+      決定：`Service.gs`／`Reports.gs` 裡不是單純 CRUD、需要「算出來」
+      的邏輯（淨收益公式、跨夜營業日邊界、報表彙總、對帳表格線）搬成
+      Postgres SQL/plpgsql function，前端用 Supabase client SDK 的
+      `.rpc()` 呼叫，取代原本打 GAS `doPost` 的 `action`；純 CRUD（讀
+      機台列表、寫一筆紀錄）才直接用 `.from(...).select()/.insert()`，
+      不需要包一層 function。
+      **已完成**（`supabase/functions.sql`）：`today_key()`／
+      `open_biz_day()`／`current_business_date()`／
+      `relevant_biz_day_for_today()`／`is_today_record()`——這是整個
+      系統「跨夜營業日」邏輯的地基，其餘所有需要算「今日」「本週」的
+      端點都靠這幾支；`resolve_week_range()` 對照 `resolveRange('week')`；
+      `machine_today_and_week(machine_id)` 對照 `_buildMachineDetail()`，
+      是第一個完整搬過去的「端點等級」function，示範這一整套模式怎麼用
+      （SECURITY INVOKER，讓 RLS 照樣套用在裡面查的 `records`／
+      `biz_days`；額外用 `can_see_machine()` 明確擋掉沒權限的呼叫，
+      不是讓它默默算出全部是 0）。已經在本機 Postgres 用最小的
+      `auth.users`/`auth.uid()` stub 實測過，包含模擬跨夜營業日、
+      驗證 RLS 真的擋得住沒授權的台主、驗證有授權的台主透過真的 RLS
+      （非 superuser）也能拿到正確數字。
+      **還沒做**：`dashboard`（`getDashboard()`，全部機台彙總＋本月432/441
+      支數）、`report`（`getReport()`，日/週/月/自訂/歷史）、
+      `exportLedgerGrids` 對應的逐日對帳表格線、`daily_ledger` 的
+      加總分頁現金結餘公式——這幾個都可以照 `machine_today_and_week()`
+      同一套模式（`today_key()`/`current_business_date()`/
+      `is_today_record()` 當地基）逐一搬，工作量大但風險低，因為地基
+      已經驗證過。`docs/app.js` 的 `api()` 目前完全還沒開始改，等這批
+      function 搬得差不多、每支都跟 GAS 版本比對過數字再動前端，避免
+      前端一半打新 API、一半打舊 API 的過渡期混亂狀態。
+      「新增帳號」這個動作是唯一確定要留一小塊後端的地方（見下面
       Auth & RLS 那節最後一小段），不算違反「前端直連」的大方向。
 - [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
       舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
@@ -85,10 +105,16 @@ role，沒有真的專案沒辦法完整驗證。
 
 ## 目前風險與待決定事項
 
-- **Phase 3 是接下來最大的一塊**：前端直連代表沒有後端可以放「算出來」
-  的邏輯，`Service.gs`／`Reports.gs` 裡不是單純查表的部分要想清楚搬去
-  哪裡（Postgres function/view，或前端自己算），這決定會回頭影響
-  `policies.sql` 要不要再加 view 專用的 policy。
+- **Phase 3 是接下來最大的一塊**：`dashboard`／`report`／對帳表格線這幾個
+  端點還沒搬，工作量大，逐一對照 GAS 版本搬，不要跳過中間驗證步驟。
+- `resolve_week_range()`／`machine_today_and_week()` 照搬了 GAS
+  `resolveRange('week')` 一個容易忽略的細節：本週範圍用
+  `current_business_date()`，不是行事曆今天——這代表如果「現在有進行中
+  的跨夜營業日，business_date 是昨天」，那麼今天已經記的帳（business_date
+  是今天）會落在這個週範圍之外，因為週範圍的 `to` 是「昨天」不是「今
+  天」。這不是這次搬過來才有的新 bug，是 GAS 原本就有的行為（已經在
+  本機測過、行為一致），只是移植過程中特別容易被「順手修掉」，寫在這
+  裡提醒之後改這塊的人：不要在沒有明確決定的情況下悄悄改掉這個行為。
 - 「新增帳號」的 Edge Function、「username 登入」的 `resolve_username_email()`
   都還沒實測——這兩個碰到 `auth.users`／service role key，是`policies.sql`
   裡最需要在真的 Supabase 專案上小心驗證的部分，不要直接照抄貼到
