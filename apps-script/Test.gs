@@ -785,6 +785,18 @@ function _selfTestBody(results) {
     }, 'PERMISSION');
   });
 
+  _t(results, '每日手動帳目：前端「設定今日數字」已經不收運拿／還內場這兩個舊欄位，不帶這兩個 key 也要能存成功（曾經因為 undefined 被當非法數字擋掉整個請求）', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 416000, manualExpense: 500,
+      givenToOwnerItems: [{ name: '老王', amount: 1000 }],
+      takenByOwnerItems: [], manual432: 0, manual441: 0
+    });
+    _assertEq(saved.transport, 0, '沒帶運拿時應該當 0，不報錯');
+    _assertEq(saved.returnedToHouse, 0, '沒帶還內場時應該當 0，不報錯');
+    _assertEq(saved.turnover, 416000, '週轉金要正常存下來');
+  });
+
   _t(results, '每日手動帳目：運拿／台主領／手動活動支出輸入負數會被擋（這幾項一律當正數的現金流出，系統自動扣除）', function () {
     _fails({ action: 'saveDailyLedger', token: patrolTok, turnover: 0, transport: -1, returnedToHouse: 0 });
     _fails({
