@@ -194,14 +194,44 @@
       帳號、改密碼——需要 Supabase Auth Admin API 的 service role
       key，純 SQL function 做不到，要用 Edge Function，見下面
       Auth & RLS 那節，等真的接上 Supabase 專案才能實作+測試）。
-- [ ] **Phase 4：資料遷移腳本**——把現有 Sheets（含已經封存到別的分頁的
-      舊資料）讀出來，寫進新的 Postgres 表；日期／金額欄位要注意 Sheets
-      那些「自動轉型」的坑（`apps-script/Db.gs` 的 `_fixTextColumnFormatting`／
-      `_migrateRecordsMeterColumns` 修過的那幾類問題）不要帶過去；帳號
-      資料要另外處理——舊系統的 `password_hash`／`salt` 沒辦法直接匯入
-      Supabase Auth（雜湊演算法不同），現有帳號要嘛請每個人在新系統
-      重新設一次密碼，要嘛用「忘記密碼」流程重發驗證信，兩種都要事先
-      跟使用者說清楚，不是純資料庫層面能解決的事。
+- [~] **Phase 4：資料遷移腳本**——工具都寫好了、也在本機測過邏輯，還沒
+      拿正式的 Sheets 資料跑過一次真的遷移。
+      **匯出端**（`apps-script/Archive.gs` 的 `exportAllData()`，
+      `apps-script/Code.gs` 註冊成管理員專用 action）：把現有 Sheets
+      （目前這一季的 Records ＋所有「封存_YYYYQN」分頁）合併成一份
+      JSON，欄位轉成跟系統其他 API 一致的 camelCase 形狀。Users 不帶
+      `password_hash`／`salt`（下面會說明為什麼），Machines 不帶
+      `carry_*`（封存前累計，Postgres 版本不需要季度封存，這幾欄沒
+      意義）。這個 action 只給遷移用，遷移完成、確認新系統穩定後可以
+      整段拿掉。已用 `tools/gas-env.js` 本機模擬環境驗證過：回傳欄位
+      形狀正確、camelCase 命名跟其他 API 一致、`npm test` 全部通過。
+      **寫入端**（`supabase/migrate-from-sheets.js`，Node 腳本）：讀
+      `exportAllData()` 存下來的 JSON，用 `@supabase/supabase-js`
+      的 service role key 依序寫入 Supabase Auth（建帳號）→
+      `profiles` → `machines` → `prizes`/`quick_amounts`/
+      `meter_rates` → `permissions` → `config` → `biz_days` →
+      `daily_ledger` → `records`（分批 500 筆）。全程用 upsert，
+      中途失敗重跑是安全的；`user_id` 從舊系統的字串 id 轉換成
+      Supabase Auth 的 uuid（帳號密碼沒辦法遷移，見下段，腳本會現場
+      建立隨機臨時密碼、存進本機的 `migration-credentials.txt`，
+      這個檔案跟 `data-export.json` 都已經加進 `.gitignore`，不會
+      進 git）。已經寫了一個假的 `@supabase/supabase-js` 替身（純
+      記憶體，模擬 upsert／auth.admin.createUser）在本機跑過一輪完整
+      流程，驗證過：欄位轉型正確（空字串轉 null、Sheets 存的 JSON
+      字串正確 parse 回 jsonb）、找不到對應帳號的紀錄/授權會被跳過
+      並印警告（不會讓整個遷移中斷）、日期/金額欄位型別轉換正確。
+      沒辦法在這個環境驗證的部分：實際打 Supabase Auth Admin API、
+      實際寫進雲端 Postgres（sandbox 網路連不到任意網域），這段要
+      使用者自己在能連網的環境跑一次才能真正驗證到底。
+      `supabase/verify-migration.sql`：遷移完成後在 SQL Editor 跑，
+      核對每張表筆數、每台機台的全時間淨收益、有沒有孤兒紀錄（
+      `user_id` 對不到任何 `profiles`）。
+      日期／金額欄位的 Sheets「自動轉型」坑（`_fixTextColumnFormatting`／
+      `_migrateRecordsMeterColumns` 修過的那幾類問題）不用擔心帶過去——
+      `exportAllData()` 直接讀 `dbReadAll()` 已經修正過的乾淨資料，不是
+      讀 Sheets 原始儲存格。
+      **還沒做的**：拿正式資料實跑一次（需要使用者的 GAS 部署、
+      Supabase 專案），跑完用 `verify-migration.sql` 核對。
 - [ ] **Phase 5：雙軌驗證＋切換**——新舊系統並行一段時間（兩邊都寫入，
       只從舊系統讀，比對兩邊算出來的數字），確認一致才正式切過去；
       切換之後 Sheets 資料保留一段時間當備份，不要立刻刪。

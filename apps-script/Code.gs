@@ -51,7 +51,11 @@ const ACTION_ROLES = {
   adminSaveMachine: [ROLE_ADMIN],
   adminListPermissions: [ROLE_ADMIN],
   adminSetPermission: [ROLE_ADMIN],
-  adminBootstrap: [ROLE_ADMIN]
+  adminBootstrap: [ROLE_ADMIN],
+
+  // 只給 Phase 4 資料遷移用（見 supabase/migrate-from-sheets.js），
+  // 遷移完成、確認新系統穩定後可以整段拿掉。
+  exportAllData: [ROLE_ADMIN]
 };
 
 // ── HTTP 進入點 ─────────────────────────────────────────
@@ -190,6 +194,8 @@ function _dispatch(action, p, user) {
       return adminSetPermission(user, p);
     case 'adminBootstrap':
       return adminBootstrap(user);
+    case 'exportAllData':
+      return exportAllData(user);
 
     default:
       throw new Error('不支援的操作：' + action);

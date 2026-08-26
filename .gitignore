@@ -1,3 +1,7 @@
 node_modules/
 .DS_Store
 *.log
+
+# Phase 4 資料遷移：匯出的原始資料跟臨時密碼含敏感資訊，不進 git
+supabase/data-export.json
+supabase/migration-credentials.txt

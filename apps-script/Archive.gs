@@ -227,3 +227,98 @@ function _historyRecords(range) {
   });
   return all;
 }
+
+// ── Phase 4 資料遷移：一次匯出全部資料 ─────────────────────
+//
+// 只給 supabase/migrate-from-sheets.js 用。遷移完成、確認 Postgres
+// 版本穩定運作一段時間後，這個 action 跟這一段程式碼可以整個拿掉。
+
+/**
+ * 遷移用的完整紀錄清單：目前這一季（Records）＋全部封存分頁，
+ * 不像 _historyRecords() 那樣篩掉已作廢的——遷移要把作廢紀錄也一起
+ * 搬過去，保留完整的稽核軌跡（Postgres 版本一樣有 voided 欄位）。
+ */
+function _allRecordsForExport() {
+  let all = dbReadAll('Records');
+  _listArchiveQuarters().forEach(function (q) {
+    const key = _registerArchiveSheet(q);
+    all = all.concat(dbReadAll(key));
+  });
+  return all;
+}
+
+/**
+ * 匯出全部資料給 Phase 4 遷移腳本用，一次打包成一份 JSON。
+ *
+ * 刻意轉成跟系統其他 API 回應一致的 camelCase 欄位名稱（不是直接把
+ * dbReadAll() 讀到的原始 snake_case 欄位吐出去）——supabase/
+ * migrate-from-sheets.js 就是照這個形狀寫的，兩邊要對得上。
+ *
+ * Users 刻意不帶 password_hash／salt——GAS 用的雜湊演算法沒辦法直接
+ * 匯入 Supabase Auth，帳號密碼在遷移計畫裡本來就是「請使用者到新系統
+ * 重設一次」，不需要（也不應該）把舊雜湊值搬過去。
+ * Machines 不帶 carry_* 那幾欄——那是配合季度封存機制的「封存前累計」，
+ * Postgres 版本因為不需要季度封存，這幾欄的值沒有意義（合併後的
+ * records 表本身就能算出完整歷史），遷移腳本看到的機台餘額一律用
+ * 合併後的 records 現場算。
+ */
+function exportAllData(user) {
+  requireRole(user, [ROLE_ADMIN]);
+  return {
+    exportedAt: nowIso(),
+    apiVersion: API_VERSION,
+    users: dbReadAll('Users').map(function (r) {
+      return {
+        userId: r.user_id, username: r.username, displayName: r.display_name || r.username,
+        role: r.role, status: r.status, createdAt: r.created_at, lastLoginAt: r.last_login_at || ''
+      };
+    }),
+    machines: dbReadAll('Machines').map(function (r) {
+      return {
+        machineId: r.machine_id, name: r.name, location: r.location || '', status: r.status || 'running',
+        color: r.color || '#4F7BE8', sortOrder: r.sort_order, note: r.note || '', createdAt: r.created_at,
+        category: r.category || MACHINE_CATEGORY_DICE, icon: r.icon || DEFAULT_MACHINE_ICON
+      };
+    }),
+    prizes: dbReadAll('Prizes').map(function (r) {
+      return { prizeId: r.prize_id, machineId: r.machine_id || '', name: r.name, amount: r.amount, sortOrder: r.sort_order, active: r.active };
+    }),
+    quickAmounts: dbReadAll('QuickAmounts').map(function (r) {
+      return { qaId: r.qa_id, machineId: r.machine_id || '', type: r.type, amount: r.amount, label: r.label || '', sortOrder: r.sort_order };
+    }),
+    meterRates: dbReadAll('MeterRates').map(function (r) {
+      return { rateId: r.rate_id, machineId: r.machine_id || '', rate: r.rate };
+    }),
+    permissions: dbReadAll('Permissions').map(function (r) {
+      return { userId: r.user_id, machineId: r.machine_id, grantedBy: r.granted_by || '', grantedAt: r.granted_at };
+    }),
+    config: dbReadAll('Config').map(function (r) {
+      return { key: r.key, value: r.value || '' };
+    }),
+    bizDays: dbReadAll('BizDays').map(function (r) {
+      return {
+        bizId: r.biz_id, businessDate: r.business_date, openedAt: r.opened_at, openedBy: r.opened_by || '',
+        closedAt: r.closed_at || '', closedBy: r.closed_by || '', autoClosed: r.auto_closed
+      };
+    }),
+    dailyLedger: dbReadAll('DailyLedger').map(function (r) {
+      return {
+        ledgerId: r.ledger_id, businessDate: r.business_date, turnover: r.turnover, transport: r.transport,
+        givenToOwner: r.given_to_owner, takenByOwner: r.taken_by_owner, returnedToHouse: r.returned_to_house,
+        updatedBy: r.updated_by || '', updatedAt: r.updated_at, bizId: r.biz_id || '',
+        manual432: r.manual_432, manual441: r.manual_441,
+        givenToOwnerItems: r.given_to_owner_items || '[]', takenByOwnerItems: r.taken_by_owner_items || '[]',
+        manualExpense: r.manual_expense
+      };
+    }),
+    records: _allRecordsForExport().map(function (r) {
+      return {
+        recordId: r.record_id, machineId: r.machine_id, type: r.type, amount: r.amount,
+        prizeId: r.prize_id || '', prizeName: r.prize_name || '', unitAmount: r.unit_amount, count: r.count,
+        userId: r.user_id, createdAt: r.created_at, note: r.note || '', voided: r.voided,
+        voidedBy: r.voided_by || '', voidedAt: r.voided_at || '', clientToken: r.client_token || '',
+        meterStart: r.meter_start, meterEnd: r.meter_end, businessDate: r.business_date
+      };
+    })
+  };
+}
