@@ -180,6 +180,13 @@ create table if not exists biz_days (
 
 create index if not exists biz_days_open_idx on biz_days (closed_at) where closed_at is null;
 create index if not exists biz_days_business_date_idx on biz_days (business_date);
+-- 同一時間最多一筆進行中的營業日——對照 GAS 版本 startBusinessDay()／
+-- endBusinessDay() 靠 withLock() 這個全域鎖序列化「開始一筆前先把前一筆
+-- 結掉」這個檢查再寫入的過程；Postgres 沒有等價的全域鎖，改用「常數
+-- expression 的 partial unique index」讓資料庫自己保證這個不變量：
+-- 兩個人同時按「開始」，其中一個的 insert 會直接撞到這個唯一索引丟出
+-- unique_violation，不會悄悄產生兩筆同時「進行中」的營業日。
+create unique index if not exists biz_days_single_open_idx on biz_days ((true)) where closed_at is null;
 
 -- ── daily_ledger（每日手動帳目：週轉金／台主給／台主領…）─
 
@@ -203,6 +210,17 @@ create table if not exists daily_ledger (
 );
 
 create index if not exists daily_ledger_business_date_idx on daily_ledger (business_date);
+-- 「每個營業日 session 只存一組，重複儲存是覆蓋不是疊加」的不變量，
+-- 對照 GAS 版本 saveDailyLedger() 靠 withLock() 序列化「先查有沒有現成
+-- 那列、有就 update、沒有才 insert」這個檢查再寫入的過程。這裡改用
+-- unique index + save_daily_ledger()（functions.sql）裡的
+-- insert ... on conflict do update，資料庫層面直接保證不會有兩人同時
+-- 儲存時各自 insert 出兩列的競態問題。biz_id 可能是 null（沒有相關營業日
+-- session 時），用 coalesce 轉成空字串才能放進 unique index——null 在
+-- Postgres 唯一索引裡永遠被視為互不相同，不轉换的話多筆 biz_id 都是
+-- null、business_date 相同的列不會被這個索引擋下來。
+create unique index if not exists daily_ledger_one_per_biz_day_idx
+  on daily_ledger (business_date, (coalesce(biz_id, '')));
 
 -- ── Row Level Security ──────────────────────────────────
 --

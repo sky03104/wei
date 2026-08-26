@@ -69,14 +69,30 @@
       電子）、多筆紀錄、每日手動帳目、跨夜營業日情境完整跑過一遍手算
       比對，也用非 superuser 角色驗證過 RLS：沒授權的台主看到
       `machines:[]`、有授權的台主只看到被授權的那台，數字都對得起來。
+      **寫入端也完成了**：`start_business_day()`／`end_business_day()`／
+      `save_daily_ledger()` 對照 GAS 同名函式。GAS 版本靠 `withLock()`
+      這個全域鎖序列化「先查現況、再決定 insert 還是 update」這整段
+      過程，Postgres 沒有等價的全域鎖，改成把不變量直接下放給資料庫：
+      `schema.sql` 幫 `biz_days` 加了 `biz_days_single_open_idx`（常數
+      expression 的 partial unique index，保證同一時間全表最多一筆
+      `closed_at is null`），幫 `daily_ledger` 加了
+      `daily_ledger_one_per_biz_day_idx`（`(business_date, coalesce(biz_id,''))`
+      唯一），`save_daily_ledger()` 用 `INSERT ... ON CONFLICT DO UPDATE`
+      吃這個索引，兩人同時儲存不會各自 insert 出兩列。金額驗證邏輯
+      （`valid_signed_amount()`／`valid_outflow_amount()`／
+      `sanitize_ledger_items()`）對照 `_validSignedAmount()`／
+      `_validOutflowAmount()`／`_sanitizeLedgerItems()`，錯誤訊息文字都
+      照抄。已在本機 Postgres 用 patrol 角色實測：開始→再按一次開始
+      （驗證自動結掉前一個、`previousAutoClosed:true`）→存一次帳目→
+      同一個 session 再存一次（驗證是覆蓋、`daily_ledger` 只有 1 列不是
+      2 列）→結單，全部數字跟狀態都對；額外驗證過 unique index 真的擋
+      得住「手動塞第二筆進行中的營業日」（丟 `duplicate key` 錯誤）；
+      也驗證過 owner 角色打這三支全部被 `can_record()` 擋下來、負數
+      金額被 `valid_outflow_amount()` 擋下來，錯誤訊息跟 GAS 版本一致。
       **還沒做**：`report`（`getReport()`，日/週/月/自訂/歷史）、
-      `exportLedgerGrids` 對應的逐日對帳表格線、`saveDailyLedger()`／
-      `startBusinessDay()`／`endBusinessDay()` 這幾個「寫入」動作（目前
-      只搬了讀取端，寫入端因為要保證 upsert／自動結單這種操作的原子性，
-      也建議包成 RPC function 而不是讓前端直接 `.insert()`，還沒做）——
-      這幾個都可以照 `machine_today_and_week()`／`dashboard()` 同一套
-      模式（`today_key()`/`current_business_date()`/`is_today_record()`
-      當地基）逐一搬，工作量大但風險低，因為地基已經驗證過。
+      `exportLedgerGrids` 對應的逐日對帳表格線——這兩個可以照
+      `machine_today_and_week()`／`dashboard()` 同一套模式（`today_key()`/
+      `current_business_date()`/`is_today_record()` 當地基）逐一搬。
       `docs/app.js` 的 `api()` 目前完全還沒開始改，等這批 function 搬得
       差不多、每支都跟 GAS 版本比對過數字再動前端，避免前端一半打新
       API、一半打舊 API 的過渡期混亂狀態。

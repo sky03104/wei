@@ -516,3 +516,230 @@ as $$
     'businessDay', business_day_status()
   );
 $$;
+
+-- ── 寫入端：營業日開始／結單、每日手動帳目 ──────────────
+--
+-- 對照 apps-script/Service.gs 的 startBusinessDay()／endBusinessDay()／
+-- saveDailyLedger()。這三個動作都要保「同一時間最多一組」的不變量
+-- （最多一筆進行中的營業日；每個 session 的每日帳目只存一組），GAS
+-- 版本靠 withLock() 這個全域鎖序列化「先查現況、再決定要 insert 還是
+-- update」這整段過程；這裡改成兩件事一起做：schema.sql 加了對應的
+-- unique index，把不變量直接下放給資料庫保證，寫入端則用
+-- INSERT ... ON CONFLICT DO UPDATE（save_daily_ledger）或先關舊的再開
+-- 新的（start_business_day）處理，單一 function 呼叫在 Postgres 裡
+-- 天生是同一個交易，不需要另外顯式開 transaction。
+-- 全部 SECURITY INVOKER，can_record() 明確擋權限，訊息跟 GAS 版本一致。
+
+-- 對照 apps-script/Db.gs 的 newId(prefix)：前綴 + 16 個十六進位字元。
+create or replace function new_id(p_prefix text)
+returns text
+language sql
+volatile
+as $$
+  select p_prefix || '_' || left(replace(gen_random_uuid()::text, '-', ''), 16);
+$$;
+
+-- 對照 apps-script/Service.gs 的 _validSignedAmount()：允許負數（沖正用），
+-- 只限制金額大小；缺值當 0（比 GAS 版本寬鬆一點點，GAS 那支其實沒有
+-- `|| 0` 保底、缺值會直接丟錯——這個不一致在 GAS 原始碼裡看起來是沒
+-- 特別設計過的副作用，這裡統一成「缺值當 0」，跟 _validOutflowAmount()
+-- 一致，也比較貼近前端一定會送出明確數字的實際使用情境）。
+create or replace function valid_signed_amount(p_raw numeric)
+returns numeric
+language plpgsql
+immutable
+as $$
+begin
+  if p_raw is null then return 0; end if;
+  if abs(p_raw) > 10000000 then
+    raise exception '金額超出上限';
+  end if;
+  return round(p_raw, 2);
+end;
+$$;
+
+-- 對照 _validOutflowAmount()：這幾項一律是現金流出，只能輸入正數，
+-- 系統加總時自動扣除。
+create or replace function valid_outflow_amount(p_raw numeric)
+returns numeric
+language plpgsql
+immutable
+as $$
+begin
+  if p_raw is null then return 0; end if;
+  if p_raw < 0 then
+    raise exception '這項請輸入正數金額，系統會自動從總結餘扣除';
+  end if;
+  if p_raw > 10000000 then
+    raise exception '金額超出上限';
+  end if;
+  return round(p_raw, 2);
+end;
+$$;
+
+-- 整理台主給／台主領的清單：每筆驗證金額、名稱沒填就用預設名稱頂著、
+-- 金額是 0（含沒填）的那幾筆直接丟掉。對照 _sanitizeLedgerItems()。
+create or replace function sanitize_ledger_items(p_raw jsonb, p_outflow boolean, p_default_name text)
+returns jsonb
+language plpgsql
+immutable
+as $$
+declare
+  v_result jsonb := '[]'::jsonb;
+  v_elem jsonb;
+  v_amount numeric;
+  v_name text;
+begin
+  if p_raw is null then return '[]'::jsonb; end if;
+  if jsonb_typeof(p_raw) <> 'array' then
+    raise exception '清單格式不正確';
+  end if;
+  if jsonb_array_length(p_raw) > 30 then
+    raise exception '筆數超出上限';
+  end if;
+
+  for v_elem in select * from jsonb_array_elements(p_raw)
+  loop
+    if p_outflow then
+      v_amount := valid_outflow_amount((v_elem ->> 'amount')::numeric);
+    else
+      v_amount := valid_signed_amount((v_elem ->> 'amount')::numeric);
+    end if;
+    if v_amount = 0 then
+      continue;
+    end if;
+    v_name := coalesce(nullif(trim(both from coalesce(v_elem ->> 'name', '')), ''), p_default_name);
+    v_name := left(v_name, 30);
+    v_result := v_result || jsonb_build_array(jsonb_build_object('name', v_name, 'amount', v_amount));
+  end loop;
+
+  return v_result;
+end;
+$$;
+
+-- 按下「今日營業開始」：如果前一個營業日忘記結單，直接幫忙結掉
+-- （auto_closed=true），不會卡住不讓開新的。
+create or replace function start_business_day()
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_open biz_days;
+  v_now timestamptz := now();
+  v_biz_id text := new_id('biz');
+  v_previous_auto_closed boolean := false;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有這個權限' using errcode = '42501';
+  end if;
+
+  select * into v_open from open_biz_day();
+  if found then
+    update biz_days
+    set closed_at = v_now, closed_by = auth.uid(), auto_closed = true
+    where biz_id = v_open.biz_id;
+    v_previous_auto_closed := true;
+  end if;
+
+  insert into biz_days (biz_id, business_date, opened_at, opened_by, auto_closed)
+  values (v_biz_id, today_key(), v_now, auth.uid(), false);
+
+  return jsonb_build_object(
+    'open', true,
+    'current', (select public_biz_day(b) from biz_days b where biz_id = v_biz_id),
+    'previousAutoClosed', v_previous_auto_closed
+  );
+end;
+$$;
+
+-- 按下「今日營業結單」。沒有進行中的營業日就明確報錯，不要默默沒反應。
+create or replace function end_business_day()
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_open biz_days;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有這個權限' using errcode = '42501';
+  end if;
+
+  select * into v_open from open_biz_day();
+  if not found then
+    raise exception '目前沒有進行中的營業日，請先按「今日營業開始」';
+  end if;
+
+  update biz_days
+  set closed_at = now(), closed_by = auth.uid(), auto_closed = false
+  where biz_id = v_open.biz_id;
+
+  return jsonb_build_object(
+    'open', false,
+    'current', (select public_biz_day(b) from biz_days b where biz_id = v_open.biz_id)
+  );
+end;
+$$;
+
+-- 設定今天（相關營業日）的週轉金／台主給／台主領／手動活動支出432/441／
+-- 開銷。同一個 session 裡重複儲存是覆蓋，不是疊加（INSERT ... ON CONFLICT
+-- DO UPDATE，衝突鍵是 schema.sql 的 daily_ledger_one_per_biz_day_idx）。
+-- p_returned_to_house 對應「還內場」——前端已經不會再送這個欄位（見
+-- docs/app.js 的異動紀錄），這裡繼續接受、預設 0，只是為了不讓還沒
+-- 更新的舊前端呼叫直接壞掉，不代表這個功能要復活。
+create or replace function save_daily_ledger(
+  p_turnover numeric,
+  p_manual_expense numeric,
+  p_manual432 numeric,
+  p_manual441 numeric,
+  p_given_to_owner_items jsonb,
+  p_taken_by_owner_items jsonb,
+  p_returned_to_house numeric default 0
+)
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_turnover numeric := valid_signed_amount(p_turnover);
+  v_manual_expense numeric := valid_outflow_amount(p_manual_expense);
+  v_manual432 numeric := valid_outflow_amount(p_manual432);
+  v_manual441 numeric := valid_outflow_amount(p_manual441);
+  v_given jsonb := sanitize_ledger_items(p_given_to_owner_items, false, '台主給');
+  v_taken jsonb := sanitize_ledger_items(p_taken_by_owner_items, true, '台主領');
+  v_returned numeric := valid_signed_amount(p_returned_to_house);
+  v_relevant biz_days;
+  v_business_date date;
+begin
+  if not can_record() then
+    raise exception '你的帳號沒有這個權限' using errcode = '42501';
+  end if;
+
+  select * into v_relevant from relevant_biz_day_for_today();
+  v_business_date := coalesce(v_relevant.business_date, today_key());
+
+  insert into daily_ledger (
+    ledger_id, business_date, biz_id, turnover, transport, given_to_owner, taken_by_owner,
+    given_to_owner_items, taken_by_owner_items, returned_to_house, manual_432, manual_441,
+    manual_expense, updated_by, updated_at
+  ) values (
+    new_id('ldg'), v_business_date, v_relevant.biz_id, v_turnover, 0, 0, 0,
+    v_given, v_taken, v_returned, v_manual432, v_manual441,
+    v_manual_expense, auth.uid(), now()
+  )
+  on conflict (business_date, (coalesce(biz_id, '')))
+  do update set
+    turnover = excluded.turnover,
+    transport = 0,
+    given_to_owner = 0,
+    taken_by_owner = 0,
+    given_to_owner_items = excluded.given_to_owner_items,
+    taken_by_owner_items = excluded.taken_by_owner_items,
+    returned_to_house = excluded.returned_to_house,
+    manual_432 = excluded.manual_432,
+    manual_441 = excluded.manual_441,
+    manual_expense = excluded.manual_expense,
+    updated_by = excluded.updated_by,
+    updated_at = excluded.updated_at;
+
+  return public_daily_ledger((select l from daily_ledger_row_for_today() l limit 1));
+end;
+$$;
