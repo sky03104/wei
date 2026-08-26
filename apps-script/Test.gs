@@ -120,13 +120,13 @@ function _selfTestBody(results) {
 
   _t(results, '舊版英文頁籤名稱會被改名成中文，資料原封不動', function () {
     const ss = _spreadsheet();
-    delete _sheetCache.Machines;
+    _invalidateSheetCache('Machines');
     const before = dbReadAll('Machines'); // 目前已經是中文頁籤「機台」
     const beforeCount = before.length;
 
     // 模擬「用改版前的程式碼建立的舊試算表」：頁籤名稱改回英文鍵值
     ss.getSheetByName(SHEET_TAB_NAMES.Machines).setName('Machines');
-    delete _sheetCache.Machines;
+    _invalidateSheetCache('Machines');
 
     const rows = dbReadAll('Machines'); // 觸發 _sheet() 的英文頁籤 fallback，應該原地改名，不是新開一張
     _assertEq(rows.length, beforeCount, '改名後資料筆數應該不變');
@@ -152,6 +152,46 @@ function _selfTestBody(results) {
 
   const patrolTok = _token('t_patrol', 'patrol123');
   const ownerTok = _token('t_owner', 'owner123');
+
+  _t(results, '跨執行快取（CacheService）：dbReadAll 命中快取時直接用快取內容、不會重新讀 Sheets；dbInsert／dbUpdate／dbDeleteRows 寫入後快取要立刻失效', function () {
+    // 用最底層的 dbInsert／dbUpdate／dbDeleteRows，不走 adminSaveMachine
+    // 這個 API——那支會建立「使用者看得到」的真實機台，讓後面依賴機台
+    // 總數的測試對不起來。這裡的機台只是為了驗證快取行為，測完（不管
+    // 成功還是斷言失敗）都會在 finally 裡刪乾淨，不留痕跡。
+    const tempId = newId('mch');
+    dbInsert('Machines', { machine_id: tempId, name: '跨執行快取測試台', sort_order: 999, category: 'dice', status: 'running' });
+    _clearSheetCache();
+
+    try {
+      const real = dbReadAll('Machines');
+      _assert(real.some(function (m) { return m.machine_id === tempId; }), '正常讀取應該看得到剛新增的機台');
+
+      const cachedAfterRead = _crossExecCacheGet('Machines');
+      _assert(cachedAfterRead && cachedAfterRead.length === real.length, 'dbReadAll 讀完之後應該把結果寫進跨執行快取');
+
+      // 直接竄改快取內容（塞一筆假機台）：下一次 dbReadAll 如果真的是命中
+      // 快取、不是重新打 Sheets，看到的就會是這筆竄改進去的假機台；如果
+      // 意外又重新讀了 Sheets，看到的會是真實資料，不會有這筆假機台。
+      const fakeRows = real.concat([{ _row: 99999, machine_id: 'fake_from_cache', name: '只存在快取裡的假機台' }]);
+      _crossExecCachePut('Machines', fakeRows);
+      _clearSheetCache(); // 只清單次執行內那層，跨執行那層要保留才測得出命中
+
+      const hit = dbReadAll('Machines');
+      _assert(hit.some(function (m) { return m.machine_id === 'fake_from_cache'; }),
+        'dbReadAll 命中跨執行快取時應該直接回傳快取內容，證明真的沒有重新打 Sheets');
+
+      // dbUpdate 寫入之後，跨執行快取應該立刻失效，下一次讀到的要是
+      // 真實資料，不會再看到剛才竄改進去的假機台。
+      dbUpdate('Machines', dbFind('Machines', 'machine_id', tempId)._row, { note: '改一下觸發快取失效' });
+      _assert(!_crossExecCacheGet('Machines'), '寫入之後跨執行快取應該立刻被清掉');
+
+      const afterWrite = dbReadAll('Machines');
+      _assert(!afterWrite.some(function (m) { return m.machine_id === 'fake_from_cache'; }),
+        '寫入之後重新讀到的應該是真實資料，不會再看到快取竄改進去的假機台');
+    } finally {
+      dbDeleteRows('Machines', [dbFind('Machines', 'machine_id', tempId)._row]);
+    }
+  });
 
   // ── 登入與 Session ──
   _t(results, '正確密碼可登入', function () {
@@ -1079,7 +1119,10 @@ function _selfTestBody(results) {
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
     const col = SCHEMA.Records.indexOf('business_date') + 1;
     sh.getRange(before1._row, col).setValue(new Date(before1.business_date + 'T00:00:00Z'));
-    _clearSheetCache();
+    // 這裡是繞過 dbUpdate() 的原始寫入（模擬「早就存在的壞資料」），跨執行
+    // 快取不會自動知道，得手動清掉，不然下面的讀取會撈到清掉之前、還沒
+    // 損壞的舊快取值，測試就驗不到真正想模擬的損壞狀態。
+    _invalidateSheetCache('Records');
 
     const corrupted = dbFind('Records', 'record_id', recordId);
     _assert(corrupted.business_date instanceof Date, '模擬應該要讓這格變成 Date 物件（測試前置條件）');
@@ -1108,7 +1151,7 @@ function _selfTestBody(results) {
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
     const col = SCHEMA.Records.indexOf('business_date') + 1;
     sh.getRange(row._row, col).setValue(new Date(row.business_date + 'T00:00:00Z'));
-    _clearSheetCache();
+    _invalidateSheetCache('Records'); // 繞過 dbUpdate 的原始寫入，見上一個測試同樣的說明
 
     setup();
     _clearSheetCache();
@@ -1143,7 +1186,7 @@ function _selfTestBody(results) {
     const sh = _spreadsheet().getSheetByName(SHEET_TAB_NAMES.Records);
     const col = SCHEMA.Records.indexOf('prize_name') + 1;
     sh.getRange(row._row, col).setValue(Number(row.prize_name));
-    _clearSheetCache();
+    _invalidateSheetCache('Records'); // 繞過 dbUpdate 的原始寫入，見前面同類測試的說明
 
     const corrupted = dbFind('Records', 'record_id', recordId);
     _assertEq(typeof corrupted.prize_name, 'number', '模擬應該要讓這格變成數字型別（測試前置條件）');
@@ -1184,11 +1227,11 @@ function _selfTestBody(results) {
 
     sh.getRange(startRow, 1, 1, oldFormatRow.length).setValues([oldFormatRow]);
     sh.getRange(startRow + 1, 1, 1, brokenFormatRow.length).setValues([brokenFormatRow]);
-    delete _sheetCache.Records;
+    _invalidateSheetCache('Records');
 
     const fixedCount = _migrateRecordsMeterColumns();
     _assert(fixedCount >= 1, '應該至少修好剛剛塞的那筆錯位紀錄');
-    delete _sheetCache.Records;
+    _invalidateSheetCache('Records');
 
     const legacy = dbFind('Records', 'record_id', 'rec_legacy001');
     _assertEq(legacy.user_id, admin.user_id, '舊格式紀錄的操作人本來就對，不該被migration動到');
