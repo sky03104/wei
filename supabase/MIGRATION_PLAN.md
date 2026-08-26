@@ -194,8 +194,8 @@
       帳號、改密碼——需要 Supabase Auth Admin API 的 service role
       key，純 SQL function 做不到，要用 Edge Function，見下面
       Auth & RLS 那節，等真的接上 Supabase 專案才能實作+測試）。
-- [~] **Phase 4：資料遷移腳本**——工具都寫好了、也在本機測過邏輯，還沒
-      拿正式的 Sheets 資料跑過一次真的遷移。
+- [x] **Phase 4：資料遷移腳本**——已經拿正式的 Sheets 資料跑過一次真的
+      遷移，成功了。
       **匯出端**（`apps-script/Archive.gs` 的 `exportAllData()`，
       `apps-script/Code.gs` 註冊成管理員專用 action）：把現有 Sheets
       （目前這一季的 Records ＋所有「封存_YYYYQN」分頁）合併成一份
@@ -230,8 +230,41 @@
       `_migrateRecordsMeterColumns` 修過的那幾類問題）不用擔心帶過去——
       `exportAllData()` 直接讀 `dbReadAll()` 已經修正過的乾淨資料，不是
       讀 Sheets 原始儲存格。
-      **還沒做的**：拿正式資料實跑一次（需要使用者的 GAS 部署、
-      Supabase 專案），跑完用 `verify-migration.sql` 核對。
+      **實跑結果**：用一個全新、獨立的 Apps Script 專案（不是正式站台
+      那個，避免動到正式部署）貼上分支的 `Code.gs`，Script Property
+      設 `SPREADSHEET_ID` 指到正式試算表，部署一個新的網頁應用程式
+      網址，只給這次遷移用。過程中順手修了兩個問題：
+      1. `migrate-from-sheets.js` 一開始沒濾掉「`records.machine_id`
+         對不到任何一台已匯入機台」的紀錄，導致那 500 筆一批的整批
+         upsert 因為外鍵限制 (`records_machine_id_fkey`) 全部失敗——
+         改成跟「找不到對應帳號」一樣的處理方式，先濾掉、印警告，
+         不讓整批卡住。
+      2. Windows PowerShell 環境下用 `curl.exe` 打 API 踩了幾個
+         Windows／PowerShell 特有的坑（跟遷移工具本身無關，記在這裡
+         給以後在 Windows 上重跑的人參考）：GAS 的 302 轉址要嘛用
+         瀏覽器、要嘛 curl 要加 `-L` 且不能同時指定 `-X POST`（會讓
+         轉址後的請求也被強制用 POST，導致 411 錯誤）；PowerShell
+         傳含雙引號的 JSON 字串給外部程式常會被弄壞，改用
+         `--data-urlencode name@file` 讀檔案最穩；PowerShell 5.1 用
+         `-Encoding utf8` 存檔會加隱形的 BOM，混進 JSON 開頭讓
+         `JSON.parse` 直接失敗，含中文的檔案要用 .NET
+         `UTF8Encoding($false)` 明確存成無 BOM 版本；PowerShell 讀取
+         外部程式 stdout 預設用系統的舊版編碼（不是 UTF-8），中文
+         內容會變亂碼，要嘛整個轉存檔案再用 `-Encoding UTF8` 讀回來，
+         不要透過管線直接接 `ConvertFrom-Json`。
+      **實測結果**：帳號 4、機台 25、獎型 6、快捷金額 43、費率 1、
+      營業日 7、每日帳目 4、紀錄 215 筆裡 211 筆成功寫入（4 筆對不到
+      機台被跳過，原始資料還在 Sheets，之後要不要處理再說）。
+      `verify-migration.sql` 核對過：每張表筆數跟遷移腳本印出來的
+      數字一致、`orphan_records` 是 0、每台機台的全時間淨收益數字經
+      使用者親自核對跟原本 Sheets 上看到的一致。
+      **一個已知的資料品質小問題**：Sheets 的 `Permissions` 分頁裡有
+      2 筆授權紀錄指向一個現在已經不存在的帳號（`user_id` 對不到任何
+      使用者），遷移腳本印警告跳過了，沒有寫進 `permissions` 表——如果
+      之後發現「某個台主應該看得到某台機台但看不到」，用
+      `admin_set_permission()` 重新手動授權一次就好。
+      **收尾**：那個臨時用的 Apps Script 專案（獨立、沒動到正式部署）
+      可以直接刪除或封存，不影響正式站台。
 - [~] **Phase 5：雙軌驗證＋切換**——前端改接的部分寫好了，還沒拿真的
       Supabase 專案在瀏覽器裡跑過一次。
       **架構決定：加一支後端開關，不是直接砍掉 GAS 路徑**——
