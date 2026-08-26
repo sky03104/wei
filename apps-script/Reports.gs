@@ -33,7 +33,7 @@ function _isValidKey(key) {
 
 /**
  * 把 preset 換算成 from / to。
- * day=今天、week=本週（週一起）、month=本月（1 號起）、custom=自己給。
+ * day=今天、week=本週（週日起）、month=本月（1 號起）、custom=自己給。
  *
  * 這裡的「今天」用 _currentBusinessDate()，不是行事曆日期——沒人按過
  * 「今日營業開始」的話兩者是同一個值，跟以前行為一樣；有進行中的
@@ -52,9 +52,8 @@ function resolveRange(preset, from, to) {
     return { from: from, to: to, preset: preset };
   }
   if (preset === 'week') {
-    const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日
-    const backToMonday = (dow + 6) % 7;
-    return { from: _addDays(today, -backToMonday), to: today, preset: 'week' };
+    const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日、1=週一…6=週六
+    return { from: _addDays(today, -dow), to: today, preset: 'week' };
   }
   if (preset === 'month') {
     return { from: today.substring(0, 8) + '01', to: today, preset: 'month' };
@@ -484,6 +483,48 @@ function exportLedgerXlsx(user, params) {
   });
   result.rowCount = totalRowCount;
   return result;
+}
+
+/**
+ * 「骰台查詢」（全部骰台／全部電子機台）頁的「📷 匯出截圖」用——
+ * 跟 exportLedgerXlsx 分頁內容共用同一份 _buildLedgerGrid() 格線資料，
+ * 差別是不用建立暫時的 Google 試算表再轉存 xlsx（那一趟很慢），直接把
+ * 每台機台的格線資料整批回傳給前端，讓前端照 exportLedgerImage() 那套
+ * canvas 手繪畫法自己畫成一張一張截圖，不用多裝套件、離線也能用。
+ * 只支援「分類查詢」（不指定單一機台）——單一機台頁本來就只有一台，
+ * 直接用「📷 匯出明細截圖」那顆鈕就好，不需要這支。
+ */
+function exportLedgerGrids(user, params) {
+  const scope = _reportScope(user, params);
+  if (params.machineId || !scope.category) throw new Error('這個功能只支援「全部骰台」／「全部電子機台」這種分類查詢');
+  if (!scope.ids.length) {
+    const categoryLabel = scope.category === MACHINE_CATEGORY_ELECTRONIC ? '電子機台' : '骰台';
+    throw new Error('目前沒有看得到的' + categoryLabel + '，無法匯出');
+  }
+
+  const machines = dbReadAll('Machines')
+    .filter(function (m) { return scope.ids.indexOf(String(m.machine_id)) >= 0; })
+    .sort(function (a, b) {
+      if (toNumber(a.sort_order) !== toNumber(b.sort_order)) return toNumber(a.sort_order) - toNumber(b.sort_order);
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+  const range = resolveRange(params.preset, params.from, params.to);
+
+  const grids = machines.map(function (m) {
+    const grid = _buildLedgerGrid(user, Object.assign({}, params, { machineId: String(m.machine_id) }));
+    return {
+      machineId: String(m.machine_id),
+      machineName: m.name,
+      headerRow: grid.headerRow,
+      outRows: grid.outRows,
+      summaryRows: grid.summaryRows,
+      colCount: grid.colCount,
+      rowCount: grid.rowCount
+    };
+  });
+
+  return { range: range, machines: grids };
 }
 
 /**

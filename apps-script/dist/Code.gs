@@ -1418,11 +1418,11 @@ function homeBootstrap(user) {
  *
  * 回傳的 total（畫面上顯示「累計淨收益」）算的是「本週」，不是機台開帳
  * 以來的全部歷史——跟報表頁「本週」查詢同一套 resolveRange('week') 邊界
- * （週一到今天，今天照營業日期算，不是行事曆日期）。
+ * （週日到今天，今天照營業日期算，不是行事曆日期）。
  */
 function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const today = openBiz ? String(openBiz.business_date) : todayKey();
-  // 「累計淨收益」改成本週（週一起算，跟報表頁 week 這個 preset 用同一套
+  // 「累計淨收益」改成本週（週日起算，跟報表頁 week 這個 preset 用同一套
   // resolveRange() 邊界，不用重複寫一次），不是像以前那樣算機台開帳以來
   // 的全部歷史。用營業日期（_recordBusinessDate，記帳當下就snapshot好的）
   // 判斷落在哪一天，不是看記錄時間戳——跨過午夜才打烊的營業日，這筆帳
@@ -2350,7 +2350,7 @@ function _isValidKey(key) {
 
 /**
  * 把 preset 換算成 from / to。
- * day=今天、week=本週（週一起）、month=本月（1 號起）、custom=自己給。
+ * day=今天、week=本週（週日起）、month=本月（1 號起）、custom=自己給。
  *
  * 這裡的「今天」用 _currentBusinessDate()，不是行事曆日期——沒人按過
  * 「今日營業開始」的話兩者是同一個值，跟以前行為一樣；有進行中的
@@ -2369,9 +2369,8 @@ function resolveRange(preset, from, to) {
     return { from: from, to: to, preset: preset };
   }
   if (preset === 'week') {
-    const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日
-    const backToMonday = (dow + 6) % 7;
-    return { from: _addDays(today, -backToMonday), to: today, preset: 'week' };
+    const dow = _keyToUtcDate(today).getUTCDay(); // 0=週日、1=週一…6=週六
+    return { from: _addDays(today, -dow), to: today, preset: 'week' };
   }
   if (preset === 'month') {
     return { from: today.substring(0, 8) + '01', to: today, preset: 'month' };
@@ -2804,6 +2803,48 @@ function exportLedgerXlsx(user, params) {
 }
 
 /**
+ * 「骰台查詢」（全部骰台／全部電子機台）頁的「📷 匯出截圖」用——
+ * 跟 exportLedgerXlsx 分頁內容共用同一份 _buildLedgerGrid() 格線資料，
+ * 差別是不用建立暫時的 Google 試算表再轉存 xlsx（那一趟很慢），直接把
+ * 每台機台的格線資料整批回傳給前端，讓前端照 exportLedgerImage() 那套
+ * canvas 手繪畫法自己畫成一張一張截圖，不用多裝套件、離線也能用。
+ * 只支援「分類查詢」（不指定單一機台）——單一機台頁本來就只有一台，
+ * 直接用「📷 匯出明細截圖」那顆鈕就好，不需要這支。
+ */
+function exportLedgerGrids(user, params) {
+  const scope = _reportScope(user, params);
+  if (params.machineId || !scope.category) throw new Error('這個功能只支援「全部骰台」／「全部電子機台」這種分類查詢');
+  if (!scope.ids.length) {
+    const categoryLabel = scope.category === MACHINE_CATEGORY_ELECTRONIC ? '電子機台' : '骰台';
+    throw new Error('目前沒有看得到的' + categoryLabel + '，無法匯出');
+  }
+
+  const machines = dbReadAll('Machines')
+    .filter(function (m) { return scope.ids.indexOf(String(m.machine_id)) >= 0; })
+    .sort(function (a, b) {
+      if (toNumber(a.sort_order) !== toNumber(b.sort_order)) return toNumber(a.sort_order) - toNumber(b.sort_order);
+      return String(a.name).localeCompare(String(b.name));
+    });
+
+  const range = resolveRange(params.preset, params.from, params.to);
+
+  const grids = machines.map(function (m) {
+    const grid = _buildLedgerGrid(user, Object.assign({}, params, { machineId: String(m.machine_id) }));
+    return {
+      machineId: String(m.machine_id),
+      machineName: m.name,
+      headerRow: grid.headerRow,
+      outRows: grid.outRows,
+      summaryRows: grid.summaryRows,
+      colCount: grid.colCount,
+      rowCount: grid.rowCount
+    };
+  });
+
+  return { range: range, machines: grids };
+}
+
+/**
  * 建一份暫時的 Google 試算表、交給 fillFn 把內容跟分頁寫好，
  * 再用 UrlFetchApp 打 Google 內建的匯出網址轉成 .xlsx bytes 回傳，
  * 最後把暫時試算表丟進垃圾桶（不留在雲端硬碟裡）。
@@ -2854,7 +2895,7 @@ function _exportLedgerWorkbook(filenameBase, fillFn) {
  * 這幾欄，之後「累計」＝這幾欄＋目前還留在 Records 裡的量。機台詳細頁
  * 顯示的「累計淨收益」則是本週（見 Service.gs 的 _buildMachineDetail()），
  * 只讀目前這一季的 Records、不會用到這幾欄——跟「本月432/441支數」那幾張
- * 卡片一樣的簡化：跨季度那一週（例如新的一季剛開始沒幾天，週一還在
+ * 卡片一樣的簡化：跨季度那一週（例如新的一季剛開始沒幾天，週日還在
  * 上一季）如果剛好遇到每月 2 號的封存已經跑過，本週淨收益會少算被搬去
  * 封存分頁那幾天，一年只會發生在季初那一週，先不處理。
  *
@@ -3092,6 +3133,7 @@ const ACTION_ROLES = {
   allMachineDetails: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   report: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   exportLedgerXlsx: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
+  exportLedgerGrids: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   activityQuery: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listQuickAmounts: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
   listPrizes: [ROLE_ADMIN, ROLE_PATROL, ROLE_OWNER],
@@ -3201,6 +3243,8 @@ function _dispatch(action, p, user) {
       return getReport(user, p);
     case 'exportLedgerXlsx':
       return exportLedgerXlsx(user, p);
+    case 'exportLedgerGrids':
+      return exportLedgerGrids(user, p);
     case 'activityQuery':
       return getActivityQuery(user, p);
     case 'listQuickAmounts':
@@ -4874,7 +4918,7 @@ function _selfTestBody(results) {
     _assertEq(grid.summaryRows[4].join(','), '+/-,0,0,-10,+/-,-10', '淨額最後一欄總計＝三天入幣 20－出幣 30＝-10');
   });
 
-  _t(results, '骰台查詢匯出：不指定機台改指定分類時，各骰台各自算好的小計要加總成整體 rowCount，電子機台不算進去', function () {
+  _t(results, '骰台查詢匯出：不指定機台改指定分類時，各骰台各自算好的小計要加總成整體 rowCount，電子機台不算進去；exportLedgerGrids（匯出截圖用）內容要跟 xlsx 各分頁一致', function () {
     const diceX = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試X', sortOrder: 95 }).machineId;
     const diceY = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Y', sortOrder: 94 }).machineId;
     const elecZ = _ok({ action: 'adminSaveMachine', token: adminTok, name: '骰台查詢測試Z（電子）', category: 'electronic', sortOrder: 93 }).machineId;
@@ -4900,6 +4944,25 @@ function _selfTestBody(results) {
     _assert(xlsx.filename.indexOf('全部骰台') >= 0, '檔名應該標示「全部骰台」，跟單一機台的檔名區分開來：' + xlsx.filename);
     _assertEq(xlsx.rowCount, xGrid.rowCount + yGrid.rowCount,
       '骰台查詢的 rowCount 應該等於各骰台分頁各自的 rowCount 加總（電子機台不算）');
+
+    // 「📷 匯出截圖」exportLedgerGrids：不用建立/轉存真的 Excel，直接把
+    // 每台機台的格線資料整批回傳給前端畫 canvas，內容要跟 exportLedgerXlsx
+    // 每個分頁一模一樣。
+    const grids = _ok({ action: 'exportLedgerGrids', token: scopedTok, category: 'dice', preset: 'day' });
+    _assertEq(grids.machines.length, 2, '只看得到這個台主被授權的兩台骰台，電子機台不算進來');
+    _assertEq(grids.machines[0].machineName, '骰台查詢測試Y', '排序照 sort_order，Y（94）排在 X（95）前面');
+    _assertEq(grids.machines[1].machineName, '骰台查詢測試X', '排序照 sort_order，X（95）排在 Y 後面');
+
+    const byName = {};
+    grids.machines.forEach(function (g) { byName[g.machineName] = g; });
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].headerRow), JSON.stringify(xGrid.headerRow), 'X 的表頭應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].outRows), JSON.stringify(xGrid.outRows), 'X 的出幣逐筆列應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試X'].summaryRows), JSON.stringify(xGrid.summaryRows), 'X 的五列小計應該跟 exportLedgerXlsx 那個分頁一致');
+    _assertEq(JSON.stringify(byName['骰台查詢測試Y'].summaryRows), JSON.stringify(yGrid.summaryRows), 'Y 的五列小計應該跟 exportLedgerXlsx 那個分頁一致');
+
+    // 指定單一機台，或完全沒指定分類，都不是這支的使用情境，該直接報錯。
+    _fails({ action: 'exportLedgerGrids', token: scopedTok, machineId: diceX, preset: 'day' });
+    _fails({ action: 'exportLedgerGrids', token: scopedTok, preset: 'day' });
   });
 
   _t(results, '骰台查詢匯出：機台名稱含 Sheets 分頁名不准用的字元（/ \\ : * ? [ ]）不會匯出失敗', function () {
@@ -4982,18 +5045,18 @@ function _selfTestBody(results) {
     _assertEq(again.archived, 0, '天生冪等：再跑一次不該重複封存');
   });
 
-  _t(results, '機台詳細頁「累計淨收益」是本週（週一到今天），不是全部歷史；跨夜營業日的紀錄照 business_date（記帳當下 snapshot 好的營業日期）歸類進哪一週，不是看實際寫入的時間戳', function () {
+  _t(results, '機台詳細頁「累計淨收益」是本週（週日到今天），不是全部歷史；跨夜營業日的紀錄照 business_date（記帳當下 snapshot 好的營業日期）歸類進哪一週，不是看實際寫入的時間戳', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '本週淨收益測試台', sortOrder: 97 }).machineId;
     const weekRange = resolveRange('week');
 
-    // 上週最後一天：模擬「上週記的帳」，不該被算進本週的累計淨收益。
+    // 上週最後一天（週六）：模擬「上週記的帳」，不該被算進本週的累計淨收益。
     const lastWeekRec = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 700, clientToken: newId('ct') }).records[0];
     dbUpdate('Records', dbFind('Records', 'record_id', lastWeekRec.recordId)._row, { business_date: _addDays(weekRange.from, -1) });
     _clearSheetCache();
 
-    // 本週的第一天（週一）：模擬跨夜營業日——營業日是週一晚上開始、跨過
+    // 本週的第一天（週日）：模擬跨夜營業日——營業日是週日晚上開始、跨過
     // 午夜才記帳，記帳當下的實際時間戳已經是「今天」，但 business_date
-    // 快照的是營業日開始那天（週一），不是實際寫入當下的日期。
+    // 快照的是營業日開始那天（週日），不是實際寫入當下的日期。
     const started = _ok({ action: 'startBusinessDay', token: patrolTok });
     _assert(started.open, '應該成功開始營業日');
     const bizRow = _openBizDay();
@@ -5008,7 +5071,7 @@ function _selfTestBody(results) {
 
     const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(detail.total.in, 400,
-      '本週淨收益應該是週一那筆跨夜營業日記的 300 ＋今天的 100 ＝400，上週那筆 700 不該算進來，實際 ' + detail.total.in);
+      '本週淨收益應該是週日那筆跨夜營業日記的 300 ＋今天的 100 ＝400，上週那筆 700 不該算進來，實際 ' + detail.total.in);
   });
 
   _t(results, '封存：每月自動檢查的觸發器，setup() 只會裝一次，不會重複裝', function () {
