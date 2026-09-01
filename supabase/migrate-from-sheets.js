@@ -60,6 +60,25 @@
  *   exportAllData() 註解）。
  * - **Records 分批寫入**：資料量可能上萬筆，一次 insert 太大會超過
  *   PostgREST 的請求大小限制，這裡固定每批 500 筆。
+ *
+ * ── 重新整批同步（清掉資料庫裡的測試資料）──────────────────
+ *
+ * 平常這支腳本是 upsert（只新增/覆蓋，不會刪除資料庫裡多出來的資料）。
+ * 如果資料庫端在 Phase 5 雙軌測試時，透過 App 介面按出了一堆測試用的
+ * 記帳紀錄／每日帳目，這些不會被 upsert 自動清掉——這時候想要「資料庫
+ * = 試算表的乾淨鏡像」，把環境變數 `RESET_RECORDS_AND_LEDGER` 設成
+ * `yes` 再執行：
+ *
+ *   export RESET_RECORDS_AND_LEDGER=yes
+ *   node supabase/migrate-from-sheets.js
+ *
+ * 這會在寫入前先清空 `daily_ledger` 跟 `records` 兩張表（帳號、機台、
+ * 獎型、快捷金額、費率、授權、系統設定、營業日都不動，只清這兩張），
+ * 再照原本的流程從匯出檔案重新寫入一份乾淨的。務必先確認
+ * `data-export.json` 是「剛剛才從試算表重新匯出」的最新版本，不然會
+ * 拿舊資料把資料庫洗回去。
+ *
+ * 沒有設這個環境變數的話行為完全不變（純 upsert，不會刪除任何東西）。
  */
 
 'use strict';
@@ -74,6 +93,7 @@ const EXPORT_FILE = process.env.SHEETS_EXPORT_FILE || path.join(__dirname, 'data
 const EMAIL_DOMAIN = process.env.MIGRATION_EMAIL_DOMAIN || 'migrated.local';
 const CREDENTIALS_FILE = path.join(__dirname, 'migration-credentials.txt');
 const RECORDS_BATCH_SIZE = 500;
+const RESET_RECORDS_AND_LEDGER = process.env.RESET_RECORDS_AND_LEDGER === 'yes';
 
 function fail(msg) {
   console.error('✖ ' + msg);
@@ -143,6 +163,14 @@ async function upsert(table, rows, onConflict, label) {
   console.log('✓ ' + (label || table) + '：' + rows.length + ' 筆');
 }
 
+/** seq 是 bigserial（永遠 >= 1），用 gte 0 當「符合全部列」的條件——
+ * Supabase JS 的 delete() 一定要帶篩選條件，不能無條件砍全表。*/
+async function wipeTable(table, label) {
+  const { error, count } = await supabase.from(table).delete({ count: 'exact' }).gte('seq', 0);
+  if (error) fail('清空 ' + (label || table) + ' 失敗：' + error.message);
+  console.log('🗑 已清空 ' + (label || table) + '（刪除 ' + (count == null ? '?' : count) + ' 筆）');
+}
+
 // ── 主流程 ────────────────────────────────────────────────
 
 async function main() {
@@ -153,6 +181,15 @@ async function main() {
 
   console.log('匯出時間：' + (raw.exportedAt || '未知'));
   console.log('帳號 ' + raw.users.length + '、機台 ' + raw.machines.length + '、紀錄 ' + raw.records.length + ' 筆\n');
+
+  if (RESET_RECORDS_AND_LEDGER) {
+    console.log('⚠ RESET_RECORDS_AND_LEDGER=yes，先清空 daily_ledger 與 records 兩張表再重新匯入。\n');
+    // daily_ledger 有 biz_id 參照 biz_days，但沒有東西反過來參照
+    // daily_ledger／records，兩張互不依賴，清空順序不影響正確性。
+    await wipeTable('daily_ledger');
+    await wipeTable('records');
+    console.log('');
+  }
 
   // 1) 帳號 → Supabase Auth + profiles，順便建立 舊 user_id → 新 uuid 對照表
   const userIdMap = {}; // old user_id (text) -> new uuid
