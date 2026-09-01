@@ -9,11 +9,19 @@
  *
  * ── 設計重點 ──────────────────────────────────────────────
  *
- * - **records（記帳紀錄）：增量同步**。資料量大且持續成長，用資料庫的
- *   `seq`（bigserial，插入順序，永遠遞增）當游標，每次只抓
- *   `seq > 上次同步到的位置` 的新資料，存進指令碼屬性
- *   `SYNC_RECORDS_LAST_SEQ`。因為抓到的一定是試算表裡还沒有的新紀錄，
- *   直接整批 insert（不用先查有沒有已存在，快很多）。
+ * - **records（記帳紀錄）：增量同步，但一定先比對過現有 record_id 才插入**。
+ *   資料量大且持續成長，用資料庫的 `seq`（bigserial，插入順序，永遠
+ *   遞增）當游標，每次只抓 `seq > 上次同步到的位置` 的資料，存進指令碼
+ *   屬性 `SYNC_RECORDS_LAST_SEQ`。
+ *
+ *   **重要教訓（早期版本在這裡出過真的的 bug，見 CleanupDuplicateRecords.gs）**：
+ *   「Supabase 裡 seq 比較新」不等於「試算表裡沒有這筆」——例如一筆紀錄
+ *   本來就是從試算表搬過去 Supabase 的舊資料，它在 Supabase 那張表是
+ *   第一次出現，一樣會分配到一個新的 seq。早期版本看到 seq 新就直接
+ *   insert，把這種「其實試算表早就有」的紀錄又插入了一次，試算表
+ *   Records 分頁因此出現大量重複列。現在改成：每次先讀一次試算表現有
+ *   的 record_id 集合，只有真的不存在的才會被 insert，就算游標判斷
+ *   失準（例如觸發器被重跑、cursor 被重置），也不會再插入重複列。
  *   **已知限制**：資料庫端事後把一筆舊紀錄「作廢」（void），因為那是
  *   對已存在列的 UPDATE，`seq` 不會變，這支目前抓不到、不會同步作廢
  *   狀態回試算表。這個動作比較少見，先不處理；如果之後真的需要，
@@ -139,15 +147,23 @@ function _syncRecordsFromSupabase(SUPABASE_URL, KEY, uidMap, props) {
   const CURSOR_KEY = 'SYNC_RECORDS_LAST_SEQ';
   let cursor = Number(props.getProperty(CURSOR_KEY) || '0');
   const BATCH = 500;
-  let totalNew = 0;
+  let totalNew = 0, totalSkippedExisting = 0;
+
+  // 試算表現有的 record_id 集合，只讀一次（dbReadAll 本身有快取）——
+  // 用這個當「保險」，不管游標算得準不準，都不會插入試算表已經有的紀錄。
+  const existingIds = {};
+  dbReadAll('Records').forEach(function (r) { existingIds[r.record_id] = true; });
 
   for (;;) {
     const rows = _sbFetch(SUPABASE_URL, KEY, 'GET',
       '/rest/v1/records?select=*&seq=gt.' + cursor + '&order=seq.asc&limit=' + BATCH, undefined) || [];
     if (!rows.length) break;
 
-    const sheetRows = rows.map(function (r) {
-      return {
+    const sheetRows = [];
+    rows.forEach(function (r) {
+      if (existingIds[r.record_id]) { totalSkippedExisting++; return; }
+      existingIds[r.record_id] = true;
+      sheetRows.push({
         record_id: r.record_id,
         machine_id: r.machine_id,
         type: r.type,
@@ -166,16 +182,16 @@ function _syncRecordsFromSupabase(SUPABASE_URL, KEY, uidMap, props) {
         meter_start: (r.meter_start === null || r.meter_start === undefined) ? '' : r.meter_start,
         meter_end: (r.meter_end === null || r.meter_end === undefined) ? '' : r.meter_end,
         business_date: r.business_date
-      };
+      });
     });
 
-    dbInsertMany('Records', sheetRows);
+    if (sheetRows.length) dbInsertMany('Records', sheetRows);
     cursor = rows[rows.length - 1].seq;
-    props.setProperty(CURSOR_KEY, String(cursor)); // 每批寫完就存游標，中途失敗不會重複寫入已成功的批次
-    totalNew += rows.length;
+    props.setProperty(CURSOR_KEY, String(cursor)); // 每批寫完就存游標，中途失敗不會重複處理已成功的批次
+    totalNew += sheetRows.length;
 
     if (rows.length < BATCH) break;
   }
 
-  Logger.log('✓ records：新增 ' + totalNew + ' 筆（游標目前在 seq=' + cursor + '）');
+  Logger.log('✓ records：新增 ' + totalNew + ' 筆、跳過已存在 ' + totalSkippedExisting + ' 筆（游標目前在 seq=' + cursor + '）');
 }
