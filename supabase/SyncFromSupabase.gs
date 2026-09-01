@@ -81,25 +81,45 @@ function _sbMapUser(uidMap, supabaseUuid) {
   return uidMap[supabaseUuid] || '';
 }
 
-// ── upsert 進試算表分頁（有就更新、沒有就新增） ──────────────
+// ── 整表 upsert（有就更新、沒有就新增）──────────────────────
+//
+// 只在一開始呼叫一次 dbReadAll（讀整張表、建 key→_row 對照表），迴圈裡
+// 只用這份記憶體裡的對照表判斷，不會再對同一張表重複呼叫 dbFind——
+// 早期版本迴圈裡每列各自呼叫 dbFind（＝dbReadAll），而每次 dbUpdate／
+// dbInsert 都會讓快取失效，變成「查一列、整張表重讀一次」疊加起來，
+// 資料筆數雖然不多也會拖得很慢，實測甚至跑到撞 GAS 6 分鐘執行上限被
+// 強制中斷。新增的部分最後用一次 dbInsertMany 整批寫入，不用逐列插入。
 
-function _sheetUpsert(sheetName, keyField, obj) {
-  const existing = dbFind(sheetName, keyField, obj[keyField]);
-  if (existing) {
-    dbUpdate(sheetName, existing._row, obj);
-    return 'updated';
-  }
-  dbInsert(sheetName, obj);
-  return 'inserted';
+function _fullTableUpsert(sheetName, keyField, objs) {
+  const existing = dbReadAll(sheetName);
+  const byKey = {};
+  existing.forEach(function (r) { byKey[r[keyField]] = r; });
+
+  const toInsert = [];
+  let updated = 0, unchanged = 0;
+  objs.forEach(function (obj) {
+    const row = byKey[obj[keyField]];
+    if (!row) { toInsert.push(obj); return; }
+    // 大部分列是已經同步過、內容沒變的歷史資料，真的有欄位不同才寫入，
+    // 不用每次全量比對都把每一列重寫一遍。
+    const changed = Object.keys(obj).some(function (k) { return String(row[k]) !== String(obj[k]); });
+    if (changed) {
+      dbUpdate(sheetName, row._row, obj);
+      updated++;
+    } else {
+      unchanged++;
+    }
+  });
+  if (toInsert.length) dbInsertMany(sheetName, toInsert);
+  return { inserted: toInsert.length, updated: updated, unchanged: unchanged };
 }
 
 // ── 營業日：全量比對 ──────────────────────────────────────
 
 function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
   const rows = _sbFetch(SUPABASE_URL, KEY, 'GET', '/rest/v1/biz_days?select=*&order=seq.asc', undefined) || [];
-  let inserted = 0, updated = 0;
-  rows.forEach(function (b) {
-    const result = _sheetUpsert('BizDays', 'biz_id', {
+  const objs = rows.map(function (b) {
+    return {
       biz_id: b.biz_id,
       business_date: b.business_date,
       opened_at: b.opened_at,
@@ -107,19 +127,18 @@ function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
       closed_at: b.closed_at || '',
       closed_by: _sbMapUser(uidMap, b.closed_by),
       auto_closed: !!b.auto_closed
-    });
-    if (result === 'inserted') inserted++; else updated++;
+    };
   });
-  Logger.log('✓ biz_days：新增 ' + inserted + ' 筆、更新 ' + updated + ' 筆');
+  const result = _fullTableUpsert('BizDays', 'biz_id', objs);
+  Logger.log('✓ biz_days：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆');
 }
 
 // ── 每日手動帳目：全量比對 ──────────────────────────────────
 
 function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
   const rows = _sbFetch(SUPABASE_URL, KEY, 'GET', '/rest/v1/daily_ledger?select=*&order=seq.asc', undefined) || [];
-  let inserted = 0, updated = 0;
-  rows.forEach(function (l) {
-    const result = _sheetUpsert('DailyLedger', 'ledger_id', {
+  const objs = rows.map(function (l) {
+    return {
       ledger_id: l.ledger_id,
       business_date: l.business_date,
       turnover: l.turnover,
@@ -135,10 +154,10 @@ function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
       given_to_owner_items: JSON.stringify(l.given_to_owner_items || []),
       taken_by_owner_items: JSON.stringify(l.taken_by_owner_items || []),
       manual_expense: l.manual_expense
-    });
-    if (result === 'inserted') inserted++; else updated++;
+    };
   });
-  Logger.log('✓ daily_ledger：新增 ' + inserted + ' 筆、更新 ' + updated + ' 筆');
+  const result = _fullTableUpsert('DailyLedger', 'ledger_id', objs);
+  Logger.log('✓ daily_ledger：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆');
 }
 
 // ── 記帳紀錄：用 seq 游標增量抓新增的 ──────────────────────
