@@ -22,10 +22,12 @@
  *   Records 分頁因此出現大量重複列。現在改成：每次先讀一次試算表現有
  *   的 record_id 集合，只有真的不存在的才會被 insert，就算游標判斷
  *   失準（例如觸發器被重跑、cursor 被重置），也不會再插入重複列。
- *   **已知限制**：資料庫端事後把一筆舊紀錄「作廢」（void），因為那是
- *   對已存在列的 UPDATE，`seq` 不會變，這支目前抓不到、不會同步作廢
- *   狀態回試算表。這個動作比較少見，先不處理；如果之後真的需要，
- *   可以另外寫一支專門同步作廢狀態的（用 voided_at 當游標）。
+ * - **records 的作廢狀態：另外用 `voided_at` 當游標增量同步**。作廢
+ *   （void_record()）是對已存在列的 UPDATE，不是新增，`seq` 不會變，
+ *   上面那個新增用的游標抓不到。這裡另外查一次「作廢時間比游標新」的
+ *   紀錄，找到試算表裡對應的那一列直接更新 `voided`／`voided_by`／
+ *   `voided_at` 三個欄位，不動其他欄位。同樣先讀一次試算表整表建好
+ *   record_id → row 的對照表，不在迴圈裡逐筆呼叫 dbFind。
  * - **biz_days（營業日）／daily_ledger（每日帳目）：全量比對**。這兩張
  *   資料量小（一天頂多新增/更新個位數筆），而且「結單」「重新儲存
  *   今日數字」都是對已存在列的 UPDATE，用 seq 游標會漏掉這些更新——
@@ -55,6 +57,7 @@ function syncFromSupabase() {
   _syncBizDaysFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
   _syncDailyLedgerFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
   _syncRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
+  _syncVoidedRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
 
   Logger.log('\n🎉 資料庫 → 試算表 同步完成。');
 }
@@ -213,4 +216,45 @@ function _syncRecordsFromSupabase(SUPABASE_URL, KEY, uidMap, props) {
   }
 
   Logger.log('✓ records：新增 ' + totalNew + ' 筆、跳過已存在 ' + totalSkippedExisting + ' 筆（游標目前在 seq=' + cursor + '）');
+}
+
+// ── 記帳紀錄的作廢狀態：用 voided_at 游標增量同步 ────────────
+
+function _syncVoidedRecordsFromSupabase(SUPABASE_URL, KEY, uidMap, props) {
+  const CURSOR_KEY = 'SYNC_VOIDED_LAST_AT';
+  let cursor = props.getProperty(CURSOR_KEY) || '1970-01-01T00:00:00Z';
+  const BATCH = 500;
+  let totalUpdated = 0, totalAlready = 0, totalMissing = 0;
+
+  // 跟新增紀錄那支一樣的道理：先讀一次試算表整表、建好 record_id→row
+  // 對照表，不要在迴圈裡逐筆呼叫 dbFind（＝dbReadAll）。
+  const rowByRecordId = {};
+  dbReadAll('Records').forEach(function (r) { rowByRecordId[r.record_id] = r; });
+
+  for (;;) {
+    const rows = _sbFetch(SUPABASE_URL, KEY, 'GET',
+      '/rest/v1/records?select=record_id,voided,voided_by,voided_at&voided=eq.true&voided_at=gt.' +
+      encodeURIComponent(cursor) + '&order=voided_at.asc&limit=' + BATCH, undefined) || [];
+    if (!rows.length) break;
+
+    rows.forEach(function (r) {
+      const row = rowByRecordId[r.record_id];
+      if (!row) { totalMissing++; return; }
+      if (row.voided === true || row.voided === 'TRUE') { totalAlready++; return; }
+      dbUpdate('Records', row._row, {
+        voided: true,
+        voided_by: _sbMapUser(uidMap, r.voided_by),
+        voided_at: r.voided_at
+      });
+      row.voided = true; // 記憶體裡的狀態也更新，避免同一輪迴圈重複處理
+      totalUpdated++;
+    });
+
+    cursor = rows[rows.length - 1].voided_at;
+    props.setProperty(CURSOR_KEY, cursor);
+    if (rows.length < BATCH) break;
+  }
+
+  Logger.log('✓ 作廢狀態：同步 ' + totalUpdated + ' 筆、已是作廢狀態跳過 ' + totalAlready +
+    ' 筆、試算表找不到對應紀錄跳過 ' + totalMissing + ' 筆（游標目前在 ' + cursor + '）');
 }
