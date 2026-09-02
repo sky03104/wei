@@ -70,7 +70,12 @@ function _sbPushUserId(sheetUserId) {
     const cfg = _sbPushConfig();
     const headers = { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key };
     const resp = UrlFetchApp.fetch(cfg.url + '/rest/v1/profiles?select=id,username', { method: 'GET', headers: headers, muteHttpExceptions: true });
-    const profiles = JSON.parse(resp.getContentText() || '[]');
+    const code = resp.getResponseCode();
+    const text = resp.getContentText();
+    if (code >= 300) throw new Error('查詢 profiles 失敗 (' + code + ')：' + text);
+    let profiles;
+    try { profiles = JSON.parse(text || '[]'); } catch (e) { throw new Error('profiles 回應不是合法 JSON：' + text); }
+    if (!Array.isArray(profiles)) throw new Error('profiles 回應格式不是陣列（' + typeof profiles + '）：' + text);
     profiles.forEach(function (p) {
       const sid = usernameToSheetId[p.username];
       if (sid) map[sid] = p.id;
