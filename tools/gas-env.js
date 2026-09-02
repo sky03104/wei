@@ -297,7 +297,7 @@ const Logger = { log: (msg) => logLines.push(String(msg)) };
 
 // ── 組裝 ────────────────────────────────────────────────
 
-const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'SupabasePush.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
+const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'SupabasePush.gs', 'SupabaseWebhook.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
 
 /**
  * 載入 apps-script/*.gs 到一個模擬環境裡。

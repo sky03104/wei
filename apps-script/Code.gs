@@ -61,6 +61,14 @@ const ACTION_ROLES = {
 // ── HTTP 進入點 ─────────────────────────────────────────
 
 function doPost(e) {
+  // Supabase 的 Database Webhook 打進來的請求，網址上會帶
+  // ?webhookSecret=...（見 SupabaseWebhook.gs 開頭的說明——GAS 的
+  // doPost 收不到自訂 HTTP 標頭，只能用查詢字串參數驗證），跟前端 App
+  // 用的 payload 表單欄位是兩條不同的路徑，先在這裡分流。
+  if (e && e.parameter && e.parameter.webhookSecret) {
+    return _handleSupabaseWebhook(e);
+  }
+
   let payload = {};
   try {
     const raw = (e && e.parameter && e.parameter.payload) ? e.parameter.payload : '{}';
