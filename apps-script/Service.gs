@@ -190,11 +190,9 @@ function startBusinessDay(user) {
     const now = nowIso();
     const open = _openBizDay();
     if (open) {
-      dbUpdate('BizDays', open._row, {
-        closed_at: now,
-        closed_by: user.userId,
-        auto_closed: true
-      });
+      const closePatch = { closed_at: now, closed_by: user.userId, auto_closed: true };
+      dbUpdate('BizDays', open._row, closePatch);
+      pushBizDayToSupabase(Object.assign({}, open, closePatch));
     }
     const row = {
       biz_id: newId('biz'),
@@ -206,6 +204,7 @@ function startBusinessDay(user) {
       auto_closed: false
     };
     dbInsert('BizDays', row);
+    pushBizDayToSupabase(row);
     return { open: true, current: _publicBizDay(row), previousAutoClosed: !!open };
   });
 }
@@ -223,6 +222,7 @@ function endBusinessDay(user) {
       auto_closed: false
     });
     const closed = dbFind('BizDays', 'biz_id', open.biz_id);
+    pushBizDayToSupabase(closed);
     return { open: false, current: _publicBizDay(closed) };
   });
 }
@@ -420,7 +420,9 @@ function saveDailyLedger(user, payload) {
         biz_id: relevant ? relevant.biz_id : ''
       }, patch));
     }
-    return _publicDailyLedger(_dailyLedgerRow(businessDate));
+    const savedRow = _dailyLedgerRow(businessDate);
+    pushDailyLedgerToSupabase(savedRow);
+    return _publicDailyLedger(savedRow);
   });
 }
 
@@ -799,6 +801,7 @@ function addRecord(user, payload) {
       business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
+    pushRecordsToSupabase([rec]);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
   // 前端送出入幣/出幣後一定緊接著重新整理機台詳細頁，沒理由分兩趟網路
@@ -855,6 +858,7 @@ function addMeterRecord(user, payload) {
       business_date: _currentBusinessDate()
     };
     dbInsert('Records', rec);
+    pushRecordsToSupabase([rec]);
     return { duplicated: false, records: [_publicRecord(rec)] };
   });
   // 跟 addRecord 同一個道理：直接把最新的機台詳細頁資料一起回傳，
@@ -948,6 +952,7 @@ function addPrizeRecord(user, payload) {
     });
 
     dbInsertMany('Records', rows);
+    pushRecordsToSupabase(rows);
     let sum = 0;
     rows.forEach(function (r) { sum += r.amount; });
     return { duplicated: false, total: sum, records: rows.map(_publicRecord) };
@@ -971,11 +976,9 @@ function voidRecord(user, recordId) {
     const r = dbFind('Records', 'record_id', recordId);
     if (!r) throw new Error('找不到這筆紀錄');
     if (toBool(r.voided)) return { alreadyVoided: true };
-    dbUpdate('Records', r._row, {
-      voided: true,
-      voided_by: user.userId,
-      voided_at: nowIso()
-    });
+    const patch = { voided: true, voided_by: user.userId, voided_at: nowIso() };
+    dbUpdate('Records', r._row, patch);
+    pushVoidToSupabase(Object.assign({}, r, patch));
     return { alreadyVoided: false };
   });
 }
