@@ -900,14 +900,20 @@ function saveSession(token, remember) {
 async function loadSession() {
   if (BACKEND === 'supabase') {
     try {
+      // 一定要在 supabaseClient()（進而可能觸發 SDK 內部立刻做的 token
+      // refresh）之前，就先知道原本的 session 到底存在 localStorage 還是
+      // sessionStorage：_sbStorageAdapter.setItem() 是看 state.remember
+      // 決定寫哪裡，如果這裡沒有先設好，state.remember 預設是 false，
+      // refresh 剛好在這個空檔觸發的話，會把明明勾了「記住我」、存在
+      // localStorage 的 session 誤寫進 sessionStorage，還會順便清掉
+      // localStorage 那份——變成「明明勾了記住我，過一陣子還是被登出」。
+      state.remember = !!(function () { try { return !!localStorage.getItem(SB_SESSION_KEY); } catch (e) { return false; } })();
       const sb = supabaseClient();
       const { data } = await sb.auth.getSession();
       if (data && data.session) {
         state.token = data.session.access_token;
-        // Supabase session 本身不記得當初登入時有沒有勾「記住我」，
-        // 用「localStorage 裡找不找得到」反推：勾了才會寫進 localStorage
-        // （見 _sbStorageAdapter），沒勾只會在 sessionStorage。
-        state.remember = !!(function () { try { return localStorage.getItem(SB_SESSION_KEY); } catch (e) { return null; } })();
+      } else {
+        state.remember = false;
       }
     } catch (err) { /* 讀不到就當沒登入 */ }
     return;
