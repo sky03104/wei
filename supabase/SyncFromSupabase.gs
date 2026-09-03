@@ -93,16 +93,32 @@ function _sbMapUser(uidMap, supabaseUuid) {
 // 資料筆數雖然不多也會拖得很慢，實測甚至跑到撞 GAS 6 分鐘執行上限被
 // 強制中斷。新增的部分最後用一次 dbInsertMany 整批寫入，不用逐列插入。
 
-function _fullTableUpsert(sheetName, keyField, objs) {
+function _fullTableUpsert(sheetName, keyField, objs, freshnessOf) {
   const existing = dbReadAll(sheetName);
   const byKey = {};
   existing.forEach(function (r) { byKey[r[keyField]] = r; });
 
   const toInsert = [];
-  let updated = 0, unchanged = 0;
+  let updated = 0, unchanged = 0, skippedStale = 0;
   objs.forEach(function (obj) {
     const row = byKey[obj[keyField]];
     if (!row) { toInsert.push(obj); return; }
+
+    // 保護機制：這批資料是「回頭去問 Supabase 現在的狀態」，如果剛好在
+    // 使用者存檔後、Supabase 那邊還沒真的反映出最新值之前這支就先跑了，
+    // 抓到的會是「比試算表現在的內容還舊」的一份快照——不檢查就直接
+    // 覆蓋，會把使用者剛存的新值蓋回舊的（實際發生過：手動活動支出
+    // 一分鐘內從剛輸入的值被蓋回 0）。有給 freshnessOf 時，比較新才
+    // 覆蓋，比較舊或沒有可比的時間戳記就跳過，不動這一列。
+    if (freshnessOf) {
+      const incoming = freshnessOf(obj);
+      const current = freshnessOf(row);
+      if (incoming && current && String(incoming) < String(current)) {
+        skippedStale++;
+        return;
+      }
+    }
+
     // 大部分列是已經同步過、內容沒變的歷史資料，真的有欄位不同才寫入，
     // 不用每次全量比對都把每一列重寫一遍。
     const changed = Object.keys(obj).some(function (k) { return String(row[k]) !== String(obj[k]); });
@@ -114,7 +130,7 @@ function _fullTableUpsert(sheetName, keyField, objs) {
     }
   });
   if (toInsert.length) dbInsertMany(sheetName, toInsert);
-  return { inserted: toInsert.length, updated: updated, unchanged: unchanged };
+  return { inserted: toInsert.length, updated: updated, unchanged: unchanged, skippedStale: skippedStale };
 }
 
 // ── 營業日：全量比對 ──────────────────────────────────────
@@ -132,8 +148,11 @@ function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
       auto_closed: !!b.auto_closed
     };
   });
-  const result = _fullTableUpsert('BizDays', 'biz_id', objs);
-  Logger.log('✓ biz_days：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆');
+  // 沒有現成的 updated_at 欄位，用「結單時間，沒結單就用開始時間」當
+  // 比較用的時間戳記——已經結單的列，開始時間一定比結單時間舊，不會
+  // 誤判成「比較新」而把已結單的狀態退回成進行中。
+  const result = _fullTableUpsert('BizDays', 'biz_id', objs, function (o) { return o.closed_at || o.opened_at; });
+  Logger.log('✓ biz_days：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆、資料比較舊跳過 ' + result.skippedStale + ' 筆');
 }
 
 // ── 每日手動帳目：全量比對 ──────────────────────────────────
@@ -159,8 +178,8 @@ function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
       manual_expense: l.manual_expense
     };
   });
-  const result = _fullTableUpsert('DailyLedger', 'ledger_id', objs);
-  Logger.log('✓ daily_ledger：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆');
+  const result = _fullTableUpsert('DailyLedger', 'ledger_id', objs, function (o) { return o.updated_at; });
+  Logger.log('✓ daily_ledger：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆、資料比較舊跳過 ' + result.skippedStale + ' 筆');
 }
 
 // ── 記帳紀錄：用 seq 游標增量抓新增的 ──────────────────────

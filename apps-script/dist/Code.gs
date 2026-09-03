@@ -2721,21 +2721,46 @@ function _webhookUserId(supabaseUuid) {
   return map[supabaseUuid] || '';
 }
 
-/** 有就更新、沒有就新增，回傳 'inserted' 或 'updated'。 */
-function _sheetUpsertRow(sheetName, keyField, obj) {
+/**
+ * 有就更新、沒有就新增，回傳 'inserted'／'updated'／'skippedStale'。
+ *
+ * `freshnessOf`（可選）：一個 function(obj) => 可比較字串（通常是
+ * updated_at 這類時間戳記）。Supabase 的 pg_net webhook **不保證送達
+ * 順序**——這一列稍早的異動事件，有可能因為網路延遲，在較晚異動的
+ * 事件處理完之後才送達。沒有這層保護，舊事件會把試算表剛存好的新
+ * 資料蓋回舊的（實際發生過：手動活動支出一分鐘內從剛輸入的值被蓋回
+ * 0）。有給 freshnessOf 時，只有「這次事件比試算表現在的內容還新」
+ * 才會真的覆蓋，比較舊就跳過、不動這一列。
+ */
+function _sheetUpsertRow(sheetName, keyField, obj, freshnessOf) {
   const existing = dbFind(sheetName, keyField, obj[keyField]);
-  if (existing) {
-    dbUpdate(sheetName, existing._row, obj);
-    return 'updated';
+  if (!existing) {
+    dbInsert(sheetName, obj);
+    return 'inserted';
   }
-  dbInsert(sheetName, obj);
-  return 'inserted';
+  if (freshnessOf) {
+    const incoming = freshnessOf(obj);
+    const current = freshnessOf(existing);
+    if (incoming && current && String(incoming) < String(current)) {
+      return 'skippedStale';
+    }
+  }
+  dbUpdate(sheetName, existing._row, obj);
+  return 'updated';
 }
 
 function _webhookUpsertRecord(r) {
   const validMachine = !!dbFind('Machines', 'machine_id', r.machine_id);
   if (!validMachine) {
     Logger.log('⚠ webhook records：machine_id=' + r.machine_id + ' 在試算表找不到，已跳過（' + r.record_id + '）');
+    return;
+  }
+  // 紀錄本身的內容是不可變的（入幣/出幣/開獎金額寫入後不會再改），
+  // 唯一會事後變動的是作廢狀態——同樣有事件送達順序的問題：已經作廢
+  // 的紀錄，不能因為一個較舊、還沒作廢的事件晚到而被「復原」。
+  const existing = dbFind('Records', 'record_id', r.record_id);
+  if (existing && toBool(existing.voided) && !r.voided) {
+    Logger.log('✓ webhook records：跳過（已經是作廢狀態，不接受較舊的未作廢事件）（' + r.record_id + '）');
     return;
   }
   const result = _sheetUpsertRow('Records', 'record_id', {
@@ -2778,7 +2803,7 @@ function _webhookUpsertDailyLedger(l) {
     manual_432: l.manual_432,
     manual_441: l.manual_441,
     manual_expense: l.manual_expense
-  });
+  }, function (o) { return o.updated_at; });
   Logger.log('✓ webhook daily_ledger：' + result + '（' + l.ledger_id + '）');
 }
 
@@ -2791,7 +2816,7 @@ function _webhookUpsertBizDay(b) {
     closed_at: b.closed_at || '',
     closed_by: _webhookUserId(b.closed_by),
     auto_closed: !!b.auto_closed
-  });
+  }, function (o) { return o.closed_at || o.opened_at; });
   Logger.log('✓ webhook biz_days：' + result + '（' + b.biz_id + '）');
 }
 
