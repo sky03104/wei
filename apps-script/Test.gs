@@ -682,6 +682,30 @@ function _selfTestBody(results) {
     _fails({ action: 'endBusinessDay', token: patrolTok });
   });
 
+  _t(results, '營業日：復原結單只有管理員能操作，巡邏人員跟台主都不行', function () {
+    _fails({ action: 'reopenBusinessDay', token: patrolTok }, 'PERMISSION');
+    _fails({ action: 'reopenBusinessDay', token: ownerTok }, 'PERMISSION');
+  });
+
+  _t(results, '營業日：復原誤按的結單，會把最近一筆重新打開（同一個 biz_id，不是開新的）', function () {
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const bizId = _openBizDay().biz_id;
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    _assert(!_openBizDay(), '結單後應該沒有進行中的營業日');
+
+    const reopened = _ok({ action: 'reopenBusinessDay', token: adminTok });
+    _assert(reopened.open, '復原後應該回到進行中');
+    _assertEq(_openBizDay().biz_id, bizId, '復原後進行中的應該是同一筆 biz_id，不是另外開一個新的');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
+  _t(results, '營業日：目前正在進行中就不能復原，會明確報錯', function () {
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    _fails({ action: 'reopenBusinessDay', token: adminTok });
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
   _t(results, '營業日：開始之後，記帳會用開始那天的日期，就算實際寫入時間已經跨過午夜', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '跨夜營業日測試台', sortOrder: 92 }).machineId;
 

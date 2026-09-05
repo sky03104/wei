@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v53';
+const APP_VERSION = 'v54';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1462,12 +1462,21 @@ function businessDayBar(biz) {
       + (biz.current.openedByName ? '（' + biz.current.openedByName + '）' : '')
     : '尚未開始今日營業，記帳暫時照行事曆日期算';
 
+  const actions = [
+    h('button', { class: 'btn btn-in', onclick: doStartBusinessDay }, '▶ 今日營業開始'),
+    h('button', { class: 'btn btn-out', onclick: doEndBusinessDay }, '⏹ 今日營業結單')
+  ];
+  // 誤按「結單」的復原按鈕：只有管理員看得到，只在目前沒有進行中的
+  // 營業日時才出現。真的「沒有可以復原的營業日」（例如從沒按過這個
+  // 功能）由後端 reopenBusinessDay() 擋下、給明確的錯誤訊息，前端
+  // 不用先精準判斷，維持簡單。
+  if (!isOpen && isAdmin()) {
+    actions.push(h('button', { class: 'btn btn-ghost', onclick: doReopenBusinessDay }, '↺ 復原剛剛的結單'));
+  }
+
   return h('div', { class: 'bizday-bar' }, [
     h('div', { class: 'bizday-status small muted', text: status }),
-    h('div', { class: 'bizday-actions' }, [
-      h('button', { class: 'btn btn-in', onclick: doStartBusinessDay }, '▶ 今日營業開始'),
-      h('button', { class: 'btn btn-out', onclick: doEndBusinessDay }, '⏹ 今日營業結單')
-    ])
+    h('div', { class: 'bizday-actions' }, actions)
   ]);
 }
 
@@ -1501,6 +1510,15 @@ function doEndBusinessDay() {
     _clearMachineDetailCache();
     await loadHome();
   }, { success: '已結算今日營業' });
+}
+
+function doReopenBusinessDay() {
+  if (!confirm('確定要復原剛剛的結單嗎？會把最近一筆營業日改回「進行中」。')) return;
+  run(async () => {
+    await api('reopenBusinessDay', {});
+    _clearMachineDetailCache();
+    await loadHome();
+  }, { success: '已復原，回到營業中' });
 }
 
 function machineCard(m) {
