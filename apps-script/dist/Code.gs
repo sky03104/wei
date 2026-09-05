@@ -1066,6 +1066,30 @@ function businessDayStatus(user) {
 }
 
 /**
+ * 管理員專用：復原「誤按今日營業結單」——把最近一筆營業日重新打開，
+ * 回到進行中狀態。
+ *
+ * 只認「最後一筆」（列號最大的那一列），不能拿來重開很久以前、已經
+ * 結算過好幾天的舊營業日——那種情況代表的是真的想改歷史資料，風險
+ * 完全不一樣，這支刻意不支援，避免被誤用。
+ */
+function reopenBusinessDay(user) {
+  requireRole(user, [ROLE_ADMIN]);
+  return withLock(function () {
+    const rows = dbReadAll('BizDays');
+    if (!rows.length) throw new Error('沒有任何營業日紀錄可以復原');
+    const last = rows.reduce(function (a, b) { return (b._row || 0) > (a._row || 0) ? b : a; });
+    if (!last.closed_at) throw new Error('最近一筆營業日還在進行中，不需要復原');
+
+    const patch = { closed_at: '', closed_by: '', auto_closed: false };
+    dbUpdate('BizDays', last._row, patch);
+    const reopened = Object.assign({}, last, patch);
+    pushBizDayToSupabase(reopened);
+    return { open: true, current: _publicBizDay(reopened) };
+  });
+}
+
+/**
  * 按下「今日營業開始」。
  *
  * 如果前一個營業日忘記結單，這裡直接幫忙結掉（記錄 auto_closed，
@@ -3427,6 +3451,7 @@ const ACTION_ROLES = {
   addMeterRecord: [ROLE_ADMIN, ROLE_PATROL],
   startBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
   endBusinessDay: [ROLE_ADMIN, ROLE_PATROL],
+  reopenBusinessDay: [ROLE_ADMIN],
   saveDailyLedger: [ROLE_ADMIN, ROLE_PATROL],
 
   voidRecord: [ROLE_ADMIN],
@@ -3547,6 +3572,8 @@ function _dispatch(action, p, user) {
       return startBusinessDay(user);
     case 'endBusinessDay':
       return endBusinessDay(user);
+    case 'reopenBusinessDay':
+      return reopenBusinessDay(user);
     case 'saveDailyLedger':
       return saveDailyLedger(user, p);
     case 'voidRecord':
@@ -4471,6 +4498,30 @@ function _selfTestBody(results) {
 
   _t(results, '營業日：結單前沒有進行中的營業日，會明確報錯', function () {
     _fails({ action: 'endBusinessDay', token: patrolTok });
+  });
+
+  _t(results, '營業日：復原結單只有管理員能操作，巡邏人員跟台主都不行', function () {
+    _fails({ action: 'reopenBusinessDay', token: patrolTok }, 'PERMISSION');
+    _fails({ action: 'reopenBusinessDay', token: ownerTok }, 'PERMISSION');
+  });
+
+  _t(results, '營業日：復原誤按的結單，會把最近一筆重新打開（同一個 biz_id，不是開新的）', function () {
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const bizId = _openBizDay().biz_id;
+    _ok({ action: 'endBusinessDay', token: adminTok });
+    _assert(!_openBizDay(), '結單後應該沒有進行中的營業日');
+
+    const reopened = _ok({ action: 'reopenBusinessDay', token: adminTok });
+    _assert(reopened.open, '復原後應該回到進行中');
+    _assertEq(_openBizDay().biz_id, bizId, '復原後進行中的應該是同一筆 biz_id，不是另外開一個新的');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
+  _t(results, '營業日：目前正在進行中就不能復原，會明確報錯', function () {
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    _fails({ action: 'reopenBusinessDay', token: adminTok });
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
   });
 
   _t(results, '營業日：開始之後，記帳會用開始那天的日期，就算實際寫入時間已經跨過午夜', function () {
