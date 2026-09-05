@@ -717,6 +717,41 @@ begin
 end;
 $$;
 
+-- 管理員專用：復原「誤按今日營業結單」——把最近一筆營業日重新打開，
+-- 回到進行中狀態。對照 GAS 版本 reopenBusinessDay()：只認「最後一筆」
+-- （seq 最大的那一列，等同 GAS 那邊的 _row），不能拿來重開很久以前、
+-- 已經結算過好幾天的舊營業日——那種情況代表的是真的想改歷史資料，
+-- 風險完全不一樣，這支刻意不支援，避免被誤用。
+create or replace function reopen_business_day()
+returns jsonb
+language plpgsql
+as $$
+declare
+  v_last biz_days;
+begin
+  if not is_admin() then
+    raise exception '只有管理員能復原營業日' using errcode = '42501';
+  end if;
+
+  select * into v_last from biz_days order by seq desc limit 1;
+  if not found then
+    raise exception '沒有任何營業日紀錄可以復原';
+  end if;
+  if v_last.closed_at is null then
+    raise exception '最近一筆營業日還在進行中，不需要復原';
+  end if;
+
+  update biz_days
+  set closed_at = null, closed_by = null, auto_closed = false
+  where biz_id = v_last.biz_id;
+
+  return jsonb_build_object(
+    'open', true,
+    'current', (select public_biz_day(b) from biz_days b where biz_id = v_last.biz_id)
+  );
+end;
+$$;
+
 -- 設定今天（相關營業日）的週轉金／台主給／台主領／手動活動支出432/441／
 -- 開銷。同一個 session 裡重複儲存是覆蓋，不是疊加（INSERT ... ON CONFLICT
 -- DO UPDATE，衝突鍵是 schema.sql 的 daily_ledger_one_per_biz_day_idx）。

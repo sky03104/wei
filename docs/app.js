@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v54';
+const APP_VERSION = 'v55';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -793,6 +793,7 @@ async function supabaseApi(action, payload) {
     addPrizeRecord: () => ['add_prize_record', { p_machine_id: p.machineId, p_items: p.items, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     startBusinessDay: () => ['start_business_day', {}],
     endBusinessDay: () => ['end_business_day', {}],
+    reopenBusinessDay: () => ['reopen_business_day', {}],
     saveDailyLedger: () => ['save_daily_ledger', {
       p_turnover: p.turnover || 0, p_manual_expense: p.manualExpense || 0, p_manual432: p.manual432 || 0,
       p_manual441: p.manual441 || 0, p_given_to_owner_items: p.givenToOwnerItems || [], p_taken_by_owner_items: p.takenByOwnerItems || [],
