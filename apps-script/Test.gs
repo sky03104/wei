@@ -1658,6 +1658,38 @@ function _selfTestBody(results) {
     _assert(msg.indexOf('每月自動封存檢查已經設定過，略過') >= 0, 'setup() 訊息應該說明觸發器已經裝過，不是又裝一個');
   });
 
+  _t(results, '定期安全網：_dedupeByKey 同一個 key 重複時只留最後一筆', function () {
+    const rows = [{ id: 'a', v: 1 }, { id: 'b', v: 2 }, { id: 'a', v: 3 }];
+    const result = _dedupeByKey(rows, 'id');
+    _assertEq(result.length, 2, '應該剩下 2 個不同的 key');
+    const a = result.filter(function (r) { return r.id === 'a'; })[0];
+    _assertEq(a.v, 3, '重複的 key 應該保留最後一筆（v=3），不是第一筆');
+  });
+
+  _t(results, '定期安全網：試算表→資料庫的定期同步觸發器，只有設定 Supabase 連線資訊才會裝，且只裝一次', function () {
+    const handler = 'pushAllToSupabase';
+    const props = PropertiesService.getScriptProperties();
+    const before = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === handler; }).length;
+    _assertEq(before, 0, '一開始不該有這個觸發器（還沒設定 Supabase 連線資訊）');
+
+    const noConfig = _ensureSupabasePushSyncTrigger();
+    _assertEq(noConfig, false, '沒設定 SUPABASE_URL/SERVICE_ROLE_KEY 時不該裝觸發器');
+
+    props.setProperty('SUPABASE_URL', 'https://fake.supabase.co');
+    props.setProperty('SUPABASE_SERVICE_ROLE_KEY', 'fake-key');
+    try {
+      const first = _ensureSupabasePushSyncTrigger();
+      const second = _ensureSupabasePushSyncTrigger();
+      _assertEq(first, true, '設定好連線資訊後，第一次呼叫應該裝上觸發器');
+      _assertEq(second, false, '已經裝過了，第二次呼叫應該回傳 false');
+      const after = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === handler; }).length;
+      _assertEq(after, 1, '不管呼叫幾次，觸發器都只該有 1 個');
+    } finally {
+      props.deleteProperty('SUPABASE_URL');
+      props.deleteProperty('SUPABASE_SERVICE_ROLE_KEY');
+    }
+  });
+
   _t(results, '封存：報表／匯出對帳表 選到已封存的舊區間會明確報錯，選現在這一季不受影響', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '封存區間測試台', sortOrder: 95 }).machineId;
     const oldDate = _addDays(todayKey(), -300);
