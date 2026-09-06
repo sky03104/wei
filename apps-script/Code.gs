@@ -247,6 +247,13 @@ function setup() {
     ? '已設定每月自動封存檢查（每月 2 號凌晨 3 點，會把上一季以前還留在「紀錄」分頁的資料搬去封存分頁）'
     : '每月自動封存檢查已經設定過，略過');
 
+  const pushSyncTriggerInstalled = _ensureSupabasePushSyncTrigger();
+  if (pushSyncTriggerInstalled) {
+    out.push('已設定「試算表→資料庫」定期安全網（每 15 分鐘跑一次，補即時推送萬一失敗漏掉的資料）');
+  } else if (_sbPushEnabled()) {
+    out.push('「試算表→資料庫」定期安全網已經設定過，略過');
+  }
+
   const props = PropertiesService.getScriptProperties();
   const admins = dbReadAll('Users').filter(function (u) { return String(u.role) === ROLE_ADMIN; });
   // 忘記密碼的救援流程：使用者在試算表把某個 admin 列的 password_hash/salt 清空後重跑 setup，

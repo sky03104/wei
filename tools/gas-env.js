@@ -270,6 +270,7 @@ const ScriptApp = {
       timeBased() { return builder; },
       onMonthDay(d) { spec.monthDay = d; return builder; },
       atHour(h) { spec.hour = h; return builder; },
+      everyMinutes(m) { spec.everyMinutes = m; return builder; },
       create() {
         const id = 'trig_' + (++_triggerSeq);
         _triggers.push(Object.assign({ id: id }, spec));
@@ -297,7 +298,7 @@ const Logger = { log: (msg) => logLines.push(String(msg)) };
 
 // ── 組裝 ────────────────────────────────────────────────
 
-const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'SupabasePush.gs', 'SupabaseWebhook.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
+const GAS_FILE_ORDER = ['Db.gs', 'Auth.gs', 'Service.gs', 'SupabasePush.gs', 'SupabasePushSync.gs', 'SupabaseWebhook.gs', 'Reports.gs', 'Archive.gs', 'Code.gs', 'Test.gs'];
 
 /**
  * 載入 apps-script/*.gs 到一個模擬環境裡。
