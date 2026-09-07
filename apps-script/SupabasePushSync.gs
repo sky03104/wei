@@ -39,7 +39,12 @@ function pushAllToSupabase() {
     return null;
   }
   return withLock(function () {
+    // machines 一定要排第一個：records 有外鍵指到 machine_id，機台如果還沒
+    // 存在於 Supabase，records 那批 upsert 會直接被 Postgres 擋下來
+    // （真實發生過：23503 外鍵違反，整批 500 筆全部失敗）。機台本身
+    // 不像 records/void 有即時推送涵蓋，只有這裡會定期把它們同步過去。
     const summary = {
+      machines: _pushAllMachinesToSupabase(),
       bizDays: _pushAllBizDaysToSupabase(),
       dailyLedger: _pushAllDailyLedgerToSupabase(),
       records: _pushAllRecordsToSupabase()
@@ -47,6 +52,33 @@ function pushAllToSupabase() {
     Logger.log('定期安全網推送完成：' + JSON.stringify(summary));
     return summary;
   });
+}
+
+/** 機台不像 records/biz_days/daily_ledger 有即時推送，只有這支定期安全網會同步——沒這段的話，新增/改過的機台在 Supabase 會一直是舊的（甚至完全不存在），造成 records 外鍵失敗、匯出查詢用機台分類篩選時篩到過期資料。 */
+function _pushAllMachinesToSupabase() {
+  const rows = _dedupeByKey(dbReadAll('Machines'), 'machine_id');
+  try {
+    const payload = rows.map(function (m) {
+      return {
+        machine_id: m.machine_id, name: m.name, location: m.location || '', status: m.status || 'running',
+        color: m.color || '#4F7BE8', sort_order: m.sort_order === '' ? 0 : m.sort_order, note: m.note || '',
+        created_at: m.created_at || new Date().toISOString(), category: m.category || 'dice', icon: m.icon || 'classic'
+      };
+    });
+    _sbPushUpsert('machines', payload, 'machine_id');
+    return payload.length;
+  } catch (e) {
+    Logger.log('⚠ 定期安全網推送失敗（machines）：' + (e && e.message));
+    return 0;
+  }
+}
+
+/** ISO 時間字串是不是在最近 days 天內。 */
+function _isRecentIso(iso, days) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  if (isNaN(t)) return false;
+  return (Date.now() - t) <= days * 24 * 60 * 60 * 1000;
 }
 
 /**
@@ -81,10 +113,22 @@ function _pushAllDailyLedgerToSupabase() {
   return rows.length;
 }
 
-/** 跟 pushRecordsToSupabase() 分開寫：那支是給「剛新增」的情境用，voided_by/voided_at 寫死 null；這裡要原樣帶已作廢紀錄的作廢資訊。 */
+/**
+ * 跟 pushRecordsToSupabase() 分開寫：那支是給「剛新增」的情境用，
+ * voided_by/voided_at 寫死 null；這裡要原樣帶已作廢紀錄的作廢資訊。
+ *
+ * 只送「最近 RECENT_DAYS 天內新增或作廢」的紀錄，不是每次都把全部歷史
+ * 紀錄重推一次——這支是安全網，只需要補「即時推送剛好失敗」的那幾筆，
+ * 那必然是最近才發生的事，很久以前的紀錄早就同步過了，沒必要每 15
+ * 分鐘重新整批送一次。真實發生過的事故：不限制範圍時，1000+ 筆全部
+ * 重送直接跑到超過 GAS 6 分鐘執行上限被強制中止，而且全程握著鎖，
+ * 期間所有需要搶鎖的操作（開始/結單/入幣/作廢…）都會卡住。
+ */
 function _pushAllRecordsToSupabase() {
-  const rows = _dedupeByKey(dbReadAll('Records'), 'record_id');
-  const BATCH = 500;
+  const RECENT_DAYS = 7;
+  const rows = _dedupeByKey(dbReadAll('Records'), 'record_id')
+    .filter(function (r) { return _isRecentIso(r.created_at, RECENT_DAYS) || _isRecentIso(r.voided_at, RECENT_DAYS); });
+  const BATCH = 200;
   let pushed = 0;
   for (let i = 0; i < rows.length; i += BATCH) {
     const chunk = rows.slice(i, i + BATCH);

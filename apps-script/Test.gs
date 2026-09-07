@@ -1666,6 +1666,16 @@ function _selfTestBody(results) {
     _assertEq(a.v, 3, '重複的 key 應該保留最後一筆（v=3），不是第一筆');
   });
 
+  _t(results, '定期安全網：_isRecentIso 判斷是不是在最近 N 天內', function () {
+    const now = new Date();
+    const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    _assert(_isRecentIso(twoDaysAgo, 7) === true, '2 天前，問「最近 7 天內」應該算是');
+    _assert(_isRecentIso(tenDaysAgo, 7) === false, '10 天前，問「最近 7 天內」應該不算');
+    _assert(_isRecentIso('', 7) === false, '空字串應該當作不算最近');
+    _assert(_isRecentIso(null, 7) === false, 'null 應該當作不算最近');
+  });
+
   _t(results, '定期安全網：試算表→資料庫的定期同步觸發器，只有設定 Supabase 連線資訊才會裝，且只裝一次', function () {
     const handler = 'pushAllToSupabase';
     const props = PropertiesService.getScriptProperties();
