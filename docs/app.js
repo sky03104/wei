@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v55.2';
+const APP_VERSION = 'v56';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2627,25 +2627,25 @@ function exportLedgerScreenshots() {
       return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
     });
 
-    // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
-    // 一次可能有好幾個檔案，先試分享面板一次全部帶走，不支援的裝置
-    // 才退回一張一張各自觸發下載。
+    // 這裡一次是好幾個檔案，不像 exportLedgerImage()（單一機台、單一
+    // 檔案）那樣直接用 navigator.share({files})——實測發現：
+    // navigator.share({files}) 呼叫本身「成功」（不丟例外），但分享目的
+    // 地是聊天 App（例如 LINE）時，對方的分享擴充功能一次只接得住 1
+    // 個檔案，其餘的會被系統/該 App 默默丟掉，網頁完全不會收到任何
+    // 錯誤通知，也就沒辦法用 try/catch 偵測、退回下載。這不是我們能
+    // 控制的行為——一旦 share() 呼叫本身沒丟錯，檔案交給哪個 App、那個
+    // App 怎麼處理，網頁就管不到了。
     //
-    // canShare({files}) 過了不代表 share() 一定會成功——瀏覽器對「這批
-    // 檔案能不能分享」跟「系統分享面板實際能不能處理這個總大小」是
-    // 兩層不同的檢查，機台一多、圖檔總大小超過系統分享面板上限時，
-    // canShare() 仍然回 true，但 share() 會直接被系統拒絕（Chrome
-    // DevTools 主控台看到的「Share too large」就是這個）。原本這裡把
-    // share() 失敗整個吞掉、直接 return，使用者會看到「按了沒反應」；
-    // 改成失敗就繼續往下走，退回一張一張各自觸發下載，不會真的沒反應。
-    if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
+    // 所以檔案數 > 1 時直接跳過分享面板、一律用逐一下載，確保每張圖都
+    // 真的存到裝置上；使用者要傳到 LINE 的話，自己從相簿/檔案那邊多選
+    // 之後再分享——多一道手動步驟，但换來「真的收得到全部張數」。
+    if (files.length === 1 && typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ files });
         return;
       } catch (err) {
         // 使用者自己按取消分享也會走到這裡，同樣退回下載——不完美，
-        // 但比「按了完全沒反應」好，且取消分享的人通常也不介意多跳出
-        // 幾個下載提示。
+        // 但比「按了完全沒反應」好。
       }
     }
 
@@ -2659,7 +2659,11 @@ function exportLedgerScreenshots() {
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 2000);
     });
-    toast('已匯出 ' + data.machines.length + ' 台機台的截圖', 'success');
+    toast(
+      '已下載 ' + data.machines.length + ' 張截圖'
+        + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
+      'success'
+    );
   });
 }
 
