@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v48';
+const APP_VERSION = 'v49';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2182,19 +2182,18 @@ function exportLedgerScreenshots() {
       return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
     });
 
-    // 這裡一次是好幾個檔案，不像 exportLedgerImage()（單一機台、單一
-    // 檔案）那樣直接用 navigator.share({files})——實測發現：
-    // navigator.share({files}) 呼叫本身「成功」（不丟例外），但分享目的
-    // 地是聊天 App（例如 LINE）時，對方的分享擴充功能一次只接得住 1
-    // 個檔案，其餘的會被系統/該 App 默默丟掉，網頁完全不會收到任何
-    // 錯誤通知，也就沒辦法用 try/catch 偵測、退回下載。這不是我們能
-    // 控制的行為——一旦 share() 呼叫本身沒丟錯，檔案交給哪個 App、那個
-    // App 怎麼處理，網頁就管不到了。
+    // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
+    // 一次可能有好幾個檔案，先試分享面板一次全部帶走（實測：iOS 原生
+    // 分享面板能正確把 17 張圖打包成一份「17 個影像」一起帶走，這條路
+    // 一旦成功是最順的），不支援 / 使用者取消才退回逐一下載。
     //
-    // 所以檔案數 > 1 時直接跳過分享面板、一律用逐一下載，確保每張圖都
-    // 真的存到裝置上；使用者要傳到 LINE 的話，自己從相簿/檔案那邊多選
-    // 之後再分享——多一道手動步驟，但换來「真的收得到全部張數」。
-    if (files.length === 1 && typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
+    // canShare({files}) 過了不代表 share() 一定會成功——瀏覽器對「這批
+    // 檔案能不能分享」跟「系統分享面板實際能不能處理這個總大小」是
+    // 兩層不同的檢查，機台一多、圖檔總大小超過系統分享面板上限時，
+    // canShare() 仍然回 true，但 share() 會直接被系統拒絕。原本這裡把
+    // share() 失敗整個吞掉、直接 return，使用者會看到「按了沒反應」；
+    // 改成失敗就繼續往下走，退回逐一下載，不會真的沒反應。
+    if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ files });
         return;
@@ -2204,7 +2203,13 @@ function exportLedgerScreenshots() {
       }
     }
 
-    files.forEach((file) => {
+    // 備援：逐一觸發下載。實測發現在 Safari／iOS 上，好幾個
+    // `<a download>` 在同一個 tick 裡連續 click()，只有最後一個真的會
+    // 被處理、其餘的被默默吞掉（跟「分享面板每次只接 1 個檔案」是完全
+    // 不同的另一個問題，這裡是下載本身的問題）——改成一次觸發一個、
+    // 中間等一小段時間再觸發下一個，讓瀏覽器有時間把每一次下載都真的
+    // 處理完，17 張圖大約多花 17*300ms ≈ 5 秒，換來每張都真的存得到。
+    for (const file of files) {
       const blob = file instanceof File ? file : file.blob;
       const filename = file instanceof File ? file.name : file.filename;
       const url = URL.createObjectURL(blob);
@@ -2212,8 +2217,9 @@ function exportLedgerScreenshots() {
       document.body.appendChild(link);
       link.click();
       link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
-    });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      URL.revokeObjectURL(url);
+    }
     toast(
       '已下載 ' + data.machines.length + ' 張截圖'
         + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
