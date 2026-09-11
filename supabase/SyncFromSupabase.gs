@@ -54,10 +54,19 @@ function syncFromSupabase() {
 
   const uidMap = _sbBuildReverseUserIdMap(SUPABASE_URL, SERVICE_ROLE_KEY);
 
-  _syncBizDaysFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
-  _syncDailyLedgerFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
-  _syncRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
-  _syncVoidedRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
+  // 跟 SupabaseWebhook.gs 的 _handleSupabaseWebhook() 共用同一把
+  // withLock()：兩邊都會「先查試算表現有的 record_id／biz_id，沒有才
+  // 插入」，但各自的查詢是獨立進行的，沒上鎖的話，剛好同時處理同一筆
+  // 新資料時，兩邊都可能查到「還沒有」而各自插入一次，變成重複列
+  // （真實發生過：同一筆 432 開獎紀錄在試算表裡出現兩列，record_id、
+  // 建立時間分毫不差）。webhook 那邊已經包了 withLock()，這裡補上
+  // 之後，同一個 GAS 專案裡兩者就不會再同時真正寫入試算表。
+  withLock(function () {
+    _syncBizDaysFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
+    _syncDailyLedgerFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap);
+    _syncRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
+    _syncVoidedRecordsFromSupabase(SUPABASE_URL, SERVICE_ROLE_KEY, uidMap, props);
+  });
 
   Logger.log('\n🎉 資料庫 → 試算表 同步完成。');
 }
