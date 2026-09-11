@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v57';
+const APP_VERSION = 'v58';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -582,18 +582,26 @@ async function _exportLedgerGridsSupabase(sb, p) {
   const rangeRow = Array.isArray(rangeRows) ? rangeRows[0] : rangeRows;
   const range = { from: rangeRow.range_from, to: rangeRow.range_to, preset: rangeRow.preset };
 
-  const grids = [];
-  for (const m of machines) {
+  // 每一台各打一次 ledger_grid() RPC，17 台如果一支一支序列等下去，累加
+  // 起來的時間很容易拖到好幾秒——這件事本身還好，但緊接在後面的
+  // exportLedgerScreenshots() 要靠 navigator.share() 分享一次全部截圖，
+  // 而 share() 需要「使用者剛剛按下去」的有效期內呼叫才會生效（transient
+  // user activation，瀏覽器過幾秒就會判定失效）。序列等 17 次 RPC 實測
+  // 就是會拖過這個有效期，導致 share() 失敗、整個退回成一張一張下載
+  // （GAS 版本的 exportLedgerGrids() 是伺服器端一次迴圈跑完直接回傳，
+  // 沒有這個問題）。改成 Promise.all 平行送出全部請求，把總等待時間
+  // 壓到跟最慢那一次單一 RPC 差不多，才不會吃光使用者互動的有效期。
+  const grids = await Promise.all(machines.map(async (m) => {
     const grid = await _rpc(sb, 'ledger_grid', {
       p_machine_id: m.machine_id, p_category: null, p_preset: p.preset || 'day',
       p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
     });
-    grids.push({
+    return {
       machineId: m.machine_id, machineName: m.name,
       headerRow: grid.headerRow, outRows: grid.outRows, summaryRows: grid.summaryRows,
       colCount: grid.colCount, rowCount: grid.rowCount
-    });
-  }
+    };
+  }));
   return { range: range, machines: grids };
 }
 
