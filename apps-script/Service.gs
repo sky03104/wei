@@ -294,6 +294,47 @@ function _machineCategory(machineId) {
  * 今天完全沒按過這個功能（沒有相關 session）才會退回這個功能上線前的
  * 行為，單純比對日期，取最新一列（防禦性地取列號最大的）。
  */
+/**
+ * 上一次已結單的營業日，加總分頁算出來的「總結餘」（跟 getDashboard()
+ * 的 ledgerTotal 同一套公式，只是改成算那一天，不是算今天）。
+ *
+ * 「設定今日數字」的週轉金輸入框要拿這個當預設值：現金週轉金本來就是
+ * 上次結完帳留在收銀機裡的錢，直接延續上次的總結餘，比每天要使用者自己
+ * 回頭查上一次金額方便、也比較不會打錯。找不到任何已結單的營業日
+ * （剛上線、還沒結過帳）就回傳 null，前端退回空白，不猜一個數字。
+ */
+function _previousClosedBizDayLedgerTotal() {
+  const closedBizDays = dbReadAll('BizDays').filter(function (r) { return !!r.closed_at; });
+  if (!closedBizDays.length) return null;
+  closedBizDays.sort(function (a, b) { return (b._row || 0) - (a._row || 0); });
+  const prev = closedBizDays[0];
+
+  const machineById = {};
+  dbReadAll('Machines').forEach(function (m) { machineById[String(m.machine_id)] = m; });
+
+  // 用「開始～結束」的時間範圍框住這筆營業日的紀錄，不是只比對
+  // business_date 字串——同一個日期可能有好幾個營業日場次（例如當天
+  // 開始/結單好幾次），只比日期字串會把別場次的紀錄也算進來。
+  const diceTotal = emptySummary();
+  const electronicTotal = emptySummary();
+  activeRecords().forEach(function (r) {
+    if (String(r.created_at) < String(prev.opened_at) || String(r.created_at) >= String(prev.closed_at)) return;
+    const m = machineById[String(r.machine_id)];
+    if (!m) return;
+    _accumulate(m.category === MACHINE_CATEGORY_ELECTRONIC ? electronicTotal : diceTotal, r);
+  });
+
+  const ledgerRow = dbFilter('DailyLedger', 'business_date', prev.business_date)
+    .filter(function (r) { return String(r.biz_id || '') === String(prev.biz_id); })[0];
+  const ledger = _publicDailyLedger(ledgerRow || null);
+
+  const total = diceTotal.in - diceTotal.out - ledger.manual432 - ledger.manual441 - ledger.manualExpense
+    + ledger.turnover + ledger.givenToOwner
+    + electronicTotal.chipNet - ledger.takenByOwner + ledger.returnedToHouse;
+
+  return Math.round(total * 100) / 100;
+}
+
 function _dailyLedgerRow(businessDate) {
   const rows = dbFilter('DailyLedger', 'business_date', businessDate);
   if (!rows.length) return null;
@@ -623,6 +664,7 @@ function getDashboard(user) {
     month441Count: month441Count,
     ledger: ledger,
     ledgerTotal: Math.round(ledgerTotal * 100) / 100,
+    previousLedgerTotal: _previousClosedBizDayLedgerTotal(),
     today: today,
     todayOpenedByName: openBiz ? _userDisplayName(openBiz.opened_by) : '',
     businessDay: businessDayStatus(user)

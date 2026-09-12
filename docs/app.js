@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v58';
+const APP_VERSION = 'v59';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1366,16 +1366,19 @@ function _dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
-/** 設定今天（進行中營業日）的週轉金／台主給／台主領／開銷／432／441，每天只存一組，重新儲存會覆蓋。 */
 /**
- * 週轉金幾乎每天都是同一筆固定的浮動金額，今天還沒設定過的話直接帶入這個
- * 預設值，不用每次都手動刪掉「0」再重打一次；其他項目每天金額都不一樣，
- * 還沒設定過的話留白，比留著「0」等使用者自己刪更順手（空白跟 0 存檔時
- * 效果相同，saveDailyLedger 送出時 Number('') || 0 本來就會存成 0）。
- * 今天已經設定過的話，一律照實際存的值顯示（包含存過的 0），不會覆蓋掉
- * 使用者剛存的東西。
+ * 設定今天（進行中營業日）的週轉金／台主給／台主領／開銷／432／441，
+ * 每天只存一組，重新儲存會覆蓋。
+ *
+ * 週轉金今天還沒設定過的話，預設帶入上一次已結單的營業日算出來的「總
+ * 結餘」（data.previousLedgerTotal，見 getDashboard() 的說明）——現金
+ * 週轉金本來就是上次結完帳留在收銀機裡的錢，直接延續比每次手動回頭查
+ * 上一次金額方便；完全沒有已結單的歷史（剛上線）時退回空白。其他項目
+ * 每天金額都不一樣，還沒設定過的話留白，比留著「0」等使用者自己刪更
+ * 順手（空白跟 0 存檔時效果相同，saveDailyLedger 送出時 Number('') || 0
+ * 本來就會存成 0）。今天已經設定過的話，一律照實際存的值顯示（包含存過
+ * 的 0），不會覆蓋掉使用者剛存的東西。
  */
-const DEFAULT_TURNOVER = 416000;
 
 /**
  * 台主給／台主領可能不只一位台主，這裡做成可以按「+」新增好幾筆、
@@ -1418,7 +1421,10 @@ function editDailyLedger(data) {
   const l = data.ledger;
   const setToday = !!l.updatedAt;
   const manualExpense = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manualExpense || '') : '' });
-  const turnover = h('input', { type: 'number', inputmode: 'decimal', value: setToday ? l.turnover : DEFAULT_TURNOVER });
+  const turnover = h('input', {
+    type: 'number', inputmode: 'decimal',
+    value: setToday ? l.turnover : (data.previousLedgerTotal === null || data.previousLedgerTotal === undefined ? '' : data.previousLedgerTotal)
+  });
   const manual432 = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manual432 || '') : '' });
   const manual441 = h('input', { type: 'number', inputmode: 'decimal', min: '0', value: setToday ? (l.manual441 || '') : '' });
   const givenEditor = ledgerItemsEditor(setToday ? l.givenToOwnerItems : [], '台主給');

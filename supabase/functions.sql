@@ -474,6 +474,35 @@ as $$
   ledger_json as (
     select public_daily_ledger((select l from daily_ledger_row_for_today() l limit 1)) as val
   ),
+  -- 對照 GAS 版 _previousClosedBizDayLedgerTotal()：上一次已結單的營業日
+  -- 算出來的「總結餘」，給「設定今日數字」的週轉金輸入框當預設值——現金
+  -- 週轉金本來就是上次結完帳留在收銀機裡的錢。找不到任何已結單的營業日
+  -- 就整段是 NULL，前端退回空白。
+  prev_biz as (
+    select business_date, biz_id, opened_at, closed_at from biz_days where closed_at is not null order by seq desc limit 1
+  ),
+  -- 用「開始～結束」的時間範圍框住這筆營業日的紀錄，不是只比對
+  -- business_date——同一個日期可能有好幾個營業日場次（例如當天開始/
+  -- 結單好幾次），只比日期會把別場次的紀錄也算進來。
+  prev_rec_total as (
+    select
+      coalesce(sum(r.amount) filter (where r.type = 'in' and m.category <> 'electronic'), 0) as in_amt,
+      coalesce(sum(r.amount) filter (where r.type = 'out' and m.category <> 'electronic'), 0) as out_amt,
+      coalesce(sum(r.amount) filter (where r.type = 'chip_in' and m.category = 'electronic'), 0) as chip_in_amt,
+      coalesce(sum(r.amount) filter (where r.type = 'chip_out' and m.category = 'electronic'), 0) as chip_out_amt
+    from prev_biz b
+    join records r on r.created_at >= b.opened_at and r.created_at < b.closed_at
+    join machines m on m.machine_id = r.machine_id
+    where r.voided = false
+  ),
+  prev_ledger_row as (
+    select l.* from daily_ledger l, prev_biz b
+    where l.business_date = b.business_date and l.biz_id = b.biz_id
+    order by l.seq desc limit 1
+  ),
+  prev_ledger_json as (
+    select public_daily_ledger((select l from prev_ledger_row l)) as val
+  ),
   -- 對照 getDashboard() 的 todayOpenedByName：加總分頁日期前面顯示的
   -- 「今日開始營業的人」暱稱，跟 public_biz_day() 的 openedByName 同一套
   -- 查法（優先顯示 display_name，沒填就用 username）。
@@ -520,6 +549,17 @@ as $$
       - coalesce(((select val from ledger_json) ->> 'takenByOwner')::numeric, 0)
       + coalesce(((select val from ledger_json) ->> 'returnedToHouse')::numeric, 0)
     )::numeric, 2),
+    'previousLedgerTotal', case when exists (select 1 from prev_biz) then round((
+      (select in_amt from prev_rec_total) - (select out_amt from prev_rec_total)
+      - coalesce(((select val from prev_ledger_json) ->> 'manual432')::numeric, 0)
+      - coalesce(((select val from prev_ledger_json) ->> 'manual441')::numeric, 0)
+      - coalesce(((select val from prev_ledger_json) ->> 'manualExpense')::numeric, 0)
+      + coalesce(((select val from prev_ledger_json) ->> 'turnover')::numeric, 0)
+      + coalesce(((select val from prev_ledger_json) ->> 'givenToOwner')::numeric, 0)
+      + ((select chip_in_amt from prev_rec_total) - (select chip_out_amt from prev_rec_total))
+      - coalesce(((select val from prev_ledger_json) ->> 'takenByOwner')::numeric, 0)
+      + coalesce(((select val from prev_ledger_json) ->> 'returnedToHouse')::numeric, 0)
+    )::numeric, 2) else null end,
     'today', (select today_ref from ctx)::text,
     'todayOpenedByName', coalesce((select name from today_opener), ''),
     'businessDay', business_day_status()
