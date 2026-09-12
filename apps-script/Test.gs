@@ -1039,6 +1039,23 @@ function _selfTestBody(results) {
     _assertEq(afterTransport.ledgerTotal, before.ledgerTotal, '運拿欄位不管存多少都不該影響總結餘——這一列已經不用了');
   });
 
+  _t(results, '加總分頁：週轉金預設值＝上一次已結單的總結餘，新開的營業日還沒設定過帳目時可以直接拿來當預設值', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '上次總結餘測試機', sortOrder: 97 }).machineId;
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 1000, clientToken: newId('ct') });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+    _ok({ action: 'saveDailyLedger', token: adminTok, turnover: 500, transport: 0, returnedToHouse: 0 });
+    const closingLedgerTotal = _ok({ action: 'dashboard', token: adminTok }).ledgerTotal;
+    _ok({ action: 'endBusinessDay', token: adminTok });
+
+    _ok({ action: 'startBusinessDay', token: adminTok });
+    const nextDashboard = _ok({ action: 'dashboard', token: adminTok });
+    _assertEq(nextDashboard.previousLedgerTotal, closingLedgerTotal, '新營業日的「上一次總結餘」應該等於剛結掉那筆營業日的總結餘');
+
+    _ok({ action: 'endBusinessDay', token: adminTok }); // 收尾，不影響後面的測試
+  });
+
   _t(results, '按下「今日營業開始」：所有機台的今日數字跟加總分頁的手動帳目都歸零，但紀錄跟累計都沒被動過', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '按開始歸零測試台', sortOrder: 98 }).machineId;
 
