@@ -495,13 +495,17 @@ as $$
     join machines m on m.machine_id = r.machine_id
     where r.voided = false
   ),
-  prev_ledger_row as (
-    select l.* from daily_ledger l, prev_biz b
-    where l.business_date = b.business_date and l.biz_id = b.biz_id
-    order by l.seq desc limit 1
-  ),
+  -- 特意選 `l` 整列（不是 l.*）：`l.*` 展開成個別欄位會讓這裡變成通用的
+  -- record 型別，傳給 public_daily_ledger(daily_ledger) 時轉型會失敗
+  -- （42846 cannot cast type record to daily_ledger）；選整列 `l` 才會
+  -- 保留 daily_ledger 這個 composite type，跟 daily_ledger_row_for_today()
+  -- 那支（宣告 returns setof daily_ledger）效果一致。
   prev_ledger_json as (
-    select public_daily_ledger((select l from prev_ledger_row l)) as val
+    select public_daily_ledger((
+      select l from daily_ledger l, prev_biz b
+      where l.business_date = b.business_date and l.biz_id = b.biz_id
+      order by l.seq desc limit 1
+    )) as val
   ),
   -- 對照 getDashboard() 的 todayOpenedByName：加總分頁日期前面顯示的
   -- 「今日開始營業的人」暱稱，跟 public_biz_day() 的 openedByName 同一套
