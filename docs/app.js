@@ -189,7 +189,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v59';
+const APP_VERSION = 'v60';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -319,6 +319,117 @@ function toast(message, kind) {
   el.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { el.hidden = true; }, kind === 'error' ? 4200 : 2400);
+}
+
+// ── 動態效果（docs/ui_fx.js）────────────────────────────
+// ui_fx.js 提供的函式都掛在 window.fx…；這裡每個都先確認存在，沒載到（例如手機上
+// 還是舊版快取）就退回原本的行為，不影響功能。
+// 注意：這裡的函式名稱不能用 fx 開頭——app.js 不是 module，最外層的 function
+// 會變成 window 上的同名屬性，會把 ui_fx.js 的函式蓋掉。
+
+/** 送出／儲存成功：畫面中間畫出綠色打勾（0.9 秒自己消失，不擋操作）。 */
+function showSuccessCheck() {
+  if (typeof window.fxSuccess === 'function') window.fxSuccess();
+}
+
+/** 漏填／填錯的欄位：跳出錯誤提示，並把那一格紅框、抖一下、游標跳過去。 */
+function fieldError(input, message) {
+  toast(message, 'error');
+  if (typeof window.fxFieldError === 'function') window.fxFieldError(input);
+}
+
+/**
+ * 刪除／作廢成功後、重畫清單之前呼叫：按下去的那一列先往左滑出收起來
+ * （ui_fx.js 在按下刪除鈕的當下就記住是哪一列）。找不到那一列、只剩一筆、
+ * 或 ui_fx.js 沒載到時，馬上往下做。
+ */
+function collapseDeletedRow() {
+  return new Promise((resolve) => {
+    if (typeof window.fxRemoveThen === 'function') window.fxRemoveThen(resolve);
+    else resolve();
+  });
+}
+
+/** 骨架畫面的一條灰色閃光（樣式在 ui_fx.css）；寬度可以給數字（px）或百分比字串。 */
+function skBar(width, height, extraStyle) {
+  return h('span', {
+    class: 'fx-sk',
+    style: 'width:' + (typeof width === 'number' ? width + 'px' : width) + ';height:' + height + 'px;' + (extraStyle || '')
+  });
+}
+
+/** 骨架版的數字方塊（跟真的 statBox 一樣大小）。 */
+function skStat() {
+  return h('div', { class: 'fx-sk-stat' }, [skBar('56%', 12, 'margin:0 auto'), skBar('72%', 20, 'margin:8px auto 0')]);
+}
+
+/** 骨架版的一筆紀錄（標籤＋兩行字＋金額）。 */
+function skRecordRow() {
+  return h('div', { class: 'fx-sk-row' }, [
+    skBar(40, 20, 'border-radius:999px;flex:0 0 auto'),
+    h('div', { class: 'fx-sk-grow' }, [skBar('70%', 14), skBar('40%', 12, 'margin-top:6px')]),
+    skBar(64, 16, 'flex:0 0 auto')
+  ]);
+}
+
+/**
+ * 資料還沒回來時的畫面。ui_fx.js 有載到就畫「跟真畫面同一個版面」的骨架，
+ * 資料到了換上去時位置不會跳；沒載到就維持原本的轉圈圈。
+ * 版面 class 都是 fx-sk- 開頭（見 ui_fx.css）：外觀跟真的一樣，但不用 .detail-hero、
+ * .admin-item 這些真的 class，免得程式或測試把骨架誤當成資料已經到了。
+ * 最外層一律是 .fx-sk-view，render() 用它認出「剛剛畫的是骨架」。
+ */
+function loadingView(kind) {
+  if (typeof window.fxSkeletonCards !== 'function') {
+    return h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })]);
+  }
+  const root = { class: 'fx-sk-view', 'aria-busy': 'true', 'aria-label': '讀取中' };
+
+  if (kind === 'home') {
+    return h('div', root, [
+      h('div', { class: 'fx-sk-row', style: 'justify-content:space-between;margin-bottom:4px' }, [
+        h('div', {}, [skBar(96, 24), skBar(128, 14, 'margin-top:8px')]),
+        skBar(64, 34, 'border-radius:9px;flex:0 0 auto')
+      ]),
+      h('div', { class: 'fx-sk-stats fx-sk-3' }, [1, 2, 3, 4, 5, 6].map(skStat)),
+      h('div', { html: window.fxSkeletonCards(3, '正在讀取機台資料…') })
+    ]);
+  }
+
+  if (kind === 'machine') {
+    return h('div', root, [
+      h('div', { class: 'fx-sk-row' }, [
+        skBar(77, 96, 'border-radius:10px;flex:0 0 auto'),
+        h('div', { class: 'fx-sk-grow' }, [skBar('60%', 22), skBar('40%', 14, 'margin-top:8px'), skBar(52, 20, 'margin-top:8px;border-radius:999px')])
+      ]),
+      h('div', { class: 'fx-sk-figs' }, [
+        h('div', { class: 'fx-sk-stat' }, [skBar('46%', 12, 'margin:0 auto'), skBar('38%', 34, 'margin:10px auto 0'), skBar('30%', 12, 'margin:10px auto 0')]),
+        skStat(), skStat(), skStat()
+      ]),
+      h('div', { class: 'fx-sk-box' }, [
+        skBar(96, 17),
+        h('div', { style: 'display:grid;gap:14px;margin-top:14px' }, [skRecordRow(), skRecordRow(), skRecordRow()])
+      ])
+    ]);
+  }
+
+  if (kind === 'report' || kind === 'activity') {
+    return h('div', root, [
+      h('div', { class: 'fx-sk-stats fx-sk-4' }, Array.from({ length: kind === 'report' ? 4 : 3 }, skStat)),
+      kind === 'report'
+        ? h('div', { class: 'fx-sk-box' }, [skBar(128, 17), skBar('100%', 160, 'margin-top:12px;border-radius:8px')])
+        : null,
+      kind === 'report'
+        ? h('div', { class: 'fx-sk-box' }, [skBar(80, 17), h('div', { style: 'display:grid;gap:12px;margin-top:14px' }, [1, 2, 3, 4].map(() => skBar('100%', 16)))])
+        : null
+    ]);
+  }
+
+  // 系統管理的清單（帳號／機台／獎型…）
+  return h('div', root, [1, 2, 3, 4].map(() => h('div', { class: 'fx-sk-item' }, [
+    h('div', { style: 'flex:1;min-width:0' }, [skBar('45%', 16), skBar('65%', 12, 'margin-top:6px')]),
+    skBar(52, 34, 'border-radius:9px;flex:0 0 auto')
+  ])));
 }
 
 // ── 像素娃娃機 SVG ──────────────────────────────────────
@@ -851,7 +962,15 @@ async function run(fn, opts) {
   state.busy = true;
   // 背景輪詢（silent）不顯示讀取動畫，只有按鈕按下去這種使用者主動觸發的
   // 才顯示，不然每次背景刷新也會跳一下，反而更干擾。
-  if (!options.silent && ++visibleRunDepth === 1) showBusy(true);
+  // quiet：一樣不顯示「處理中…」，但失敗照樣跳提示——給下拉更新用，
+  // 它自己有轉圈的指示圈，兩個疊在畫面最上面反而擋到彼此。
+  const showsBusy = !options.silent && !options.quiet;
+  if (showsBusy && ++visibleRunDepth === 1) showBusy(true);
+  // button：按下去的那顆按鈕——等後端的這段時間在按鈕上轉圈、換成 busyText（例如「送出中…」），
+  // 暫時不能再按，避免連點（ui_fx.js 的 fxButtonBusy；沒載到就只有上面的「處理中…」）
+  const restoreButton = options.button && typeof window.fxButtonBusy === 'function'
+    ? window.fxButtonBusy(options.button, options.busyText)
+    : null;
   try {
     const result = await fn();
     if (options.success) toast(options.success, 'success');
@@ -866,9 +985,10 @@ async function run(fn, opts) {
     if (!options.silent && (err.code !== 'AUTH' || options.showAuthError)) toast(err.message, 'error');
     return undefined;
   } finally {
+    if (restoreButton) restoreButton();
     runDepth--;
     if (runDepth === 0) state.busy = false;
-    if (!options.silent && --visibleRunDepth === 0) showBusy(false);
+    if (showsBusy && --visibleRunDepth === 0) showBusy(false);
   }
 }
 
@@ -949,6 +1069,7 @@ function clearSession() {
   state.admin = null;
   state.cache = {};
   state.homeTab = 'dice';
+  _countMem = {};   // 數字跳動的記憶：不能讓下一位使用者看到數字從上一位的金額跳過來
 
   try {
     localStorage.removeItem(STORAGE_TOKEN);
@@ -999,12 +1120,15 @@ function viewLogin() {
   const form = h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
+      // 空白就不用送到後端再等它回「請輸入帳號與密碼」：直接標出漏填的那一格
+      if (!username.value.trim()) { fieldError(username, '請輸入帳號'); return; }
+      if (!password.value) { fieldError(password, '請輸入密碼'); return; }
       submitBtn.disabled = true;
       const data = await run(() => api('login', {
         username: username.value.trim(),
         password: password.value,
         remember: remember.checked
-      }), { showAuthError: true });
+      }), { showAuthError: true, button: submitBtn, busyText: '登入中…' });
       submitBtn.disabled = false;
       if (!data) return;
       saveSession(data.token, data.remember);
@@ -1047,9 +1171,42 @@ function statBox(label, value, cls) {
   ]);
 }
 
+/**
+ * 金額／數量跳動：跟上一次畫這一格時的值比，有變才從舊數字跳到新數字（ui_fx.js 的
+ * fxCountFrom，0.65 秒）——記帳送出、下拉更新之後，一眼看得出變了多少。
+ * 第一次出現、數字沒變、沒載到 ui_fx.js、手機開了減少動態效果，都直接顯示結果。
+ * key 要能分辨是哪一格，例如 'home:dice:in'、'card:<機台編號>'。
+ * 換人登入時 clearSession() 會清掉這份記憶，不會從上一位使用者看到的數字跳過來。
+ */
+let _countMem = {};
+function countUp(el, n, key, fmt) {
+  const prev = _countMem[key];
+  _countMem[key] = n;
+  el.textContent = fmt(n);
+  if (prev !== undefined && prev !== n && typeof window.fxCountFrom === 'function') window.fxCountFrom(el, prev, n, fmt);
+}
+
+/** 會跳動的數字元素（見 countUp）。 */
+function countEl(tag, cls, n, fmt, key) {
+  const el = h(tag, { class: cls });
+  countUp(el, Number(n) || 0, key, fmt);
+  return el;
+}
+
+/** 跟 statBox 一樣的數字方塊，但數字會跳動（見 countUp）。fmt 是 money 或 countText。 */
+function statNum(label, n, fmt, cls, key) {
+  return h('div', { class: 'stat' }, [
+    h('div', { class: 'stat-label', text: label }),
+    countEl('div', 'stat-value num ' + (cls || ''), n, fmt, key)
+  ]);
+}
+
+/** 數量（支數、筆數）的顯示格式：跟原本 String(n) 一樣，不加 $。 */
+function countText(n) { return String(n); }
+
 function viewHome() {
   const data = state.home;
-  if (!data) return h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })]);
+  if (!data) return loadingView('home');
 
   const header = h('div', { class: 'topbar' }, [
     h('div', {}, [
@@ -1072,9 +1229,9 @@ function viewHome() {
   if (state.homeTab === 'electronic') {
     const t = data.electronicTotal;
     summary = h('div', { class: 'summary-strip' }, [
-      statBox('今日開分', money(t.chipIn), 'net pos'),
-      statBox('今日洗分', money(t.chipOut), ''),
-      statBox('今日盈虧', money(t.chipNet), 'net ' + netClass(t.chipNet))
+      statNum('今日開分', t.chipIn, money, 'net pos', 'home:el:chipIn'),
+      statNum('今日洗分', t.chipOut, money, '', 'home:el:chipOut'),
+      statNum('今日盈虧', t.chipNet, money, 'net ' + netClass(t.chipNet), 'home:el:chipNet')
     ]);
     const machines = data.machines.filter((m) => m.category === 'electronic');
     list = machines.length
@@ -1090,13 +1247,13 @@ function viewHome() {
       // 本月432/441支數放最上面，跟下面「今日」那排分開——是不同時間
       // 範圍的數字，混在同一排容易誤看成也是「今日」的。
       h('div', { class: 'summary-strip', style: 'grid-template-columns:repeat(2, 1fr); margin-bottom:8px' }, [
-        statBox('本月432支數', String(data.month432Count || 0), ''),
-        statBox('本月441支數', String(data.month441Count || 0), '')
+        statNum('本月432支數', data.month432Count || 0, countText, '', 'home:total:m432'),
+        statNum('本月441支數', data.month441Count || 0, countText, '', 'home:total:m441')
       ]),
       h('div', { class: 'summary-strip' }, [
-        statBox('今日骰台淨收益', money(dice.net), 'net ' + netClass(dice.net)),
-        statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
-        statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
+        statNum('今日骰台淨收益', dice.net, money, 'net ' + netClass(dice.net), 'home:total:diceNet'),
+        statNum('今日電子淨收益', electronic.chipNet, money, 'net ' + netClass(electronic.chipNet), 'home:total:elNet'),
+        statNum('今日總淨收益', grandNet, money, 'net ' + netClass(grandNet), 'home:total:grandNet')
       ])
     ]);
     list = ledgerCard(data);
@@ -1106,12 +1263,12 @@ function viewHome() {
     // 用專屬的 summary-strip-6 排成 3 欄 2 排，不是共用 4 欄（6 張塞進 4 欄
     // 會變成「4+2」，最後一排看起來缺兩塊）。
     summary = h('div', { class: 'summary-strip summary-strip-6' }, [
-      statBox('今日入幣', money(t.in), 'net pos'),
-      statBox('今日出幣', money(t.out), ''),
-      statBox('今日432數量', String(data.today432Count || 0), ''),
-      statBox('今日441數量', String(data.today441Count || 0), ''),
-      statBox('今日活動金額', money(t.prize), ''),
-      statBox('今日總筆數', String((data.todayOutCount || 0) + (data.today432Count || 0) + (data.today441Count || 0)), '')
+      statNum('今日入幣', t.in, money, 'net pos', 'home:dice:in'),
+      statNum('今日出幣', t.out, money, '', 'home:dice:out'),
+      statNum('今日432數量', data.today432Count || 0, countText, '', 'home:dice:432'),
+      statNum('今日441數量', data.today441Count || 0, countText, '', 'home:dice:441'),
+      statNum('今日活動金額', t.prize, money, '', 'home:dice:prize'),
+      statNum('今日總筆數', (data.todayOutCount || 0) + (data.today432Count || 0) + (data.today441Count || 0), countText, '', 'home:dice:records')
     ]);
     const machines = data.machines.filter((m) => m.category !== 'electronic');
     list = machines.length
@@ -1127,14 +1284,40 @@ function viewHome() {
   ].filter((n) => n !== null));
 }
 
+/**
+ * 分頁滑動膠囊（ui_fx.js 的 fxMoveSlider）：選中的藍底從上一次選中的那顆滑到新的這顆，
+ * 而不是瞬間跳過去。每次切換都會整個重畫，所以要自己記住「這一組分頁上次選中第幾顆」
+ * （key 分辨是哪一組）。膠囊怎麼疊在按鈕底下見 ui_fx.css 的 .fx-tabs-slide；
+ * 沒載到 ui_fx.js 就什麼都不加，維持原本 .active 的底色。
+ */
+const _tabsLastActive = {};
+function slidingTabs(container, key) {
+  if (typeof window.fxMoveSlider !== 'function') return container;
+  container.classList.add('fx-tabs-slide');
+  const slider = h('span', { class: 'fx-slider', 'aria-hidden': 'true' });
+  container.insertBefore(slider, container.firstChild);
+  // 要等 render() 把它放進畫面、排好版才量得到位置；requestAnimationFrame 會在畫出來之前跑，不會先閃一下
+  requestAnimationFrame(() => {
+    if (!container.isConnected) return;
+    const buttons = Array.prototype.slice.call(container.querySelectorAll('button'));
+    const active = container.querySelector('button.active');
+    if (!active) return;
+    const idx = buttons.indexOf(active);
+    const prev = _tabsLastActive[key];
+    _tabsLastActive[key] = idx;
+    window.fxMoveSlider(slider, active, prev !== undefined && prev !== idx ? buttons[prev] : null);
+  });
+  return container;
+}
+
 /** 首頁分頁籤：骰台（預設）／電子／加總。放在「今日營業開始／結單」下面。 */
 function homeTabBar() {
   const tabs = [['dice', '骰台'], ['electronic', '電子'], ['total', '加總']];
-  return h('div', { class: 'seg', style: 'margin-top:10px' }, tabs.map(([key, label]) =>
+  return slidingTabs(h('div', { class: 'seg', style: 'margin-top:10px' }, tabs.map(([key, label]) =>
     h('button', {
       class: state.homeTab === key ? 'active' : '',
       onclick: () => { state.homeTab = key; render(); }
-    }, label)));
+    }, label))), 'home');
 }
 
 /**
@@ -1208,7 +1391,7 @@ function ledgerCard(data) {
       ]))),
     h('div', { class: 'ledger-row ledger-total' }, [
       h('span', { class: 'ledger-label', text: '總結餘' }),
-      h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
+      countEl('span', 'ledger-value num ' + netClass(data.ledgerTotal), data.ledgerTotal, money, 'home:ledgerTotal')
     ]),
     h('p', { class: 'small muted', style: 'margin-top:10px' },
       '今日432支數 ' + (data.today432Count || 0) + '　今日441支數 ' + (data.today441Count || 0)),
@@ -1443,7 +1626,7 @@ function editDailyLedger(data) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
+      onclick: (e) => run(async () => {
         await api('saveDailyLedger', {
           turnover: Number(turnover.value) || 0,
           manualExpense: Number(manualExpense.value) || 0,
@@ -1453,8 +1636,9 @@ function editDailyLedger(data) {
           takenByOwnerItems: takenEditor.getItems()
         });
         closeDialog();
+        showSuccessCheck();
         await loadHome();
-      }, { success: '已儲存' })
+      }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
     }, '儲存')
   ]);
 }
@@ -1508,32 +1692,35 @@ function _clearMachineDetailCache() {
   });
 }
 
-function doStartBusinessDay() {
+function doStartBusinessDay(e) {
   const biz = state.home && state.home.businessDay;
   if (biz && biz.open && !confirm('目前已經在營業中，確定要重新開始今日營業嗎？\n這會自動結算目前這個營業日，並開一個新的。')) return;
   run(async () => {
     await api('startBusinessDay', {});
+    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已開始今日營業，所有機台的今日數字已重置' });
+  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
-function doEndBusinessDay() {
+function doEndBusinessDay(e) {
   if (!confirm('確定要結算今日營業嗎？結單後才能再次「今日營業開始」。')) return;
   run(async () => {
     await api('endBusinessDay', {});
+    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已結算今日營業' });
+  }, { success: '已結算今日營業', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
-function doReopenBusinessDay() {
+function doReopenBusinessDay(e) {
   if (!confirm('確定要復原剛剛的結單嗎？會把最近一筆營業日改回「進行中」。')) return;
   run(async () => {
     await api('reopenBusinessDay', {});
+    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已復原，回到營業中' });
+  }, { success: '已復原，回到營業中', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
 function machineCard(m) {
@@ -1559,7 +1746,7 @@ function machineCard(m) {
       ])
     ]),
     h('div', { class: 'figures' }, [
-      h('div', { class: 'net num ' + netClass(net), text: money(net) }),
+      countEl('div', 'net num ' + netClass(net), net, money, 'card:' + m.machineId),
       h('div', { class: 'breakdown num' }, breakdown)
     ])
   ]);
@@ -1569,7 +1756,16 @@ function machineCard(m) {
 
 function viewMachine() {
   const d = state.detail;
-  if (!d) return h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })]);
+  // 還沒有這台的資料（背景預取還沒跑完就點進來）：返回／查詢報表照樣能按，其他先放骨架
+  if (!d) {
+    return h('div', { class: 'detail-grid' }, [
+      h('div', { class: 'navbar' }, [
+        h('button', { class: 'btn btn-sm', onclick: goHome }, '← 返回主畫面'),
+        h('button', { class: 'btn btn-sm', onclick: () => goReport(state.machineId) }, '📊 查詢報表')
+      ]),
+      loadingView('machine')
+    ]);
+  }
 
   const m = d.machine;
 
@@ -1597,12 +1793,12 @@ function viewMachine() {
   const figures = h('div', { class: 'figures-panel' }, [
     h('div', { class: 'stat net-stat center' }, [
       h('div', { class: 'stat-label', text: '今日淨收益（已扣活動成本）' }),
-      h('div', { class: 'stat-value num net ' + netClass(d.today.net), text: money(d.today.net) }),
-      h('div', { class: 'small muted num', text: '本週淨收益 ' + money(d.total.net) })
+      countEl('div', 'stat-value num net ' + netClass(d.today.net), d.today.net, money, 'detail:' + m.machineId + ':net'),
+      countEl('div', 'small muted num', d.total.net, (n) => '本週淨收益 ' + money(n), 'detail:' + m.machineId + ':week')
     ]),
-    statBox('今日入幣', money(d.today.in)),
-    statBox('今日出幣', money(d.today.out)),
-    statBox('今日432數量', String(d.today432Count || 0))
+    statNum('今日入幣', d.today.in, money, '', 'detail:' + m.machineId + ':in'),
+    statNum('今日出幣', d.today.out, money, '', 'detail:' + m.machineId + ':out'),
+    statNum('今日432數量', d.today432Count || 0, countText, '', 'detail:' + m.machineId + ':432')
   ]);
 
   const actions = canRecord()
@@ -1618,7 +1814,7 @@ function viewMachine() {
   return h('div', { class: 'detail-grid' }, [
     nav,
     top,
-    state.panel ? renderPanel(d) : null,
+    panelView(d),
     renderRecords(d)
   ]);
 }
@@ -1626,9 +1822,9 @@ function viewMachine() {
 /** 電子機台的詳細頁：只有開分／洗分兩顆按鈕，沒有入幣/出幣/活動。 */
 function viewElectronicMachine(d, nav, hero, switcher) {
   const figures = h('div', { class: 'figures-panel' }, [
-    statBox('開分金額', money(d.today.chipIn), 'net pos'),
-    statBox('洗分金額', money(d.today.chipOut), ''),
-    statBox('盈虧金額', money(d.today.chipNet), 'net ' + netClass(d.today.chipNet))
+    statNum('開分金額', d.today.chipIn, money, 'net pos', 'detail:' + d.machine.machineId + ':chipIn'),
+    statNum('洗分金額', d.today.chipOut, money, '', 'detail:' + d.machine.machineId + ':chipOut'),
+    statNum('盈虧金額', d.today.chipNet, money, 'net ' + netClass(d.today.chipNet), 'detail:' + d.machine.machineId + ':chipNet')
   ]);
 
   const actions = canRecord()
@@ -1643,7 +1839,7 @@ function viewElectronicMachine(d, nav, hero, switcher) {
   return h('div', { class: 'detail-grid' }, [
     nav,
     top,
-    state.panel ? renderPanel(d) : null,
+    panelView(d),
     renderRecords(d)
   ]);
 }
@@ -1755,7 +1951,20 @@ function togglePanel(kind) {
   state.panel = state.panel === kind ? null : kind;
   state.editMode = false;
   state.prizeCounts = {};
+  _panelJustOpened = !!state.panel;
   render();
+}
+
+/**
+ * 記帳面板（入幣／出幣／活動、開分／洗分）：按下去「打開」的那一次，面板從上面滑下來
+ * （ui_fx.css 的 .fx-panel-in）。之後的重畫（送出後刷新、切換編輯模式…）不再播。
+ */
+let _panelJustOpened = false;
+function panelView(d) {
+  if (!state.panel) return null;
+  const panel = renderPanel(d);
+  if (_panelJustOpened) { panel.classList.add('fx-panel-in'); _panelJustOpened = false; }
+  return panel;
 }
 
 function renderPanel(d) {
@@ -1770,20 +1979,19 @@ function renderPanel(d) {
 function chipPanel(d, type) {
   const custom = h('input', { type: 'number', inputmode: 'decimal', min: '1', placeholder: '輸入金額', autofocus: true });
 
+  const sendBtn = h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out') }, '送出');
   const submit = () => {
     const v = Number(custom.value);
-    if (!v || v <= 0) { toast('請輸入大於 0 的金額', 'error'); return; }
+    if (!v || v <= 0) { fieldError(custom, '請輸入大於 0 的金額'); return; }
     custom.value = '';
-    submitAmount(d.machine.machineId, type, v);
+    submitAmount(d.machine.machineId, type, v, sendBtn);
   };
+  sendBtn.addEventListener('click', submit);
   custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
   return h('div', { class: 'panel' }, [
     h('div', { class: 'panel-head' }, [h('h3', { text: TYPE_LABELS[type] })]),
-    h('div', { class: 'custom-amount' }, [
-      custom,
-      h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out'), onclick: submit }, '送出')
-    ])
+    h('div', { class: 'custom-amount' }, [custom, sendBtn])
   ]);
 }
 
@@ -1796,7 +2004,7 @@ function quickPanel(d, type) {
   const buttons = list.map((qa) => {
     const btn = h('button', {
       class: 'btn quick-btn btn-' + type,
-      onclick: () => submitAmount(d.machine.machineId, type, qa.amount)
+      onclick: (e) => submitAmount(d.machine.machineId, type, qa.amount, e.currentTarget)
     }, qa.label || money(qa.amount));
 
     if (!state.editMode) return btn;
@@ -1836,11 +2044,11 @@ function quickPanel(d, type) {
       custom,
       h('button', {
         class: 'btn btn-' + type,
-        onclick: () => {
+        onclick: (e) => {
           const v = Number(custom.value);
-          if (!v || v <= 0) { toast('請輸入大於 0 的金額', 'error'); return; }
+          if (!v || v <= 0) { fieldError(custom, '請輸入大於 0 的金額'); return; }
           custom.value = '';
-          submitAmount(d.machine.machineId, type, v);
+          submitAmount(d.machine.machineId, type, v, e.currentTarget);
         }
       }, '送出')
     ]),
@@ -1854,7 +2062,7 @@ function scopeNote(machineId, sheet, scope) {
     h('span', { text: isGlobal ? '目前沿用全局設定（改動會影響所有機台）' : '目前是本台專屬設定' }),
     h('button', {
       class: 'btn btn-sm btn-ghost',
-      onclick: () => run(async () => {
+      onclick: (e) => run(async () => {
         if (isGlobal) {
           await api('forkScope', { sheet: sheet, machineId: machineId });
         } else {
@@ -1862,7 +2070,7 @@ function scopeNote(machineId, sheet, scope) {
           await api('resetScope', { sheet: sheet, machineId: machineId });
         }
         await loadDetail(machineId);
-      }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局' })
+      }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局', button: e.currentTarget, busyText: '處理中…' })
     }, isGlobal ? '改成本台自訂' : '改回沿用全局')
   ]);
 }
@@ -1880,18 +2088,22 @@ function editQuickAmount(d, type, qa) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        await api('saveQuickAmount', {
-          qaId: qa ? qa.qaId : '',
-          machineId: qa ? qa.machineId : (d.quickAmounts.scope === 'machine' ? d.machine.machineId : ''),
-          type: type,
-          amount: Number(amount.value),
-          label: label.value.trim(),
-          sortOrder: Number(order.value) || 0
-        });
-        closeDialog();
-        await loadDetail(d.machine.machineId);
-      }, { success: '已儲存' })
+      onclick: (e) => {
+        if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
+        run(async () => {
+          await api('saveQuickAmount', {
+            qaId: qa ? qa.qaId : '',
+            machineId: qa ? qa.machineId : (d.quickAmounts.scope === 'machine' ? d.machine.machineId : ''),
+            type: type,
+            amount: Number(amount.value),
+            label: label.value.trim(),
+            sortOrder: Number(order.value) || 0
+          });
+          closeDialog();
+          showSuccessCheck();
+          await loadDetail(d.machine.machineId);
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
+      }
     }, '儲存')
   ]);
 }
@@ -1900,11 +2112,13 @@ function deleteQuickAmount(qa) {
   if (!confirm('確定要刪除這個快捷鍵嗎？')) return;
   run(async () => {
     await api('deleteQuickAmount', { qaId: qa.qaId });
+    await collapseDeletedRow();
     await loadDetail(state.machineId);
   }, { success: '已刪除' });
 }
 
-function submitAmount(machineId, type, amount) {
+function submitAmount(machineId, type, amount, btn) {
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addRecord', {
       machineId: machineId,
@@ -1913,11 +2127,11 @@ function submitAmount(machineId, type, amount) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success');
+    else { toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 // ── 面板：入幣（碼表登錄）───────────────────────────────
@@ -1949,6 +2163,8 @@ function meterPanel(d) {
     let hint = '';
     if (filled && validNumbers && !increasing) hint = '下班表必須大於上班表';
     hintEl.textContent = hint;
+    // 從對變錯的那一下會抖一次（ui_fx.css 的 .fx-field-err），改對了紅框就消失；沒載到 ui_fx.css 就只是多一個沒作用的 class
+    endInput.classList.toggle('fx-field-err', !!hint);
 
     const ok = filled && validNumbers && increasing;
     previewEl.textContent = money(ok ? (end - start) * rateInfo.rate : 0);
@@ -1956,7 +2172,7 @@ function meterPanel(d) {
   }
   startInput.addEventListener('input', recalc);
   endInput.addEventListener('input', recalc);
-  submitBtn.addEventListener('click', () => submitMeterRecord(d.machine.machineId, startInput, endInput));
+  submitBtn.addEventListener('click', () => submitMeterRecord(d.machine.machineId, startInput, endInput, submitBtn));
   recalc();
 
   return h('div', { class: 'panel' }, [
@@ -1982,9 +2198,10 @@ function meterPanel(d) {
   ]);
 }
 
-function submitMeterRecord(machineId, startInput, endInput) {
+function submitMeterRecord(machineId, startInput, endInput, btn) {
   const meterStart = Number(startInput.value);
   const meterEnd = Number(endInput.value);
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addMeterRecord', {
       machineId: machineId,
@@ -1993,11 +2210,11 @@ function submitMeterRecord(machineId, startInput, endInput) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success');
+    else { toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addMeterRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 /**
@@ -2016,13 +2233,14 @@ function meterRateEditor(d) {
       input,
       h('button', {
         class: 'btn btn-primary',
-        onclick: () => run(async () => {
+        onclick: (e) => run(async () => {
           await api('saveMeterRate', {
             machineId: rateInfo.scope === 'machine' ? d.machine.machineId : '',
             rate: Number(input.value)
           });
+          showSuccessCheck();
           await loadDetail(d.machine.machineId);
-        }, { success: '已儲存' })
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
       }, '儲存')
     ]),
     scopeNote(d.machine.machineId, 'MeterRates', rateInfo.scope)
@@ -2081,7 +2299,7 @@ function prizePanel(d) {
     return row;
   });
 
-  submitBtn.addEventListener('click', () => submitPrizes(d.machine.machineId, prizes));
+  submitBtn.addEventListener('click', () => submitPrizes(d.machine.machineId, prizes, submitBtn));
   recalc();
 
   return h('div', { class: 'panel' }, [
@@ -2109,12 +2327,13 @@ function prizePanel(d) {
   ]);
 }
 
-function submitPrizes(machineId, prizes) {
+function submitPrizes(machineId, prizes, btn) {
   const items = prizes
     .map((p) => ({ prizeId: p.prizeId, count: state.prizeCounts[p.prizeId] || 0 }))
     .filter((it) => it.count > 0);
   if (!items.length) return;
 
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addPrizeRecord', {
       machineId: machineId,
@@ -2122,10 +2341,10 @@ function submitPrizes(machineId, prizes) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else toast('活動 ' + money(res.total) + ' 已登錄', 'success');
+    else { toast('活動 ' + money(res.total) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     state.prizeCounts = {};
     await loadDetail(machineId);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 function editPrize(d, prize) {
@@ -2141,17 +2360,22 @@ function editPrize(d, prize) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        await api('savePrize', {
-          prizeId: prize ? prize.prizeId : '',
-          machineId: prize ? prize.machineId : (d.prizes.length && d.prizes[0].scope === 'machine' ? d.machine.machineId : ''),
-          name: name.value.trim(),
-          amount: Number(amount.value),
-          sortOrder: Number(order.value) || 0
-        });
-        closeDialog();
-        await loadDetail(d.machine.machineId);
-      }, { success: '已儲存' })
+      onclick: (e) => {
+        if (!name.value.trim()) { fieldError(name, '請輸入獎型名稱'); return; }
+        if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
+        run(async () => {
+          await api('savePrize', {
+            prizeId: prize ? prize.prizeId : '',
+            machineId: prize ? prize.machineId : (d.prizes.length && d.prizes[0].scope === 'machine' ? d.machine.machineId : ''),
+            name: name.value.trim(),
+            amount: Number(amount.value),
+            sortOrder: Number(order.value) || 0
+          });
+          closeDialog();
+          showSuccessCheck();
+          await loadDetail(d.machine.machineId);
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
+      }
     }, '儲存')
   ]);
 }
@@ -2160,15 +2384,39 @@ function deletePrize(prize) {
   if (!confirm('確定要刪除「' + prize.name + '」嗎？\n已登錄的歷史紀錄不會受影響。')) return;
   run(async () => {
     await api('deletePrize', { prizeId: prize.prizeId });
+    await collapseDeletedRow();
     await loadDetail(state.machineId);
   }, { success: '已刪除' });
 }
 
 // ── 紀錄清單 ────────────────────────────────────────────
 
+/**
+ * 剛送出的紀錄在「本機台紀錄」裡亮一下（ui_fx.css 的 .fx-flash，底色亮起再淡掉）：
+ * 送出前先用 shownRecordIds() 記下畫面上已經有哪幾筆，送出成功後交給 flashNewRecords()；
+ * 下一次畫紀錄清單時，不在這份名單裡的就是剛記的。只用一次，之後的背景重新整理不會再亮。
+ * 看的是紀錄編號，不管哪個後端（GAS／Supabase）、一次新增幾筆（活動可以一次登好幾種）都適用。
+ */
+let _flashSince = null;
+function shownRecordIds() {
+  // 連同「是哪一台」一起記在按下送出的當下——後端回來時使用者可能已經切到別台了
+  return {
+    machineId: state.detail && state.detail.machine ? state.detail.machine.machineId : null,
+    ids: new Set(((state.detail && state.detail.records) || []).map((r) => r.recordId))
+  };
+}
+function flashNewRecords(before) {
+  _flashSince = { machineId: before.machineId, ids: before.ids, at: Date.now() };
+}
+
 function renderRecords(d) {
+  // 只認同一台機台、5 秒內送出的：送出後還沒等到後端回來就先切去別台的話，
+  // 不能讓別台的紀錄全部被當成「新的」一起亮
+  const f = _flashSince;
+  _flashSince = null;
+  const since = f && f.machineId === d.machine.machineId && Date.now() - f.at < 5000 ? f.ids : null;
   const items = d.records.length
-    ? d.records.map(recordItem)
+    ? d.records.map((r) => recordItem(r, !!since && !since.has(r.recordId)))
     : [h('div', { class: 'empty' }, '還沒有任何紀錄')];
 
   return h('div', { class: 'card' }, [
@@ -2180,7 +2428,7 @@ function renderRecords(d) {
   ]);
 }
 
-function recordItem(r) {
+function recordItem(r, isNew) {
   const sign = (r.type === 'in' || r.type === 'chip_in') ? '+' : '−';
   const hasMeter = r.type === 'in' && r.meterStart !== null && r.meterEnd !== null;
   const title = r.type === 'prize'
@@ -2189,7 +2437,7 @@ function recordItem(r) {
       ? ('上班表 ' + r.meterStart.toLocaleString('zh-TW') + ' → 下班表 ' + r.meterEnd.toLocaleString('zh-TW'))
       : TYPE_LABELS[r.type];
 
-  return h('div', { class: 'record-item' }, [
+  return h('div', { class: 'record-item' + (isNew ? ' fx-flash' : ''), 'data-record-id': r.recordId }, [
     h('span', { class: 'badge badge-' + r.type, text: TYPE_LABELS[r.type] }),
     h('div', { class: 'rec-main' }, [
       h('div', { class: 'rec-title', text: title }),
@@ -2206,6 +2454,7 @@ function voidRecord(r) {
   if (!confirm('確定要作廢這筆紀錄嗎？\n' + TYPE_LABELS[r.type] + ' ' + money(r.amount))) return;
   run(async () => {
     await api('voidRecord', { recordId: r.recordId });
+    await collapseDeletedRow();
     await loadDetail(state.machineId);
   }, { success: '已作廢' });
 }
@@ -2222,8 +2471,8 @@ function goActivityQuery() {
   loadActivityQuery();
 }
 
-async function loadActivityQuery() {
-  const data = await run(() => api('activityQuery', state.activityParams));
+async function loadActivityQuery(opts) {
+  const data = await run(() => api('activityQuery', state.activityParams), opts);
   if (data) { state.activityResult = data; render(); }
 }
 
@@ -2259,7 +2508,7 @@ function viewActivityQuery() {
   const title = h('h1', { text: '活動查詢' });
 
   if (!r) {
-    return h('div', {}, [nav, title, customRange, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+    return h('div', {}, [nav, title, customRange, loadingView('activity')]);
   }
 
   const stats = h('div', { class: 'report-stats' }, [
@@ -2299,7 +2548,7 @@ function viewReport() {
       : null
   ]);
 
-  const presets = h('div', { class: 'seg', style: 'margin-bottom:12px' },
+  const presets = slidingTabs(h('div', { class: 'seg', style: 'margin-bottom:12px' },
     [['day', '今日'], ['week', '本週'], ['month', '本月'], ['custom', '自訂'], ['history', '歷史']].map(([key, label]) =>
       h('button', {
         class: p.preset === key ? 'active' : '',
@@ -2309,7 +2558,7 @@ function viewReport() {
           loadReport();
         }
       }, label)
-    ));
+    )), 'report');
 
   // 「自訂」的日期選擇器鎖在近三個月內——一般查帳用不到更久以前，
   // 選更早的區間本來就會被後端擋下來（那些資料已經封存走了），
@@ -2340,7 +2589,7 @@ function viewReport() {
       : null;
 
   if (!rep) {
-    return h('div', {}, [nav, presets, customRange, rangeHint, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+    return h('div', {}, [nav, presets, customRange, rangeHint, loadingView('report')]);
   }
 
   const s = rep.summary;
@@ -2377,6 +2626,9 @@ function viewReport() {
 }
 
 /** 純手繪 SVG 長條圖：每日淨收益，正值綠、負值紅。電子機台用 chipNet 而不是 net。 */
+/** 上一次播過「長條長出來」的是哪一份資料——資料沒變的重畫（背景重新整理）不再播一次。 */
+let _lastChartKey = null;
+
 function trendCard(trend, isElectronic) {
   // width 只是給下面算長條間距、字型密度用的「邏輯座標」，不是真的畫面像素寬——
   // 不管 trend 有幾天，viewBox 都會用這個邏輯寬度，但透過 preserveAspectRatio="none"
@@ -2393,7 +2645,11 @@ function trendCard(trend, isElectronic) {
 
   const svgNs = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNs, 'svg');
-  svg.setAttribute('class', 'chart');
+  // 換了區間／篩選、資料變了：長條從中間的零線長出來（ui_fx.css 的 .chart.fx-grow）
+  const chartKey = JSON.stringify([isElectronic, trend.map((d) => [d.date, netOf(d)])]);
+  const grow = chartKey !== _lastChartKey;
+  _lastChartKey = chartKey;
+  svg.setAttribute('class', 'chart' + (grow ? ' fx-grow' : ''));
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
   svg.setAttribute('preserveAspectRatio', 'none');
 
@@ -2419,6 +2675,7 @@ function trendCard(trend, isElectronic) {
     rect.setAttribute('x', String(x)); rect.setAttribute('y', String(y));
     rect.setAttribute('width', String(barW)); rect.setAttribute('height', String(barH));
     rect.setAttribute('rx', '2');
+    if (grow) rect.style.animationDelay = Math.min(i * 25, 300) + 'ms';   // 由左到右依序長出來
     const t = document.createElementNS(svgNs, 'title');
     t.textContent = d.date + '：' + money(net);
     rect.appendChild(t);
@@ -2509,7 +2766,7 @@ function recordsTableCard(rep) {
 /**
  * 匯出對帳表 .xlsx（後端回 base64，這裡解碼成二進位再包成 Blob 下載）。
  */
-function downloadLedgerXlsx() {
+function downloadLedgerXlsx(e) {
   run(async () => {
     const p = state.reportParams;
     const xlsx = await api('exportLedgerXlsx', p);
@@ -2532,7 +2789,7 @@ function downloadLedgerXlsx() {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast('已匯出 ' + xlsx.rowCount + ' 筆', 'success');
-  });
+  }, { button: e && e.currentTarget, busyText: '匯出中…' });
 }
 
 /**
@@ -2628,63 +2885,108 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   return canvas;
 }
 
-function exportLedgerScreenshots() {
+function exportLedgerScreenshots(e) {
   run(async () => {
     const p = state.reportParams;
     const data = await api('exportLedgerGrids', p);
     const rangeLabel = data.range.from + ' ~ ' + data.range.to;
 
-    const files = data.machines.map((m) => {
+    // 轉成 PNG：這裡前面已經等過一趟網路了，不用像 exportLedgerImage() 那樣為了
+    // 「同步」硬用 toDataURL＋逐字解 base64（圖一寬、張數一多，光這一步手機上就要好幾秒）；
+    // 改用瀏覽器原生的 canvas.toBlob()，全部同時轉，盡量縮短「按下去」到「叫出分享面板」的時間。
+    const files = await Promise.all(data.machines.map(async (m) => {
       const canvas = drawLedgerGridCanvas(rangeLabel, m);
       const filename = '娃娃機對帳表_' + m.machineName + '_' + data.range.from + '_' + data.range.to + '.png';
-      const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
+      const blob = await _canvasToPngBlob(canvas);
       return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
-    });
+    }));
 
     // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
     // 一次可能有好幾個檔案，先試分享面板一次全部帶走（實測：iOS 原生
     // 分享面板能正確把 17 張圖打包成一份「17 個影像」一起帶走，這條路
-    // 一旦成功是最順的），不支援 / 使用者取消才退回逐一下載。
+    // 一旦成功是最順的）。
     //
-    // canShare({files}) 過了不代表 share() 一定會成功——瀏覽器對「這批
-    // 檔案能不能分享」跟「系統分享面板實際能不能處理這個總大小」是
-    // 兩層不同的檢查，機台一多、圖檔總大小超過系統分享面板上限時，
-    // canShare() 仍然回 true，但 share() 會直接被系統拒絕。原本這裡把
-    // share() 失敗整個吞掉、直接 return，使用者會看到「按了沒反應」；
-    // 改成失敗就繼續往下走，退回逐一下載，不會真的沒反應。
+    // share() 只能在「使用者剛按下去」的有效期內叫（transient user activation，
+    // 手機大約幾秒）。前面要等一趟網路、再畫 17 張圖——自訂區間一長，每台
+    // 資料多、每張圖也更寬，準備時間很容易超過這個有效期，share() 就會被擋下
+    // （NotAllowedError），以前這時會直接退回逐一下載，使用者收到 17 個分開的檔案。
+    // 現在改成跳一個視窗讓使用者「再按一次」：那一按是新的互動，一定叫得出分享面板。
+    // 使用者自己把分享面板關掉（AbortError）就真的是取消，不再自動下載 17 個檔案。
     if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ files });
-        return;
       } catch (err) {
-        // 使用者自己按取消分享也會走到這裡，同樣退回下載——不完美，
-        // 但比「按了完全沒反應」好。
+        if (!(err && err.name === 'AbortError')) offerShareScreenshots(files, rangeLabel);
       }
+      return;
     }
 
-    // 備援：逐一觸發下載。實測發現在 Safari／iOS 上，好幾個
-    // `<a download>` 在同一個 tick 裡連續 click()，只有最後一個真的會
-    // 被處理、其餘的被默默吞掉（跟「分享面板每次只接 1 個檔案」是完全
-    // 不同的另一個問題，這裡是下載本身的問題）——改成一次觸發一個、
-    // 中間等一小段時間再觸發下一個，讓瀏覽器有時間把每一次下載都真的
-    // 處理完，17 張圖大約多花 17*300ms ≈ 5 秒，換來每張都真的存得到。
-    for (const file of files) {
-      const blob = file instanceof File ? file : file.blob;
-      const filename = file instanceof File ? file.name : file.filename;
-      const url = URL.createObjectURL(blob);
-      const link = h('a', { href: url, download: filename });
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      URL.revokeObjectURL(url);
+    await downloadScreenshotFiles(files);
+  }, { button: e && e.currentTarget, busyText: '匯出中…' });
+}
+
+/** canvas 轉 PNG Blob：有原生的 toBlob() 就用它（快、不佔用畫面），沒有才退回 toDataURL。 */
+function _canvasToPngBlob(canvas) {
+  return new Promise((resolve) => {
+    if (typeof canvas.toBlob === 'function') {
+      canvas.toBlob((blob) => resolve(blob || _dataUrlToBlob(canvas.toDataURL('image/png'))), 'image/png');
+    } else {
+      resolve(_dataUrlToBlob(canvas.toDataURL('image/png')));
     }
-    toast(
-      '已下載 ' + data.machines.length + ' 張截圖'
-        + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
-      'success'
-    );
   });
+}
+
+/**
+ * 截圖準備好了、但自動叫分享面板被手機擋下來時（見 exportLedgerScreenshots）：
+ * 跳一個視窗，讓使用者按「一次分享」。share() 一定要在這個按鈕的點擊裡「同步」呼叫，
+ * 中間不能有任何 await，才算是使用者剛按下去。分享失敗（例如總大小超過系統分享面板
+ * 能處理的上限）就提示改用逐一下載；使用者自己取消分享面板則留在這個視窗，可以再選一次。
+ */
+function offerShareScreenshots(files, rangeLabel) {
+  openDialog('截圖準備好了', [
+    h('p', { class: 'small muted', style: 'margin-bottom:4px' },
+      '共 ' + files.length + ' 張（' + rangeLabel + '）。區間比較長時，準備圖片要花一點時間，'
+      + '手機會擋下自動跳出的分享選單——按下面的「一次分享」就會打開，可以一次全部傳到 LINE。')
+  ], [
+    h('button', {
+      class: 'btn',
+      onclick: () => { closeDialog(); downloadScreenshotFiles(files); }
+    }, '逐一下載'),
+    h('button', {
+      class: 'btn btn-primary',
+      onclick: () => {
+        navigator.share({ files }).then(closeDialog).catch((err) => {
+          if (err && err.name === 'AbortError') return;
+          toast('手機的分享選單沒辦法一次帶走這麼多張，請改按「逐一下載」', 'error');
+        });
+      }
+    }, '📤 一次分享 ' + files.length + ' 張')
+  ]);
+}
+
+/**
+ * 備援：逐一觸發下載。實測發現在 Safari／iOS 上，好幾個 `<a download>` 在同一個
+ * tick 裡連續 click()，只有最後一個真的會被處理、其餘的被默默吞掉——改成一次觸發
+ * 一個、中間等一小段時間再觸發下一個，讓瀏覽器有時間把每一次下載都真的處理完，
+ * 17 張圖大約多花 17*300ms ≈ 5 秒，換來每張都真的存得到。
+ */
+async function downloadScreenshotFiles(files) {
+  for (const file of files) {
+    const blob = file instanceof File ? file : file.blob;
+    const filename = file instanceof File ? file.name : file.filename;
+    const url = URL.createObjectURL(blob);
+    const link = h('a', { href: url, download: filename });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    URL.revokeObjectURL(url);
+  }
+  toast(
+    '已下載 ' + files.length + ' 張截圖'
+      + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
+    'success'
+  );
 }
 
 // ── 畫面：系統管理 ──────────────────────────────────────
@@ -2697,7 +2999,7 @@ function viewAdmin() {
     h('h1', { style: 'font-size:18px', text: '系統管理' })
   ]);
 
-  const tabs = h('div', { class: 'tabs' },
+  const tabs = slidingTabs(h('div', { class: 'tabs' },
     [['users', '帳號'], ['machines', '機台'], ['prizes', '獎型'], ['perms', '台主授權']].map(([key, label]) =>
       h('button', {
         class: state.adminTab === key ? 'active' : '',
@@ -2706,9 +3008,9 @@ function viewAdmin() {
         // 任何一個分頁的新增/編輯/刪除動作都會自己呼叫 loadAdmin() 刷新，
         // 所以這裡拿到的一定是當下最新的資料。
         onclick: () => { state.adminTab = key; render(); }
-      }, label)));
+      }, label))), 'admin');
 
-  if (!data) return h('div', {}, [nav, tabs, h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' })])]);
+  if (!data) return h('div', {}, [nav, tabs, loadingView('admin')]);
 
   let body;
   if (state.adminTab === 'users') body = adminUsers(data);
@@ -2764,19 +3066,28 @@ function editUser(u) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        await api('adminSaveUser', {
-          userId: u ? u.userId : '',
-          username: username.value.trim(),
-          displayName: displayName.value.trim(),
-          role: role.value,
-          status: u ? status.value : 'active',
-          password: password.value
-        });
-        closeDialog();
-        if (!u) showPasswordOnce(username.value.trim(), password.value);
-        await loadAdmin();
-      }, { success: '已儲存' })
+      onclick: (e) => {
+        // 跟後端（Service.gs adminSaveUser／Supabase admin-users）同一套規則，先在這裡標出填錯的那一格
+        if (!u && !/^[A-Za-z0-9_.-]{3,20}$/.test(username.value.trim())) {
+          fieldError(username, '帳號只能用英數字與 _ . -，長度 3~20'); return;
+        }
+        if (!u && password.value.length < 6) { fieldError(password, '密碼至少 6 個字'); return; }
+        run(async () => {
+          await api('adminSaveUser', {
+            userId: u ? u.userId : '',
+            username: username.value.trim(),
+            displayName: displayName.value.trim(),
+            role: role.value,
+            status: u ? status.value : 'active',
+            password: password.value
+          });
+          closeDialog();
+          // 新帳號接著會跳「請把這組密碼交給使用者」，那個視窗本身就是成功的確認，不再疊一個打勾擋住密碼
+          if (u) showSuccessCheck();
+          else showPasswordOnce(username.value.trim(), password.value);
+          await loadAdmin();
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
+      }
     }, '儲存')
   ]);
 }
@@ -2791,13 +3102,16 @@ function resetPassword(u) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        const value = password.value;
-        await api('adminResetPassword', { userId: u.userId, password: value });
-        closeDialog();
-        showPasswordOnce(u.username, value);
-        await loadAdmin();
-      })
+      onclick: (e) => {
+        if (password.value.length < 6) { fieldError(password, '密碼至少 6 個字'); return; }
+        run(async () => {
+          const value = password.value;
+          await api('adminResetPassword', { userId: u.userId, password: value });
+          closeDialog();
+          showPasswordOnce(u.username, value);
+          await loadAdmin();
+        }, { button: e.currentTarget, busyText: '處理中…' });
+      }
     }, '確定重設')
   ]);
 }
@@ -2907,20 +3221,24 @@ function editMachine(m, presetCategory) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        await api('adminSaveMachine', {
-          machineId: m ? m.machineId : '',
-          name: name.value.trim(),
-          location: location.value.trim(),
-          status: status.value,
-          color: color,
-          sortOrder: Number(order.value) || 0,
-          category: category,
-          icon: icon
-        });
-        closeDialog();
-        await loadAdmin();
-      }, { success: '已儲存' })
+      onclick: (e) => {
+        if (!name.value.trim()) { fieldError(name, '請輸入機台名稱'); return; }
+        run(async () => {
+          await api('adminSaveMachine', {
+            machineId: m ? m.machineId : '',
+            name: name.value.trim(),
+            location: location.value.trim(),
+            status: status.value,
+            color: color,
+            sortOrder: Number(order.value) || 0,
+            category: category,
+            icon: icon
+          });
+          closeDialog();
+          showSuccessCheck();
+          await loadAdmin();
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
+      }
     }, '儲存')
   ]);
 }
@@ -2962,17 +3280,22 @@ function editGlobalPrize(p) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
-        await api('savePrize', {
-          prizeId: p ? p.prizeId : '',
-          machineId: '',
-          name: name.value.trim(),
-          amount: Number(amount.value),
-          sortOrder: Number(order.value) || 0
-        });
-        closeDialog();
-        await loadAdmin();
-      }, { success: '已儲存' })
+      onclick: (e) => {
+        if (!name.value.trim()) { fieldError(name, '請輸入獎型名稱'); return; }
+        if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
+        run(async () => {
+          await api('savePrize', {
+            prizeId: p ? p.prizeId : '',
+            machineId: '',
+            name: name.value.trim(),
+            amount: Number(amount.value),
+            sortOrder: Number(order.value) || 0
+          });
+          closeDialog();
+          showSuccessCheck();
+          await loadAdmin();
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
+      }
     }, '儲存')
   ]);
 }
@@ -2981,6 +3304,7 @@ function deletePrizeFromAdmin(p) {
   if (!confirm('確定要刪除「' + p.name + '」嗎？\n已登錄的歷史紀錄不會受影響。')) return;
   run(async () => {
     await api('deletePrize', { prizeId: p.prizeId });
+    await collapseDeletedRow();
     await loadAdmin();
   }, { success: '已刪除' });
 }
@@ -3123,11 +3447,11 @@ function applyDetail(machineId, data) {
   render();
 }
 
-async function loadReport() {
+async function loadReport(opts) {
   const key = 'report:' + JSON.stringify(state.reportParams);
   state.report = cacheRead(key);
   render();
-  const data = await run(() => api('report', state.reportParams));
+  const data = await run(() => api('report', state.reportParams), opts);
   if (data) {
     cacheWrite(key, data);
     state.report = data;
@@ -3135,10 +3459,10 @@ async function loadReport() {
   }
 }
 
-async function loadAdmin() {
+async function loadAdmin(opts) {
   // 四組資料合併成一次 API 呼叫（後端 adminBootstrap），
   // 而不是分開打 4 支——省下 3 次「/exec 轉址 + GAS 執行」的固定成本。
-  const data = await run(() => api('adminBootstrap'));
+  const data = await run(() => api('adminBootstrap'), opts);
   if (!data) return;
   cacheWrite('admin', data);
   state.admin = data;
@@ -3223,13 +3547,14 @@ function openChangePasswordDialog() {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
-        if (newPw.value.length < 6) { toast('密碼至少要 6 個字', 'error'); return; }
-        if (newPw.value !== confirmPw.value) { toast('兩次輸入的密碼不一樣', 'error'); return; }
+      onclick: (e) => {
+        if (newPw.value.length < 6) { fieldError(newPw, '密碼至少要 6 個字'); return; }
+        if (newPw.value !== confirmPw.value) { fieldError(confirmPw, '兩次輸入的密碼不一樣'); return; }
         run(async () => {
           await api('changePassword', { newPassword: newPw.value });
           closeDialog();
-        }, { success: '密碼改好了，下次登入請用新密碼' });
+          showSuccessCheck();
+        }, { success: '密碼改好了，下次登入請用新密碼', button: e.currentTarget, busyText: '處理中…' });
       }
     }, '確定')
   ]);
@@ -3253,6 +3578,9 @@ function openChangePasswordDialog() {
  */
 let _lastRenderKey = null;
 
+/** 上一次 render() 畫的是不是讀取中骨架——是的話，這次資料到了，清單要依序浮上來。 */
+let _lastRenderWasSkeleton = false;
+
 function render() {
   const app = document.getElementById('app');
   let node;
@@ -3264,7 +3592,17 @@ function render() {
   else if (state.view === 'report') node = viewReport();
   else if (state.view === 'activity') node = viewActivityQuery();
   else if (state.view === 'admin') node = viewAdmin();
+  // 開機中：已經登入（有 session）就直接畫首頁骨架，等首頁資料回來；還沒登入的才是轉圈圈
+  else if (state.token) node = loadingView('home');
   else node = h('div', { class: 'boot' }, [h('div', { class: 'boot-spinner' }), h('p', {}, '載入中…')]);
+
+  // 骨架換成真資料的那一次：機台卡片／紀錄／數字方塊依序浮上來（ui_fx.css 的 .fx-fadein）
+  const isSkeleton = node.classList.contains('fx-sk-view') || !!node.querySelector('.fx-sk-view');
+  if (_lastRenderWasSkeleton && !isSkeleton) {
+    node.querySelectorAll('.machine-list, .record-list, .report-stats, .admin-list')
+      .forEach((el) => el.classList.add('fx-fadein'));
+  }
+  _lastRenderWasSkeleton = isSkeleton;
 
   const renderKey = state.view + ':' + (state.machineId || '') + ':' + (state.homeTab || '');
   const isNavigation = renderKey !== _lastRenderKey;
@@ -3307,18 +3645,69 @@ function stopPolling() {
 
 function setupNetworkIndicators() {
   const bar = document.getElementById('offline-bar');
-  const update = () => { bar.hidden = navigator.onLine; };
-  window.addEventListener('online', () => { update(); if (state.token) refreshCurrent(); });
-  window.addEventListener('offline', update);
-  update();
+
+  // 離線提示條滑進滑出。它固定在頁面最上面、佔版面（會把整頁往下推），所以動的是
+  // 高度＋上下內距（從 0 長出來／縮回 0），下面的內容跟著平順讓位，不是突然被推下去、拉上來。
+  // 沒載到 ui_fx.js 或手機開了「減少動態效果」就直接出現／消失。
+  const canAnimate = () => !!bar.animate && typeof window.fxReduced === 'function' && !window.fxReduced();
+  let hiding = null;
+  function slide(show) {
+    const cs = getComputedStyle(bar);
+    const full = { height: bar.offsetHeight + 'px', paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, opacity: 1 };
+    const zero = { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 };
+    bar.style.overflow = 'hidden';
+    const a = bar.animate(show ? [zero, full] : [full, zero],
+      { duration: show ? 260 : 220, easing: show ? 'cubic-bezier(.2,.8,.2,1)' : 'ease-in' });
+    const cleanup = () => { bar.style.overflow = ''; };
+    a.addEventListener('finish', cleanup);
+    a.addEventListener('cancel', cleanup);
+    return a;
+  }
+  function showBar() {
+    if (hiding) { hiding.cancel(); hiding = null; }   // 正在收起來又斷線了：取消收起，維持顯示
+    if (!bar.hidden) return;
+    bar.hidden = false;
+    if (canAnimate()) slide(true);
+  }
+  function hideBar() {
+    if (bar.hidden || hiding) return;
+    if (!canAnimate()) { bar.hidden = true; return; }
+    hiding = slide(false);
+    hiding.addEventListener('finish', () => { hiding = null; bar.hidden = true; });
+  }
+
+  window.addEventListener('online', () => {
+    const wasOffline = !bar.hidden;
+    hideBar();
+    if (wasOffline) toast('已恢復連線', 'success');
+    if (state.token) refreshCurrent();
+  });
+  window.addEventListener('offline', showBar);
+  bar.hidden = navigator.onLine;   // 開機當下就離線：直接顯示，不播動畫
 }
 
-function refreshCurrent() {
-  if (state.view === 'home') loadHome();
-  else if (state.view === 'machine' && state.machineId) loadDetail(state.machineId);
-  else if (state.view === 'report') loadReport();
-  else if (state.view === 'activity') loadActivityQuery();
-  else if (state.view === 'admin') loadAdmin();
+/** 重新讀取目前這個畫面的資料。回傳 Promise（下拉更新要轉圈到它結束）。 */
+function refreshCurrent(opts) {
+  if (state.view === 'home') return loadHome(opts);
+  if (state.view === 'machine' && state.machineId) return loadDetail(state.machineId, opts);
+  if (state.view === 'report') return loadReport(opts);
+  if (state.view === 'activity') return loadActivityQuery(opts);
+  if (state.view === 'admin') return loadAdmin(opts);
+  return Promise.resolve();
+}
+
+/**
+ * 下拉更新（ui_fx.js）：在畫面最上面往下拉，放開就重新讀取目前這個畫面。
+ * 原本首頁只能等 5 分鐘的背景輪詢，或切出 App 再切回來才會更新。
+ * 登入頁、開機中不理；機台頁的記帳面板開著時也不理——跟背景輪詢同一個規則，
+ * 重新整理會把輸入到一半的碼表讀數、金額洗掉。
+ */
+function setupPullToRefresh() {
+  if (typeof window.fxPullToRefresh !== 'function') return;
+  window.fxPullToRefresh(() => refreshCurrent({ quiet: true }), {
+    enabled: () => !!state.token && state.view !== 'login' && state.view !== 'boot'
+      && !(state.view === 'machine' && state.panel)
+  });
 }
 
 function registerServiceWorker() {
@@ -3363,6 +3752,7 @@ async function boot() {
   setupNetworkIndicators();
   registerServiceWorker();
   startPolling();
+  setupPullToRefresh();
 
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && state.token) refreshCurrent();
@@ -3374,6 +3764,7 @@ async function boot() {
 
   await loadSession();
   if (!state.token) { state.view = 'login'; render(); return; }
+  render(); // 已登入：「載入中…」先換成首頁骨架（見 render()），等下面這趟首頁資料回來
 
   try {
     // 開起 App 時「驗登入」跟「拿首頁資料」合併成一次呼叫（homeBootstrap），

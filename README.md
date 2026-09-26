@@ -31,7 +31,7 @@
 | 台主 | 僅被授權的 | ❌ 唯讀 | 僅自己的 | ❌ |
 
 **主要畫面**
-- **首頁**：每台機台一張卡片，左邊像素風娃娃機，右邊今日淨收益，每 20 秒自動更新
+- **首頁**：每台機台一張卡片，左邊像素風娃娃機，右邊今日淨收益，每 5 分鐘自動更新（想馬上看最新數字就往下拉）
 - **詳細頁**：收益面板 + 入幣／出幣／🎁 開獎三顆按鈕 + 本機台紀錄
 - **報表**：日／週／月／自訂區間、趨勢圖、獎型統計、明細篩選、匯出 CSV
 - **系統管理**：帳號、機台、獎型、台主授權
@@ -73,6 +73,7 @@ docs/                  GitHub Pages 發佈目錄（前端 PWA）
   index.html           外殼與 PWA meta
   app.js               全部前端邏輯
   styles.css           全部樣式
+  ui_fx.css／ui_fx.js   共用 UI 動態效果（骨架、成功打勾、漏填標紅、下拉更新、刪除收合…，移植自天鷹保全）
   config.js            ← 唯一需要你手動填的檔案（GAS 網址）
   sw.js                Service Worker
   manifest.webmanifest
@@ -102,6 +103,7 @@ npm run dev          # 本機開起整個 App（含假的後端）→ http://loc
 npm run bundle       # 把 apps-script/*.gs 合併成 apps-script/dist/Code.gs（部署要貼的那份）
 npm test             # 語法檢查 + 像素圖一致性 + 合併檔案是否最新 + 後端自我測試（分開檔案版與合併檔案版都跑）
 npm run test:e2e     # 用真的瀏覽器跑流程測試（需要先開著 npm run dev）
+npm run test:e2e:fx  # 動態效果測試：一般／「減少動態效果」兩種模式（需要先開著 npm run dev，一律走本機假後端）
 npm run icons        # 重新產生 App 圖示
 ```
 

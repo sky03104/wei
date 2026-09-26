@@ -21,6 +21,12 @@
 <link rel="icon" href="icons/icon-192.png">
 
 <link rel="stylesheet" href="styles.css">
+
+<!-- 共用 UI 動態效果（按鈕漣漪、讀取中骨架、送出成功打勾、漏填標紅、下拉更新、刪除收合…），
+     用法與注意事項見 ui_fx.js 檔頭。defer：不擋第一個畫面，仍會在 app.js 開機（DOMContentLoaded）之前跑完。
+     沒載到也不影響功能，app.js 呼叫前都會先確認函式存在。 -->
+<link rel="stylesheet" href="ui_fx.css">
+<script src="ui_fx.js" defer></script>
 </head>
 <body>
 
