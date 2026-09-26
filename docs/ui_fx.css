@@ -136,7 +136,50 @@ html.fx-anim .dialog,html.fx-anim .toast{animation:none}
 .fx-btn-spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;
   border-radius:50%;animation:fxSpin .7s linear infinite;vertical-align:-2px;margin-right:7px;opacity:.85}
 
-/* 手機設定「減少動態效果」：全部關掉，直接顯示結果（對長輩／容易頭暈的同事友善） */
+/* ══ 第二批（2026-09-26，咖哩選的 8 項）══ */
+
+/* ── 新增的那一筆亮一下再淡掉（app.js 給剛送出的紀錄加 .fx-flash）──
+   .record-item 左右沒有內距，用左右各 8px 的 box-shadow 把亮色往外延伸，不影響排版 */
+.fx-flash{animation:fxFlash 1.8s ease-out}
+@keyframes fxFlash{
+  0%,30%{background-color:color-mix(in srgb,var(--fx-accent) 22%,transparent);
+    box-shadow:-8px 0 0 color-mix(in srgb,var(--fx-accent) 22%,transparent),8px 0 0 color-mix(in srgb,var(--fx-accent) 22%,transparent)}
+  100%{background-color:transparent;box-shadow:-8px 0 0 transparent,8px 0 0 transparent}}
+
+/* ── 按鈕送出中（ui_fx.js 的 fxButtonBusy）：跟一般「不能按」的半透明分開，看得出是正在送 ── */
+.fx-btn-busy{cursor:progress;gap:7px}
+.fx-btn-busy:disabled{opacity:.85}
+.fx-btn-busy .fx-btn-spin{margin-right:0}
+
+/* ── 分頁滑動膠囊（app.js 在 .seg／.tabs 加 fx-tabs-slide，並放一個 .fx-slider）──
+   選中的藍底改由膠囊畫，從上一顆滑到新的一顆。容器 z-index:0 自成一層，膠囊壓在按鈕文字底下（-1）；
+   .tabs 沒選中的分頁底色改畫在 ::before（-2），膠囊才能從它們上面滑過去——看起來跟原本一樣 */
+.fx-tabs-slide{position:relative;z-index:0}
+.fx-tabs-slide > .fx-slider{z-index:-1;background:var(--fx-accent)}
+.seg.fx-tabs-slide > .fx-slider{border-radius:6px}
+.seg.fx-tabs-slide button.active{background:transparent}
+.tabs.fx-tabs-slide button{position:relative;background:transparent}
+.tabs.fx-tabs-slide button::before{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--surface-2);z-index:-2}
+.tabs.fx-tabs-slide button.active{background:transparent;border-color:transparent}
+.tabs.fx-tabs-slide button.active::before{background:transparent}
+
+/* ── 記帳面板（入幣／出幣／活動…）打開時從上面滑下來（app.js 只在「剛打開」那一次加 .fx-panel-in）── */
+.fx-panel-in{animation:fxPanelIn .26s cubic-bezier(.2,.8,.2,1)}
+@keyframes fxPanelIn{from{opacity:0;transform:translateY(-8px)}}
+
+/* ── 報表長條圖：長條從中間那條零線長出來（正的往上、負的往下），app.js 只在資料變了的那一次加 .fx-grow ── */
+.chart.fx-grow rect{transform-box:fill-box;animation:fxBarGrow .5s cubic-bezier(.2,.8,.2,1) backwards}
+.chart.fx-grow rect.bar-pos{transform-origin:50% 100%}
+.chart.fx-grow rect.bar-neg{transform-origin:50% 0%}
+@keyframes fxBarGrow{from{transform:scaleY(0)}}
+
+/* ── 首頁往下捲時，固定在上面的標題／今日數字區下緣出現淡陰影，看得出機台清單是從它底下捲過去 ──
+   fx-scrolled 由 ui_fx.js 在 <html> 上切換 */
+.home-sticky{transition:box-shadow .2s ease}
+html.fx-scrolled .home-sticky{box-shadow:0 10px 14px -10px rgba(0,0,0,.8)}
+
+/* 手機設定「減少動態效果」：全部關掉，直接顯示結果（對長輩／容易頭暈的同事友善）。
+   App 本身原有的動畫（機台狀態燈閃爍、處理中方塊、轉圈圈）是刻意的設計，不在這裡關 */
 @media (prefers-reduced-motion: reduce){
   .fx-rip,.fx-shine{display:none}
   .fx-sk{animation:none}
@@ -145,4 +188,9 @@ html.fx-anim .dialog,html.fx-anim .toast{animation:none}
   .fx-pulse{animation:none}
   .fx-field-err{animation:none}
   .fx-top{transition:none}
+  .fx-flash{animation:none}
+  .fx-btn-spin{display:none}
+  .fx-panel-in{animation:none}
+  .chart.fx-grow rect{animation:none}
+  .home-sticky{transition:none}
 }

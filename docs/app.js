@@ -966,6 +966,11 @@ async function run(fn, opts) {
   // 它自己有轉圈的指示圈，兩個疊在畫面最上面反而擋到彼此。
   const showsBusy = !options.silent && !options.quiet;
   if (showsBusy && ++visibleRunDepth === 1) showBusy(true);
+  // button：按下去的那顆按鈕——等後端的這段時間在按鈕上轉圈、換成 busyText（例如「送出中…」），
+  // 暫時不能再按，避免連點（ui_fx.js 的 fxButtonBusy；沒載到就只有上面的「處理中…」）
+  const restoreButton = options.button && typeof window.fxButtonBusy === 'function'
+    ? window.fxButtonBusy(options.button, options.busyText)
+    : null;
   try {
     const result = await fn();
     if (options.success) toast(options.success, 'success');
@@ -980,6 +985,7 @@ async function run(fn, opts) {
     if (!options.silent && (err.code !== 'AUTH' || options.showAuthError)) toast(err.message, 'error');
     return undefined;
   } finally {
+    if (restoreButton) restoreButton();
     runDepth--;
     if (runDepth === 0) state.busy = false;
     if (showsBusy && --visibleRunDepth === 0) showBusy(false);
@@ -1063,6 +1069,7 @@ function clearSession() {
   state.admin = null;
   state.cache = {};
   state.homeTab = 'dice';
+  _countMem = {};   // 數字跳動的記憶：不能讓下一位使用者看到數字從上一位的金額跳過來
 
   try {
     localStorage.removeItem(STORAGE_TOKEN);
@@ -1121,7 +1128,7 @@ function viewLogin() {
         username: username.value.trim(),
         password: password.value,
         remember: remember.checked
-      }), { showAuthError: true });
+      }), { showAuthError: true, button: submitBtn, busyText: '登入中…' });
       submitBtn.disabled = false;
       if (!data) return;
       saveSession(data.token, data.remember);
@@ -1164,6 +1171,39 @@ function statBox(label, value, cls) {
   ]);
 }
 
+/**
+ * 金額／數量跳動：跟上一次畫這一格時的值比，有變才從舊數字跳到新數字（ui_fx.js 的
+ * fxCountFrom，0.65 秒）——記帳送出、下拉更新之後，一眼看得出變了多少。
+ * 第一次出現、數字沒變、沒載到 ui_fx.js、手機開了減少動態效果，都直接顯示結果。
+ * key 要能分辨是哪一格，例如 'home:dice:in'、'card:<機台編號>'。
+ * 換人登入時 clearSession() 會清掉這份記憶，不會從上一位使用者看到的數字跳過來。
+ */
+let _countMem = {};
+function countUp(el, n, key, fmt) {
+  const prev = _countMem[key];
+  _countMem[key] = n;
+  el.textContent = fmt(n);
+  if (prev !== undefined && prev !== n && typeof window.fxCountFrom === 'function') window.fxCountFrom(el, prev, n, fmt);
+}
+
+/** 會跳動的數字元素（見 countUp）。 */
+function countEl(tag, cls, n, fmt, key) {
+  const el = h(tag, { class: cls });
+  countUp(el, Number(n) || 0, key, fmt);
+  return el;
+}
+
+/** 跟 statBox 一樣的數字方塊，但數字會跳動（見 countUp）。fmt 是 money 或 countText。 */
+function statNum(label, n, fmt, cls, key) {
+  return h('div', { class: 'stat' }, [
+    h('div', { class: 'stat-label', text: label }),
+    countEl('div', 'stat-value num ' + (cls || ''), n, fmt, key)
+  ]);
+}
+
+/** 數量（支數、筆數）的顯示格式：跟原本 String(n) 一樣，不加 $。 */
+function countText(n) { return String(n); }
+
 function viewHome() {
   const data = state.home;
   if (!data) return loadingView('home');
@@ -1189,9 +1229,9 @@ function viewHome() {
   if (state.homeTab === 'electronic') {
     const t = data.electronicTotal;
     summary = h('div', { class: 'summary-strip' }, [
-      statBox('今日開分', money(t.chipIn), 'net pos'),
-      statBox('今日洗分', money(t.chipOut), ''),
-      statBox('今日盈虧', money(t.chipNet), 'net ' + netClass(t.chipNet))
+      statNum('今日開分', t.chipIn, money, 'net pos', 'home:el:chipIn'),
+      statNum('今日洗分', t.chipOut, money, '', 'home:el:chipOut'),
+      statNum('今日盈虧', t.chipNet, money, 'net ' + netClass(t.chipNet), 'home:el:chipNet')
     ]);
     const machines = data.machines.filter((m) => m.category === 'electronic');
     list = machines.length
@@ -1207,13 +1247,13 @@ function viewHome() {
       // 本月432/441支數放最上面，跟下面「今日」那排分開——是不同時間
       // 範圍的數字，混在同一排容易誤看成也是「今日」的。
       h('div', { class: 'summary-strip', style: 'grid-template-columns:repeat(2, 1fr); margin-bottom:8px' }, [
-        statBox('本月432支數', String(data.month432Count || 0), ''),
-        statBox('本月441支數', String(data.month441Count || 0), '')
+        statNum('本月432支數', data.month432Count || 0, countText, '', 'home:total:m432'),
+        statNum('本月441支數', data.month441Count || 0, countText, '', 'home:total:m441')
       ]),
       h('div', { class: 'summary-strip' }, [
-        statBox('今日骰台淨收益', money(dice.net), 'net ' + netClass(dice.net)),
-        statBox('今日電子淨收益', money(electronic.chipNet), 'net ' + netClass(electronic.chipNet)),
-        statBox('今日總淨收益', money(grandNet), 'net ' + netClass(grandNet))
+        statNum('今日骰台淨收益', dice.net, money, 'net ' + netClass(dice.net), 'home:total:diceNet'),
+        statNum('今日電子淨收益', electronic.chipNet, money, 'net ' + netClass(electronic.chipNet), 'home:total:elNet'),
+        statNum('今日總淨收益', grandNet, money, 'net ' + netClass(grandNet), 'home:total:grandNet')
       ])
     ]);
     list = ledgerCard(data);
@@ -1223,12 +1263,12 @@ function viewHome() {
     // 用專屬的 summary-strip-6 排成 3 欄 2 排，不是共用 4 欄（6 張塞進 4 欄
     // 會變成「4+2」，最後一排看起來缺兩塊）。
     summary = h('div', { class: 'summary-strip summary-strip-6' }, [
-      statBox('今日入幣', money(t.in), 'net pos'),
-      statBox('今日出幣', money(t.out), ''),
-      statBox('今日432數量', String(data.today432Count || 0), ''),
-      statBox('今日441數量', String(data.today441Count || 0), ''),
-      statBox('今日活動金額', money(t.prize), ''),
-      statBox('今日總筆數', String((data.todayOutCount || 0) + (data.today432Count || 0) + (data.today441Count || 0)), '')
+      statNum('今日入幣', t.in, money, 'net pos', 'home:dice:in'),
+      statNum('今日出幣', t.out, money, '', 'home:dice:out'),
+      statNum('今日432數量', data.today432Count || 0, countText, '', 'home:dice:432'),
+      statNum('今日441數量', data.today441Count || 0, countText, '', 'home:dice:441'),
+      statNum('今日活動金額', t.prize, money, '', 'home:dice:prize'),
+      statNum('今日總筆數', (data.todayOutCount || 0) + (data.today432Count || 0) + (data.today441Count || 0), countText, '', 'home:dice:records')
     ]);
     const machines = data.machines.filter((m) => m.category !== 'electronic');
     list = machines.length
@@ -1244,14 +1284,40 @@ function viewHome() {
   ].filter((n) => n !== null));
 }
 
+/**
+ * 分頁滑動膠囊（ui_fx.js 的 fxMoveSlider）：選中的藍底從上一次選中的那顆滑到新的這顆，
+ * 而不是瞬間跳過去。每次切換都會整個重畫，所以要自己記住「這一組分頁上次選中第幾顆」
+ * （key 分辨是哪一組）。膠囊怎麼疊在按鈕底下見 ui_fx.css 的 .fx-tabs-slide；
+ * 沒載到 ui_fx.js 就什麼都不加，維持原本 .active 的底色。
+ */
+const _tabsLastActive = {};
+function slidingTabs(container, key) {
+  if (typeof window.fxMoveSlider !== 'function') return container;
+  container.classList.add('fx-tabs-slide');
+  const slider = h('span', { class: 'fx-slider', 'aria-hidden': 'true' });
+  container.insertBefore(slider, container.firstChild);
+  // 要等 render() 把它放進畫面、排好版才量得到位置；requestAnimationFrame 會在畫出來之前跑，不會先閃一下
+  requestAnimationFrame(() => {
+    if (!container.isConnected) return;
+    const buttons = Array.prototype.slice.call(container.querySelectorAll('button'));
+    const active = container.querySelector('button.active');
+    if (!active) return;
+    const idx = buttons.indexOf(active);
+    const prev = _tabsLastActive[key];
+    _tabsLastActive[key] = idx;
+    window.fxMoveSlider(slider, active, prev !== undefined && prev !== idx ? buttons[prev] : null);
+  });
+  return container;
+}
+
 /** 首頁分頁籤：骰台（預設）／電子／加總。放在「今日營業開始／結單」下面。 */
 function homeTabBar() {
   const tabs = [['dice', '骰台'], ['electronic', '電子'], ['total', '加總']];
-  return h('div', { class: 'seg', style: 'margin-top:10px' }, tabs.map(([key, label]) =>
+  return slidingTabs(h('div', { class: 'seg', style: 'margin-top:10px' }, tabs.map(([key, label]) =>
     h('button', {
       class: state.homeTab === key ? 'active' : '',
       onclick: () => { state.homeTab = key; render(); }
-    }, label)));
+    }, label))), 'home');
 }
 
 /**
@@ -1325,7 +1391,7 @@ function ledgerCard(data) {
       ]))),
     h('div', { class: 'ledger-row ledger-total' }, [
       h('span', { class: 'ledger-label', text: '總結餘' }),
-      h('span', { class: 'ledger-value num ' + netClass(data.ledgerTotal), text: money(data.ledgerTotal) })
+      countEl('span', 'ledger-value num ' + netClass(data.ledgerTotal), data.ledgerTotal, money, 'home:ledgerTotal')
     ]),
     h('p', { class: 'small muted', style: 'margin-top:10px' },
       '今日432支數 ' + (data.today432Count || 0) + '　今日441支數 ' + (data.today441Count || 0)),
@@ -1560,7 +1626,7 @@ function editDailyLedger(data) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => run(async () => {
+      onclick: (e) => run(async () => {
         await api('saveDailyLedger', {
           turnover: Number(turnover.value) || 0,
           manualExpense: Number(manualExpense.value) || 0,
@@ -1572,7 +1638,7 @@ function editDailyLedger(data) {
         closeDialog();
         showSuccessCheck();
         await loadHome();
-      }, { success: '已儲存' })
+      }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
     }, '儲存')
   ]);
 }
@@ -1626,7 +1692,7 @@ function _clearMachineDetailCache() {
   });
 }
 
-function doStartBusinessDay() {
+function doStartBusinessDay(e) {
   const biz = state.home && state.home.businessDay;
   if (biz && biz.open && !confirm('目前已經在營業中，確定要重新開始今日營業嗎？\n這會自動結算目前這個營業日，並開一個新的。')) return;
   run(async () => {
@@ -1634,27 +1700,27 @@ function doStartBusinessDay() {
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已開始今日營業，所有機台的今日數字已重置' });
+  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
-function doEndBusinessDay() {
+function doEndBusinessDay(e) {
   if (!confirm('確定要結算今日營業嗎？結單後才能再次「今日營業開始」。')) return;
   run(async () => {
     await api('endBusinessDay', {});
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已結算今日營業' });
+  }, { success: '已結算今日營業', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
-function doReopenBusinessDay() {
+function doReopenBusinessDay(e) {
   if (!confirm('確定要復原剛剛的結單嗎？會把最近一筆營業日改回「進行中」。')) return;
   run(async () => {
     await api('reopenBusinessDay', {});
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已復原，回到營業中' });
+  }, { success: '已復原，回到營業中', button: e && e.currentTarget, busyText: '處理中…' });
 }
 
 function machineCard(m) {
@@ -1680,7 +1746,7 @@ function machineCard(m) {
       ])
     ]),
     h('div', { class: 'figures' }, [
-      h('div', { class: 'net num ' + netClass(net), text: money(net) }),
+      countEl('div', 'net num ' + netClass(net), net, money, 'card:' + m.machineId),
       h('div', { class: 'breakdown num' }, breakdown)
     ])
   ]);
@@ -1727,12 +1793,12 @@ function viewMachine() {
   const figures = h('div', { class: 'figures-panel' }, [
     h('div', { class: 'stat net-stat center' }, [
       h('div', { class: 'stat-label', text: '今日淨收益（已扣活動成本）' }),
-      h('div', { class: 'stat-value num net ' + netClass(d.today.net), text: money(d.today.net) }),
-      h('div', { class: 'small muted num', text: '本週淨收益 ' + money(d.total.net) })
+      countEl('div', 'stat-value num net ' + netClass(d.today.net), d.today.net, money, 'detail:' + m.machineId + ':net'),
+      countEl('div', 'small muted num', d.total.net, (n) => '本週淨收益 ' + money(n), 'detail:' + m.machineId + ':week')
     ]),
-    statBox('今日入幣', money(d.today.in)),
-    statBox('今日出幣', money(d.today.out)),
-    statBox('今日432數量', String(d.today432Count || 0))
+    statNum('今日入幣', d.today.in, money, '', 'detail:' + m.machineId + ':in'),
+    statNum('今日出幣', d.today.out, money, '', 'detail:' + m.machineId + ':out'),
+    statNum('今日432數量', d.today432Count || 0, countText, '', 'detail:' + m.machineId + ':432')
   ]);
 
   const actions = canRecord()
@@ -1748,7 +1814,7 @@ function viewMachine() {
   return h('div', { class: 'detail-grid' }, [
     nav,
     top,
-    state.panel ? renderPanel(d) : null,
+    panelView(d),
     renderRecords(d)
   ]);
 }
@@ -1756,9 +1822,9 @@ function viewMachine() {
 /** 電子機台的詳細頁：只有開分／洗分兩顆按鈕，沒有入幣/出幣/活動。 */
 function viewElectronicMachine(d, nav, hero, switcher) {
   const figures = h('div', { class: 'figures-panel' }, [
-    statBox('開分金額', money(d.today.chipIn), 'net pos'),
-    statBox('洗分金額', money(d.today.chipOut), ''),
-    statBox('盈虧金額', money(d.today.chipNet), 'net ' + netClass(d.today.chipNet))
+    statNum('開分金額', d.today.chipIn, money, 'net pos', 'detail:' + d.machine.machineId + ':chipIn'),
+    statNum('洗分金額', d.today.chipOut, money, '', 'detail:' + d.machine.machineId + ':chipOut'),
+    statNum('盈虧金額', d.today.chipNet, money, 'net ' + netClass(d.today.chipNet), 'detail:' + d.machine.machineId + ':chipNet')
   ]);
 
   const actions = canRecord()
@@ -1773,7 +1839,7 @@ function viewElectronicMachine(d, nav, hero, switcher) {
   return h('div', { class: 'detail-grid' }, [
     nav,
     top,
-    state.panel ? renderPanel(d) : null,
+    panelView(d),
     renderRecords(d)
   ]);
 }
@@ -1885,7 +1951,20 @@ function togglePanel(kind) {
   state.panel = state.panel === kind ? null : kind;
   state.editMode = false;
   state.prizeCounts = {};
+  _panelJustOpened = !!state.panel;
   render();
+}
+
+/**
+ * 記帳面板（入幣／出幣／活動、開分／洗分）：按下去「打開」的那一次，面板從上面滑下來
+ * （ui_fx.css 的 .fx-panel-in）。之後的重畫（送出後刷新、切換編輯模式…）不再播。
+ */
+let _panelJustOpened = false;
+function panelView(d) {
+  if (!state.panel) return null;
+  const panel = renderPanel(d);
+  if (_panelJustOpened) { panel.classList.add('fx-panel-in'); _panelJustOpened = false; }
+  return panel;
 }
 
 function renderPanel(d) {
@@ -1900,20 +1979,19 @@ function renderPanel(d) {
 function chipPanel(d, type) {
   const custom = h('input', { type: 'number', inputmode: 'decimal', min: '1', placeholder: '輸入金額', autofocus: true });
 
+  const sendBtn = h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out') }, '送出');
   const submit = () => {
     const v = Number(custom.value);
     if (!v || v <= 0) { fieldError(custom, '請輸入大於 0 的金額'); return; }
     custom.value = '';
-    submitAmount(d.machine.machineId, type, v);
+    submitAmount(d.machine.machineId, type, v, sendBtn);
   };
+  sendBtn.addEventListener('click', submit);
   custom.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
 
   return h('div', { class: 'panel' }, [
     h('div', { class: 'panel-head' }, [h('h3', { text: TYPE_LABELS[type] })]),
-    h('div', { class: 'custom-amount' }, [
-      custom,
-      h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out'), onclick: submit }, '送出')
-    ])
+    h('div', { class: 'custom-amount' }, [custom, sendBtn])
   ]);
 }
 
@@ -1926,7 +2004,7 @@ function quickPanel(d, type) {
   const buttons = list.map((qa) => {
     const btn = h('button', {
       class: 'btn quick-btn btn-' + type,
-      onclick: () => submitAmount(d.machine.machineId, type, qa.amount)
+      onclick: (e) => submitAmount(d.machine.machineId, type, qa.amount, e.currentTarget)
     }, qa.label || money(qa.amount));
 
     if (!state.editMode) return btn;
@@ -1966,11 +2044,11 @@ function quickPanel(d, type) {
       custom,
       h('button', {
         class: 'btn btn-' + type,
-        onclick: () => {
+        onclick: (e) => {
           const v = Number(custom.value);
           if (!v || v <= 0) { fieldError(custom, '請輸入大於 0 的金額'); return; }
           custom.value = '';
-          submitAmount(d.machine.machineId, type, v);
+          submitAmount(d.machine.machineId, type, v, e.currentTarget);
         }
       }, '送出')
     ]),
@@ -1984,7 +2062,7 @@ function scopeNote(machineId, sheet, scope) {
     h('span', { text: isGlobal ? '目前沿用全局設定（改動會影響所有機台）' : '目前是本台專屬設定' }),
     h('button', {
       class: 'btn btn-sm btn-ghost',
-      onclick: () => run(async () => {
+      onclick: (e) => run(async () => {
         if (isGlobal) {
           await api('forkScope', { sheet: sheet, machineId: machineId });
         } else {
@@ -1992,7 +2070,7 @@ function scopeNote(machineId, sheet, scope) {
           await api('resetScope', { sheet: sheet, machineId: machineId });
         }
         await loadDetail(machineId);
-      }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局' })
+      }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局', button: e.currentTarget, busyText: '處理中…' })
     }, isGlobal ? '改成本台自訂' : '改回沿用全局')
   ]);
 }
@@ -2010,7 +2088,7 @@ function editQuickAmount(d, type, qa) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
         run(async () => {
           await api('saveQuickAmount', {
@@ -2024,7 +2102,7 @@ function editQuickAmount(d, type, qa) {
           closeDialog();
           showSuccessCheck();
           await loadDetail(d.machine.machineId);
-        }, { success: '已儲存' });
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
     }, '儲存')
   ]);
@@ -2039,7 +2117,8 @@ function deleteQuickAmount(qa) {
   }, { success: '已刪除' });
 }
 
-function submitAmount(machineId, type, amount) {
+function submitAmount(machineId, type, amount, btn) {
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addRecord', {
       machineId: machineId,
@@ -2048,11 +2127,11 @@ function submitAmount(machineId, type, amount) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success'); showSuccessCheck(); }
+    else { toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 // ── 面板：入幣（碼表登錄）───────────────────────────────
@@ -2093,7 +2172,7 @@ function meterPanel(d) {
   }
   startInput.addEventListener('input', recalc);
   endInput.addEventListener('input', recalc);
-  submitBtn.addEventListener('click', () => submitMeterRecord(d.machine.machineId, startInput, endInput));
+  submitBtn.addEventListener('click', () => submitMeterRecord(d.machine.machineId, startInput, endInput, submitBtn));
   recalc();
 
   return h('div', { class: 'panel' }, [
@@ -2119,9 +2198,10 @@ function meterPanel(d) {
   ]);
 }
 
-function submitMeterRecord(machineId, startInput, endInput) {
+function submitMeterRecord(machineId, startInput, endInput, btn) {
   const meterStart = Number(startInput.value);
   const meterEnd = Number(endInput.value);
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addMeterRecord', {
       machineId: machineId,
@@ -2130,11 +2210,11 @@ function submitMeterRecord(machineId, startInput, endInput) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success'); showSuccessCheck(); }
+    else { toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addMeterRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 /**
@@ -2153,14 +2233,14 @@ function meterRateEditor(d) {
       input,
       h('button', {
         class: 'btn btn-primary',
-        onclick: () => run(async () => {
+        onclick: (e) => run(async () => {
           await api('saveMeterRate', {
             machineId: rateInfo.scope === 'machine' ? d.machine.machineId : '',
             rate: Number(input.value)
           });
           showSuccessCheck();
           await loadDetail(d.machine.machineId);
-        }, { success: '已儲存' })
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
       }, '儲存')
     ]),
     scopeNote(d.machine.machineId, 'MeterRates', rateInfo.scope)
@@ -2219,7 +2299,7 @@ function prizePanel(d) {
     return row;
   });
 
-  submitBtn.addEventListener('click', () => submitPrizes(d.machine.machineId, prizes));
+  submitBtn.addEventListener('click', () => submitPrizes(d.machine.machineId, prizes, submitBtn));
   recalc();
 
   return h('div', { class: 'panel' }, [
@@ -2247,12 +2327,13 @@ function prizePanel(d) {
   ]);
 }
 
-function submitPrizes(machineId, prizes) {
+function submitPrizes(machineId, prizes, btn) {
   const items = prizes
     .map((p) => ({ prizeId: p.prizeId, count: state.prizeCounts[p.prizeId] || 0 }))
     .filter((it) => it.count > 0);
   if (!items.length) return;
 
+  const before = shownRecordIds();
   run(async () => {
     const res = await api('addPrizeRecord', {
       machineId: machineId,
@@ -2260,10 +2341,10 @@ function submitPrizes(machineId, prizes) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast('活動 ' + money(res.total) + ' 已登錄', 'success'); showSuccessCheck(); }
+    else { toast('活動 ' + money(res.total) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
     state.prizeCounts = {};
     await loadDetail(machineId);
-  });
+  }, { button: btn, busyText: '送出中…' });
 }
 
 function editPrize(d, prize) {
@@ -2279,7 +2360,7 @@ function editPrize(d, prize) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (!name.value.trim()) { fieldError(name, '請輸入獎型名稱'); return; }
         if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
         run(async () => {
@@ -2293,7 +2374,7 @@ function editPrize(d, prize) {
           closeDialog();
           showSuccessCheck();
           await loadDetail(d.machine.machineId);
-        }, { success: '已儲存' });
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
     }, '儲存')
   ]);
@@ -2310,9 +2391,32 @@ function deletePrize(prize) {
 
 // ── 紀錄清單 ────────────────────────────────────────────
 
+/**
+ * 剛送出的紀錄在「本機台紀錄」裡亮一下（ui_fx.css 的 .fx-flash，底色亮起再淡掉）：
+ * 送出前先用 shownRecordIds() 記下畫面上已經有哪幾筆，送出成功後交給 flashNewRecords()；
+ * 下一次畫紀錄清單時，不在這份名單裡的就是剛記的。只用一次，之後的背景重新整理不會再亮。
+ * 看的是紀錄編號，不管哪個後端（GAS／Supabase）、一次新增幾筆（活動可以一次登好幾種）都適用。
+ */
+let _flashSince = null;
+function shownRecordIds() {
+  // 連同「是哪一台」一起記在按下送出的當下——後端回來時使用者可能已經切到別台了
+  return {
+    machineId: state.detail && state.detail.machine ? state.detail.machine.machineId : null,
+    ids: new Set(((state.detail && state.detail.records) || []).map((r) => r.recordId))
+  };
+}
+function flashNewRecords(before) {
+  _flashSince = { machineId: before.machineId, ids: before.ids, at: Date.now() };
+}
+
 function renderRecords(d) {
+  // 只認同一台機台、5 秒內送出的：送出後還沒等到後端回來就先切去別台的話，
+  // 不能讓別台的紀錄全部被當成「新的」一起亮
+  const f = _flashSince;
+  _flashSince = null;
+  const since = f && f.machineId === d.machine.machineId && Date.now() - f.at < 5000 ? f.ids : null;
   const items = d.records.length
-    ? d.records.map(recordItem)
+    ? d.records.map((r) => recordItem(r, !!since && !since.has(r.recordId)))
     : [h('div', { class: 'empty' }, '還沒有任何紀錄')];
 
   return h('div', { class: 'card' }, [
@@ -2324,7 +2428,7 @@ function renderRecords(d) {
   ]);
 }
 
-function recordItem(r) {
+function recordItem(r, isNew) {
   const sign = (r.type === 'in' || r.type === 'chip_in') ? '+' : '−';
   const hasMeter = r.type === 'in' && r.meterStart !== null && r.meterEnd !== null;
   const title = r.type === 'prize'
@@ -2333,7 +2437,7 @@ function recordItem(r) {
       ? ('上班表 ' + r.meterStart.toLocaleString('zh-TW') + ' → 下班表 ' + r.meterEnd.toLocaleString('zh-TW'))
       : TYPE_LABELS[r.type];
 
-  return h('div', { class: 'record-item' }, [
+  return h('div', { class: 'record-item' + (isNew ? ' fx-flash' : ''), 'data-record-id': r.recordId }, [
     h('span', { class: 'badge badge-' + r.type, text: TYPE_LABELS[r.type] }),
     h('div', { class: 'rec-main' }, [
       h('div', { class: 'rec-title', text: title }),
@@ -2444,7 +2548,7 @@ function viewReport() {
       : null
   ]);
 
-  const presets = h('div', { class: 'seg', style: 'margin-bottom:12px' },
+  const presets = slidingTabs(h('div', { class: 'seg', style: 'margin-bottom:12px' },
     [['day', '今日'], ['week', '本週'], ['month', '本月'], ['custom', '自訂'], ['history', '歷史']].map(([key, label]) =>
       h('button', {
         class: p.preset === key ? 'active' : '',
@@ -2454,7 +2558,7 @@ function viewReport() {
           loadReport();
         }
       }, label)
-    ));
+    )), 'report');
 
   // 「自訂」的日期選擇器鎖在近三個月內——一般查帳用不到更久以前，
   // 選更早的區間本來就會被後端擋下來（那些資料已經封存走了），
@@ -2522,6 +2626,9 @@ function viewReport() {
 }
 
 /** 純手繪 SVG 長條圖：每日淨收益，正值綠、負值紅。電子機台用 chipNet 而不是 net。 */
+/** 上一次播過「長條長出來」的是哪一份資料——資料沒變的重畫（背景重新整理）不再播一次。 */
+let _lastChartKey = null;
+
 function trendCard(trend, isElectronic) {
   // width 只是給下面算長條間距、字型密度用的「邏輯座標」，不是真的畫面像素寬——
   // 不管 trend 有幾天，viewBox 都會用這個邏輯寬度，但透過 preserveAspectRatio="none"
@@ -2538,7 +2645,11 @@ function trendCard(trend, isElectronic) {
 
   const svgNs = 'http://www.w3.org/2000/svg';
   const svg = document.createElementNS(svgNs, 'svg');
-  svg.setAttribute('class', 'chart');
+  // 換了區間／篩選、資料變了：長條從中間的零線長出來（ui_fx.css 的 .chart.fx-grow）
+  const chartKey = JSON.stringify([isElectronic, trend.map((d) => [d.date, netOf(d)])]);
+  const grow = chartKey !== _lastChartKey;
+  _lastChartKey = chartKey;
+  svg.setAttribute('class', 'chart' + (grow ? ' fx-grow' : ''));
   svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
   svg.setAttribute('preserveAspectRatio', 'none');
 
@@ -2564,6 +2675,7 @@ function trendCard(trend, isElectronic) {
     rect.setAttribute('x', String(x)); rect.setAttribute('y', String(y));
     rect.setAttribute('width', String(barW)); rect.setAttribute('height', String(barH));
     rect.setAttribute('rx', '2');
+    if (grow) rect.style.animationDelay = Math.min(i * 25, 300) + 'ms';   // 由左到右依序長出來
     const t = document.createElementNS(svgNs, 'title');
     t.textContent = d.date + '：' + money(net);
     rect.appendChild(t);
@@ -2654,7 +2766,7 @@ function recordsTableCard(rep) {
 /**
  * 匯出對帳表 .xlsx（後端回 base64，這裡解碼成二進位再包成 Blob 下載）。
  */
-function downloadLedgerXlsx() {
+function downloadLedgerXlsx(e) {
   run(async () => {
     const p = state.reportParams;
     const xlsx = await api('exportLedgerXlsx', p);
@@ -2677,7 +2789,7 @@ function downloadLedgerXlsx() {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast('已匯出 ' + xlsx.rowCount + ' 筆', 'success');
-  });
+  }, { button: e && e.currentTarget, busyText: '匯出中…' });
 }
 
 /**
@@ -2773,7 +2885,7 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   return canvas;
 }
 
-function exportLedgerScreenshots() {
+function exportLedgerScreenshots(e) {
   run(async () => {
     const p = state.reportParams;
     const data = await api('exportLedgerGrids', p);
@@ -2829,7 +2941,7 @@ function exportLedgerScreenshots() {
         + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
       'success'
     );
-  });
+  }, { button: e && e.currentTarget, busyText: '匯出中…' });
 }
 
 // ── 畫面：系統管理 ──────────────────────────────────────
@@ -2842,7 +2954,7 @@ function viewAdmin() {
     h('h1', { style: 'font-size:18px', text: '系統管理' })
   ]);
 
-  const tabs = h('div', { class: 'tabs' },
+  const tabs = slidingTabs(h('div', { class: 'tabs' },
     [['users', '帳號'], ['machines', '機台'], ['prizes', '獎型'], ['perms', '台主授權']].map(([key, label]) =>
       h('button', {
         class: state.adminTab === key ? 'active' : '',
@@ -2851,7 +2963,7 @@ function viewAdmin() {
         // 任何一個分頁的新增/編輯/刪除動作都會自己呼叫 loadAdmin() 刷新，
         // 所以這裡拿到的一定是當下最新的資料。
         onclick: () => { state.adminTab = key; render(); }
-      }, label)));
+      }, label))), 'admin');
 
   if (!data) return h('div', {}, [nav, tabs, loadingView('admin')]);
 
@@ -2909,7 +3021,7 @@ function editUser(u) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         // 跟後端（Service.gs adminSaveUser／Supabase admin-users）同一套規則，先在這裡標出填錯的那一格
         if (!u && !/^[A-Za-z0-9_.-]{3,20}$/.test(username.value.trim())) {
           fieldError(username, '帳號只能用英數字與 _ . -，長度 3~20'); return;
@@ -2929,7 +3041,7 @@ function editUser(u) {
           if (u) showSuccessCheck();
           else showPasswordOnce(username.value.trim(), password.value);
           await loadAdmin();
-        }, { success: '已儲存' });
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
     }, '儲存')
   ]);
@@ -2945,7 +3057,7 @@ function resetPassword(u) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (password.value.length < 6) { fieldError(password, '密碼至少 6 個字'); return; }
         run(async () => {
           const value = password.value;
@@ -2953,7 +3065,7 @@ function resetPassword(u) {
           closeDialog();
           showPasswordOnce(u.username, value);
           await loadAdmin();
-        });
+        }, { button: e.currentTarget, busyText: '處理中…' });
       }
     }, '確定重設')
   ]);
@@ -3064,7 +3176,7 @@ function editMachine(m, presetCategory) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (!name.value.trim()) { fieldError(name, '請輸入機台名稱'); return; }
         run(async () => {
           await api('adminSaveMachine', {
@@ -3080,7 +3192,7 @@ function editMachine(m, presetCategory) {
           closeDialog();
           showSuccessCheck();
           await loadAdmin();
-        }, { success: '已儲存' });
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
     }, '儲存')
   ]);
@@ -3123,7 +3235,7 @@ function editGlobalPrize(p) {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (!name.value.trim()) { fieldError(name, '請輸入獎型名稱'); return; }
         if (!(Number(amount.value) > 0)) { fieldError(amount, '請輸入大於 0 的金額'); return; }
         run(async () => {
@@ -3137,7 +3249,7 @@ function editGlobalPrize(p) {
           closeDialog();
           showSuccessCheck();
           await loadAdmin();
-        }, { success: '已儲存' });
+        }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
     }, '儲存')
   ]);
@@ -3390,14 +3502,14 @@ function openChangePasswordDialog() {
     h('button', { class: 'btn', onclick: closeDialog }, '取消'),
     h('button', {
       class: 'btn btn-primary',
-      onclick: () => {
+      onclick: (e) => {
         if (newPw.value.length < 6) { fieldError(newPw, '密碼至少要 6 個字'); return; }
         if (newPw.value !== confirmPw.value) { fieldError(confirmPw, '兩次輸入的密碼不一樣'); return; }
         run(async () => {
           await api('changePassword', { newPassword: newPw.value });
           closeDialog();
           showSuccessCheck();
-        }, { success: '密碼改好了，下次登入請用新密碼' });
+        }, { success: '密碼改好了，下次登入請用新密碼', button: e.currentTarget, busyText: '處理中…' });
       }
     }, '確定')
   ]);
@@ -3488,10 +3600,45 @@ function stopPolling() {
 
 function setupNetworkIndicators() {
   const bar = document.getElementById('offline-bar');
-  const update = () => { bar.hidden = navigator.onLine; };
-  window.addEventListener('online', () => { update(); if (state.token) refreshCurrent(); });
-  window.addEventListener('offline', update);
-  update();
+
+  // 離線提示條滑進滑出。它固定在頁面最上面、佔版面（會把整頁往下推），所以動的是
+  // 高度＋上下內距（從 0 長出來／縮回 0），下面的內容跟著平順讓位，不是突然被推下去、拉上來。
+  // 沒載到 ui_fx.js 或手機開了「減少動態效果」就直接出現／消失。
+  const canAnimate = () => !!bar.animate && typeof window.fxReduced === 'function' && !window.fxReduced();
+  let hiding = null;
+  function slide(show) {
+    const cs = getComputedStyle(bar);
+    const full = { height: bar.offsetHeight + 'px', paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, opacity: 1 };
+    const zero = { height: '0px', paddingTop: '0px', paddingBottom: '0px', opacity: 0 };
+    bar.style.overflow = 'hidden';
+    const a = bar.animate(show ? [zero, full] : [full, zero],
+      { duration: show ? 260 : 220, easing: show ? 'cubic-bezier(.2,.8,.2,1)' : 'ease-in' });
+    const cleanup = () => { bar.style.overflow = ''; };
+    a.addEventListener('finish', cleanup);
+    a.addEventListener('cancel', cleanup);
+    return a;
+  }
+  function showBar() {
+    if (hiding) { hiding.cancel(); hiding = null; }   // 正在收起來又斷線了：取消收起，維持顯示
+    if (!bar.hidden) return;
+    bar.hidden = false;
+    if (canAnimate()) slide(true);
+  }
+  function hideBar() {
+    if (bar.hidden || hiding) return;
+    if (!canAnimate()) { bar.hidden = true; return; }
+    hiding = slide(false);
+    hiding.addEventListener('finish', () => { hiding = null; bar.hidden = true; });
+  }
+
+  window.addEventListener('online', () => {
+    const wasOffline = !bar.hidden;
+    hideBar();
+    if (wasOffline) toast('已恢復連線', 'success');
+    if (state.token) refreshCurrent();
+  });
+  window.addEventListener('offline', showBar);
+  bar.hidden = navigator.onLine;   // 開機當下就離線：直接顯示，不播動畫
 }
 
 /** 重新讀取目前這個畫面的資料。回傳 Promise（下拉更新要轉圈到它結束）。 */

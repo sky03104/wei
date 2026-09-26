@@ -10,8 +10,10 @@
    ・fxFieldError(欄位)：漏填的欄位紅框＋抖一下＋捲過去
    ・fxPullToRefresh(fn)：下拉更新
    ・fxRemoveThen(fn)：刪除／作廢的那一列先收合淡出，再重畫
-   ・fxCountTo(元素, 數字, …)：數字跳動
-   ・fxMoveSlider(膠囊, 目標按鈕)：分頁滑動膠囊定位
+   ・fxCountFrom(元素, 舊數字, 新數字, 格式)／fxCountTo(…)：數字跳動
+   ・fxButtonBusy(按鈕, '送出中…')：按鈕轉圈＋暫時不能再按，回傳還原用的函式
+   ・fxMoveSlider(膠囊, 目標按鈕, 上一顆)：分頁滑動膠囊定位
+   ・捲動離開最上面時在 <html> 加 fx-scrolled（首頁標題列的陰影用）
    ・fxReduced()：手機是否開了「減少動態效果」
    全部包在 try 裡，任何錯誤都不影響 App 本身運作；app.js 呼叫前也都會先確認函式存在，
    這支檔案沒載到（例如舊版快取）就維持原本的畫面。
@@ -103,14 +105,27 @@
   };
 
   /* ── 滑動膠囊：把 slider 移到 target 的位置與大小。
-     第一次定位不播動畫（不然會從左上角滑進來），之後才加 transition */
-  window.fxMoveSlider = function (slider, target) {
+     第一次定位不播動畫（不然會從左上角滑進來），之後才加 transition。
+     from（可省略）：膠囊剛建立時先放在 from 那一顆，再滑到 target——這個 App 每次切換分頁
+     都會整個重畫，膠囊是新的元素，要靠 from 告訴它「上一次選中的是哪一顆」才滑得起來 */
+  function placeSlider(slider, target) {
+    slider.style.width = target.offsetWidth + 'px';
+    slider.style.height = target.offsetHeight + 'px';
+    slider.style.transform = 'translate(' + target.offsetLeft + 'px,' + target.offsetTop + 'px)';
+  }
+  window.fxMoveSlider = function (slider, target, from) {
     try {
       if (!slider || !target) return;
       slider._fxTarget = target;
-      slider.style.width = target.offsetWidth + 'px';
-      slider.style.height = target.offsetHeight + 'px';
-      slider.style.transform = 'translate(' + target.offsetLeft + 'px,' + target.offsetTop + 'px)';
+      if (from && from !== target && !slider.classList.contains('fx-on') && !fxReduced()) {
+        placeSlider(slider, from);
+        slider.classList.add('fx-on');
+        void slider.offsetWidth;            // 先把「在 from 那一顆」畫定，下面的移動才會有過場
+        slider.classList.add('fx-anim');
+        requestAnimationFrame(function () { if (slider._fxTarget === target) placeSlider(slider, target); });
+        return;
+      }
+      placeSlider(slider, target);
       if (!slider.classList.contains('fx-on')) {
         slider.classList.add('fx-on');
         requestAnimationFrame(function () { requestAnimationFrame(function () { slider.classList.add('fx-anim'); }); });
@@ -393,17 +408,59 @@
     } catch (e) {}
   };
 
-  /* ── 回到頂端：往下滑超過一個多畫面才出現（機台一多、報表明細一長時用得到）── */
+  /* ── 按鈕送出中：按下去之後按鈕上轉圈＋換成「送出中…」這類字，暫時不能再按（避免連點）──
+     用法：var done = fxButtonBusy(按鈕, '送出中…');  …後端回來之後  done();
+     done() 會把按鈕原本的內容、能不能按都還原；按鈕在這之間被重畫掉也沒關係。
+     按下去那一下的漣漪（.fx-rip-wrap）留著讓它播完，不算進「原本的內容」 */
+  window.fxButtonBusy = function (btn, text) {
+    var noop = function () {};
+    try {
+      if (!btn || btn._fxBusy) return noop;
+      var kids = [];
+      for (var c = btn.firstChild; c; c = c.nextSibling) {
+        if (!(c.classList && c.classList.contains('fx-rip-wrap'))) kids.push(c);
+      }
+      var label = text || btn.textContent, wasDisabled = btn.disabled;
+      var sp = document.createElement('span');
+      sp.className = 'fx-btn-spin'; sp.setAttribute('aria-hidden', 'true');
+      var tn = document.createTextNode(label);
+      kids.forEach(function (k) { btn.removeChild(k); });
+      btn.appendChild(sp); btn.appendChild(tn);
+      btn._fxBusy = true;
+      btn.disabled = true;
+      btn.classList.add('fx-btn-busy');
+      btn.setAttribute('aria-busy', 'true');
+      return function () {
+        try {
+          if (!btn._fxBusy) return;
+          btn._fxBusy = false;
+          if (sp.parentNode === btn) btn.removeChild(sp);
+          if (tn.parentNode === btn) btn.removeChild(tn);
+          kids.forEach(function (k) { btn.appendChild(k); });
+          btn.disabled = wasDisabled;
+          btn.classList.remove('fx-btn-busy');
+          btn.removeAttribute('aria-busy');
+        } catch (e) {}
+      };
+    } catch (e) { return noop; }
+  };
+
+  /* ── 回到頂端：往下滑超過一個多畫面才出現（機台一多、報表明細一長時用得到）──
+     同一個捲動監聽順便在 <html> 加 fx-scrolled（一離開最上面就加），給固定在上面的標題列畫陰影用 */
   function topInit() {
     var b = document.createElement('button');
     b.type = 'button'; b.className = 'fx-top'; b.setAttribute('aria-label', '回到頂端'); b.textContent = '⬆';
     b.addEventListener('click', function () { try { window.scrollTo({ top: 0, behavior: fxReduced() ? 'auto' : 'smooth' }); } catch (e) { window.scrollTo(0, 0); } });
     document.body.appendChild(b);
-    var on = false;
-    window.addEventListener('scroll', function () {
+    var on = false, scrolled = false, root = document.documentElement;
+    var onScroll = function () {
       var show = window.scrollY > window.innerHeight * 1.2;
       if (show !== on) { on = show; b.classList.toggle('fx-on', show); }
-    }, { passive: true });
+      var s = window.scrollY > 4;
+      if (s !== scrolled) { scrolled = s; root.classList.toggle('fx-scrolled', s); }
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
   }
 
   /* ── 下拉更新：在最上面往下拉，超過門檻放開就執行 fn（fn 可回傳 Promise，轉圈到它結束）──
@@ -453,24 +510,35 @@
     } catch (e) {}
   };
 
-  /* ── 數字跳動：fxCountTo(元素, 目標數字, 記憶鍵, 前綴, 後綴)
-     第 4 個參數也可以直接給格式化函式，例如 fxCountTo(el, 1200, 'net', money) 會跳成「$1,200」。
-     跟上次同一個記憶鍵的值比，一樣就不跳（背景重新整理重畫時不會每次都從 0 開始）*/
+  /* ── 數字跳動 ──
+     fxCountFrom(元素, 起始數字, 目標數字, 格式化函式)：從指定的數字跳到目標，0.65 秒。
+       app.js 自己記得「上次畫的是多少」，有變才叫這支（第一次出現不跳，直接顯示）。
+     fxCountTo(元素, 目標數字, 記憶鍵, 前綴, 後綴)：天鷹版的用法，由這裡記住上次的值（第一次從 0 跳起）；
+       第 4 個參數也可以直接給格式化函式，例如 fxCountTo(el, 1200, 'net', money) 會跳成「$1,200」。
+     手機開了「減少動態效果」、或數字沒變時，都直接顯示結果。 */
+  function countAnim(el, from, to, fmt) {
+    if (from === to || fxReduced() || typeof to !== 'number' || typeof from !== 'number' || !isFinite(from)) { el.textContent = fmt(to); return; }
+    var t0 = 0, step = function (t) {
+      if (!t0) t0 = t;
+      var p = Math.min(1, (t - t0) / 650), e = 1 - Math.pow(1 - p, 3);
+      // 最後一格用目標值本身（可能有小數），中途的值取整數就好
+      el.textContent = p < 1 ? fmt(Math.round(from + (to - from) * e)) : fmt(to);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    el.textContent = fmt(from);
+    requestAnimationFrame(step);
+  }
+  window.fxCountFrom = function (el, from, to, fmt) {
+    fmt = fmt || String;
+    try { countAnim(el, from, to, fmt); } catch (e) { el.textContent = fmt(to); }
+  };
   var countMem = {};
   window.fxCountTo = function (el, to, key, pre, suf) {
     var fmt = typeof pre === 'function' ? pre : function (n) { return (pre || '') + n + (suf || ''); };
     try {
       var from = key && countMem[key] !== undefined ? countMem[key] : (el._fxLast !== undefined ? el._fxLast : 0);
       if (key) countMem[key] = to; el._fxLast = to;
-      if (from === to || fxReduced() || typeof to !== 'number') { el.textContent = fmt(to); return; }
-      var t0 = 0, step = function (t) {
-        if (!t0) t0 = t;
-        var p = Math.min(1, (t - t0) / 650), e = 1 - Math.pow(1 - p, 3);
-        el.textContent = fmt(Math.round(from + (to - from) * e));
-        if (p < 1) requestAnimationFrame(step);
-      };
-      el.textContent = fmt(from);
-      requestAnimationFrame(step);
+      countAnim(el, from, to, fmt);
     } catch (e) { el.textContent = fmt(to); }
   };
   // 容器內所有 [data-fx-count] 一起跳

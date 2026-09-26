@@ -33,7 +33,10 @@ async function main() {
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },   // iPhone 直式
     deviceScaleFactor: 2,
-    locale: 'zh-TW'
+    locale: 'zh-TW',
+    // 功能測試一律用手機的「減少動態效果」跑：金額會從舊數字「跳」到新數字、清單會依序浮上來，
+    // 一般模式下讀到的可能是動畫跑到一半的值。動態效果本身由 tools/e2e-fx.js 在一般模式另外驗。
+    reducedMotion: 'reduce'
   });
 
   const consoleErrors = [];
@@ -262,21 +265,30 @@ async function main() {
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.summary-strip');
 
-    // 骰台分頁籤現在是 6 張卡片（入幣/出幣/432數量/441數量/活動金額/淨收益），
-    // 淨收益是最後一張（index 5），不是原本 4 張卡片時代的 index 3。
+    // 骰台分頁籤的 6 張卡片現在都是正數（入幣/出幣/432數量/441數量/活動金額/今日總筆數），
+    // 負的淨收益出現在兩個地方：機台卡片右邊，跟「加總」分頁的「今日骰台淨收益」。兩個都驗。
     await page.waitForFunction(() => {
-      const stats = document.querySelectorAll('.summary-strip .stat');
-      const el = stats[5] && stats[5].querySelector('.stat-value');
-      return !!el && el.textContent.indexOf('$') >= 0;
+      const el = document.querySelector('.machine-card .net');
+      return !!el && el.textContent.indexOf('-$') === 0;
     }, null, { timeout: 8000 });
+    const cardNet = page.locator('.machine-card').first().locator('.net');
+    const cardHeight = (await cardNet.boundingBox()).height;
+    assert(cardHeight <= 36, '機台卡片的負淨收益看起來被拆成兩行了：' + cardHeight + 'px');
+    let overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert(overflow <= 2, '頁面被機台卡片的數字撐出橫向捲動了，溢出 ' + overflow + 'px');
 
-    const netBox = page.locator('.summary-strip .stat').nth(5).locator('.stat-value');
-    const height = (await netBox.boundingBox()).height;
-    assert(height <= 26, '淨收益數字的高度看起來像被拆成兩行了：' + height + 'px');
+    await page.click('.home-sticky .seg button:has-text("加總")');
+    await page.waitForSelector('.ledger-row');
+    const diceNet = page.locator('.summary-strip .stat').filter({ hasText: '今日骰台淨收益' }).locator('.stat-value');
+    const diceNetText = await diceNet.textContent();
+    assert(diceNetText.indexOf('-$') === 0, '加總分頁的今日骰台淨收益應該是負數，實際「' + diceNetText + '」');
+    const height = (await diceNet.boundingBox()).height;
+    assert(height <= 26, '今日骰台淨收益的高度看起來像被拆成兩行了：' + height + 'px');
+    overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    assert(overflow <= 2, '頁面被加總分頁的數字撐出橫向捲動了，溢出 ' + overflow + 'px');
 
-    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
-    assert(overflow <= 2, '頁面被數字撐出橫向捲動了，溢出 ' + overflow + 'px');
-
+    await page.click('.home-sticky .seg button:has-text("骰台")');
+    await page.waitForSelector('.machine-card');
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
   });
@@ -488,15 +500,24 @@ async function main() {
     assert(calls === afterEnter, '快取還新鮮時，短時間內重新進同一台不該再多打一次 machineDetail（' + afterEnter + ' → ' + calls + '）');
 
     // 記帳是使用者自己的動作，不管快取新不新鮮都一定要拿到最新資料。
+    // 現在後端的 addRecord 會把送出之後最新的詳細頁資料一起帶回來（app.js 的
+    // submitAmount → applyDetail），不用再多打一次 machineDetail——所以這裡驗的是
+    // 「畫面真的換成最新資料」：紀錄清單最上面換成剛送出的這一筆。
+    // 用 data-record-id 比對，不看筆數（清單有顯示上限，滿了之後筆數不會再變多）。
+    const topBefore = await page.evaluate(() => {
+      const r = document.querySelector('.record-item');
+      return r ? r.getAttribute('data-record-id') : null;
+    });
     await page.click('.action-buttons button:has-text("出幣")');
     await page.waitForSelector('.custom-amount input');
     await page.fill('.custom-amount input', '33');
     await page.click('.custom-amount button:has-text("送出")');
-    // .record-item 從快取就有了，waitForSelector 對這個斷言沒有意義
-    // （不會等到 addRecord → loadDetail 真的跑完）；改成直接輪詢 calls 變多，
-    // 或等到逾時——逾時也沒關係，下面的斷言一樣會抓到「calls 沒變多」。
-    for (let i = 0; i < 40 && calls <= afterEnter; i++) await page.waitForTimeout(200);
-    assert(calls > afterEnter, '送出帳目之後一定要重新整理，不能沿用新鮮快取（' + afterEnter + ' → ' + calls + '）');
+    await page.waitForFunction((id) => {
+      const r = document.querySelector('.record-item');
+      return !!r && r.getAttribute('data-record-id') !== id;
+    }, topBefore, { timeout: 8000 });
+    const topText = await page.locator('.record-item').first().textContent();
+    assert(topText.indexOf('33') >= 0, '送出帳目之後清單最上面應該是剛送出的 $33，不能沿用新鮮快取，實際「' + topText + '」');
 
     page.removeAllListeners('request');
   });
@@ -606,7 +627,7 @@ async function main() {
     assert(await page.locator('.home-sticky .seg button:has-text("骰台")').count() === 1, '首頁應該有骰台分頁籤');
     assert(await page.locator('.machine-card').count() === 3, '骰台分頁籤預設不該顯示電子機台');
     const diceLabels = await page.locator('.summary-strip .stat-label').allTextContents();
-    for (const label of ['今日入幣', '今日出幣', '今日432數量', '今日441數量', '今日活動金額', '今日淨收益']) {
+    for (const label of ['今日入幣', '今日出幣', '今日432數量', '今日441數量', '今日活動金額', '今日總筆數']) {
       assert(diceLabels.indexOf(label) >= 0, '骰台分頁籤應該顯示「' + label + '」卡片，實際 ' + JSON.stringify(diceLabels));
     }
 
@@ -677,12 +698,20 @@ async function main() {
     await shot('16-home-total-tab');
   });
 
-  await check('加總分頁顯示今日現金結餘明細，可以設定週轉金/432/441/運拿/還內場，台主給／台主領可以命名多筆', async () => {
+  await check('加總分頁顯示今日現金結餘明細，可以設定週轉金／開銷／432／441，台主給／台主領可以命名多筆', async () => {
     await page.waitForSelector('.ledger-row');
+    // 「運拿」「還內場」已經不用了、「電子贏」改名「電子總結」、手動 432／441 改叫「活動出獎」，
+    // 另外多了「開銷」；台主給／台主領沒有資料時各顯示一行 $0 佔位（見 app.js 的 ledgerRows）。
     const rowLabels = await page.locator('.ledger-row .ledger-label').allTextContents();
-    for (const label of ['開銷+432獎', '432(手動)', '441(手動)', '入幣', '出幣', '週轉金', '運拿', '台主給', '電子贏', '台主領', '還內場', '總結餘']) {
-      assert(rowLabels.indexOf(label) >= 0, '結餘明細缺少「' + label + '」這一行');
+    for (const label of ['週轉金', '入幣', '出幣', '電子總結', '台主給', '432活動出獎', '441活動出獎', '開銷', '台主領', '總結餘']) {
+      assert(rowLabels.indexOf(label) >= 0, '結餘明細缺少「' + label + '」這一行，實際 ' + JSON.stringify(rowLabels));
     }
+    for (const gone of ['運拿', '還內場']) {
+      assert(rowLabels.indexOf(gone) < 0, '「' + gone + '」已經不用了，不該再出現在結餘明細');
+    }
+    const sections = await page.locator('.ledger-section-title').allTextContents();
+    assert(sections.indexOf('收入（+）') >= 0 && sections.indexOf('支出（-）') >= 0,
+      '明細要分「收入（+）」「支出（-）」兩個小分類，實際 ' + JSON.stringify(sections));
 
     const totalBefore = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
 
@@ -717,17 +746,20 @@ async function main() {
       return out;
     }
 
-    // 今天還沒設定過的話，週轉金要預先帶入常用的固定金額（省掉每次都要
-    // 手動刪掉「0」再重打），其他項目則留白（不是「0」），台主給／台主領
-    // 各自預設只有一列空白（名字、金額都留白），這樣手動輸入時不用先
-    // 清掉預設值或自己按「+」才有地方打字。
+    // 今天還沒設定過的話：週轉金預帶「上一次已結單的總結餘」（現金週轉金就是上次結完帳
+    // 留在收銀機裡的錢；從沒結過帳就留白），其他項目留白（不是「0」），台主給／台主領
+    // 各自預設只有一列空白，手動輸入時不用先清掉預設值或自己按「+」才有地方打字。
+    const expectedTurnover = await page.evaluate(() => {
+      const v = state.home.previousLedgerTotal;
+      return v === null || v === undefined ? '' : String(v);
+    });
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
-    assert(await inputOf('週轉金').inputValue() === '416000', '今天還沒設定過時，週轉金應該預帶 416000');
+    assert(await inputOf('週轉金').inputValue() === expectedTurnover,
+      '今天還沒設定過時，週轉金應該預帶上一次已結單的總結餘「' + expectedTurnover + '」，實際「' + await inputOf('週轉金').inputValue() + '」');
+    assert(await inputOf('開銷').inputValue() === '', '今天還沒設定過時，開銷應該留白，不是 0');
     assert(await inputOf('432').inputValue() === '', '今天還沒設定過時，432 應該留白，不是 0');
     assert(await inputOf('441').inputValue() === '', '今天還沒設定過時，441 應該留白，不是 0');
-    assert(await inputOf('運拿').inputValue() === '', '今天還沒設定過時，運拿應該留白，不是 0');
-    assert(await inputOf('還內場').inputValue() === '', '今天還沒設定過時，還內場應該留白，不是 0');
     const givenBefore = await readItems('台主給');
     assert(givenBefore.length === 1 && givenBefore[0].name === '' && givenBefore[0].amount === '',
       '今天還沒設定過時，台主給應該只有一列空白，實際 ' + JSON.stringify(givenBefore));
@@ -737,12 +769,11 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     await inputOf('週轉金').fill('100');
-    await inputOf('432').fill('8'); // 手動活動支出：輸入正數，系統會自動扣除
+    await inputOf('開銷').fill('40'); // 開銷：輸入正數，系統會自動扣除
+    await inputOf('432').fill('8');   // 手動活動支出：輸入正數，系統會自動扣除
     await inputOf('441').fill('3');
-    await inputOf('運拿').fill('40'); // 運拿：輸入正數，系統會自動扣除
     await fillItems('台主給', [{ name: '老王', amount: 12 }, { name: '老李', amount: 8 }]); // 按 + 新增第二筆，兩位台主各自命名
     await fillItems('台主領', [{ name: '老陳', amount: 15 }]); // 台主領：輸入正數，系統會自動扣除
-    await inputOf('還內場').fill('5');
     await page.click('.dialog button:has-text("儲存")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
@@ -752,8 +783,8 @@ async function main() {
     }, totalBefore, { timeout: 8000 });
 
     const totalAfter = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
-    assert(totalAfter - totalBefore === 59,
-      '儲存週轉金100－432(8)－441(3)－運拿40＋台主給(12+8=20)－台主領15＋還內場5＝59 之後，總結餘應該增加 59，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
+    assert(totalAfter - totalBefore === 54,
+      '儲存週轉金100－開銷40－432(8)－441(3)＋台主給(12+8=20)－台主領15＝54 之後，總結餘應該增加 54，實際從 ' + totalBefore + ' 變成 ' + totalAfter);
     const rowLabelsAfter = await page.locator('.ledger-row .ledger-label').allTextContents();
     assert(rowLabelsAfter.indexOf('老王') >= 0 && rowLabelsAfter.indexOf('老李') >= 0,
       '結餘明細應該逐筆列出台主給的自訂名字，實際 ' + JSON.stringify(rowLabelsAfter));
@@ -765,10 +796,9 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     assert(await inputOf('週轉金').inputValue() === '100', '重新打開應該顯示剛存的週轉金');
+    assert(await inputOf('開銷').inputValue() === '40', '重新打開應該顯示剛存的開銷');
     assert(await inputOf('432').inputValue() === '8', '重新打開應該顯示剛存的 432');
     assert(await inputOf('441').inputValue() === '3', '重新打開應該顯示剛存的 441');
-    assert(await inputOf('運拿').inputValue() === '40', '重新打開應該顯示剛存的運拿');
-    assert(await inputOf('還內場').inputValue() === '5', '重新打開應該顯示剛存的還內場');
     const givenSaved = await readItems('台主給');
     assert(givenSaved.length === 2 && givenSaved.some((it) => it.name === '老王' && it.amount === '12')
       && givenSaved.some((it) => it.name === '老李' && it.amount === '8'),
@@ -784,12 +814,11 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     await inputOf('週轉金').fill('0');
+    await inputOf('開銷').fill('0');
     await inputOf('432').fill('0');
     await inputOf('441').fill('0');
-    await inputOf('運拿').fill('0');
     await fillItems('台主給', [{ name: '', amount: 0 }, { name: '', amount: 0 }]);
     await fillItems('台主領', [{ name: '', amount: 0 }]);
-    await inputOf('還內場').fill('0');
     await page.click('.dialog button:has-text("儲存")');
     await page.waitForSelector('.dialog-backdrop', { state: 'detached', timeout: 8000 });
 
