@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>娃娃機動態效果</title>
+<!-- 暫時的示範頁：給咖哩挑效果用，確認要套用哪幾個之後就刪掉（不在 sw.js 的快取清單裡） -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0B0E14">
+<meta name="robots" content="noindex">
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="ui_fx.css">
+<script src="ui_fx.js"></script>
+<style>
+  /* 只放示範頁自己的排版；顏色、字級、元件外觀全部沿用 styles.css */
+  :root { color-scheme: dark; }
+  .demo {
+    max-width: 480px; margin: 0 auto;
+    padding-inline: calc(var(--safe-left) + 16px) calc(var(--safe-right) + 16px);
+    padding-block: 18px 40px;
+    display: grid; gap: 16px;
+  }
+  .demo-head { display: grid; gap: 10px; }
+  .demo-eyebrow { font-size: 13px; color: var(--muted); }
+  .demo-head h1 { font-size: 22px; text-wrap: balance; }
+  .demo-lead { color: var(--muted); font-size: 15px; }
+  .demo-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+  .demo-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px; font-weight: 700;
+    background: var(--accent-soft); color: #A9C2FF;
+  }
+  .demo-pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+  .demo-pill.is-reduced { background: rgba(251, 191, 36, 0.14); color: var(--warn); }
+  .demo-pill.is-reduced::before { background: var(--warn); }
+
+  .fx-demo { display: grid; gap: 12px; }
+  .demo-h { display: flex; align-items: center; gap: 10px; }
+  .demo-no {
+    flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: var(--accent-soft); color: #A9C2FF; font-size: 14px; font-weight: 800;
+    font-variant-numeric: tabular-nums;
+  }
+  .demo-h h2 { font-size: 17px; }
+  .demo-cmp { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; font-size: 14px; }
+  .demo-cmp dt { color: var(--muted); font-weight: 700; }
+  .demo-cmp dd { margin: 0; }
+  .demo-use { font-size: 13px; color: var(--muted); }
+  /* 「App 畫面」的底：用 App 本身的頁面底色，裡面的卡片才分得出來 */
+  .demo-stage {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px; min-width: 0;
+  }
+  .demo-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .demo-updated { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+  .demo-updated .num { font-size: 22px; font-weight: 800; }
+  .demo-foot { display: grid; gap: 8px; font-size: 14px; color: var(--muted); padding: 0 2px; }
+  .demo-foot strong { color: var(--text); }
+</style>
+</head>
+<body>
+
+<main class="demo">
+  <header class="demo-head">
+    <p class="demo-eyebrow">娃娃機管理系統 · 效果示範（確認後這頁會刪掉）</p>
+    <h1>最有感的 5 個動態效果</h1>
+    <p class="demo-lead">每一區都照 App 真正的畫面做，按按鈕就能試。手機開了「減少動態效果」的話，這些效果會全部關掉、直接顯示結果。</p>
+    <div class="demo-status">
+      <span id="motion-pill" class="demo-pill">動態效果：開啟</span>
+    </div>
+  </header>
+
+  <!-- 1 讀取中骨架 -->
+  <section class="card fx-demo" id="fx1" aria-labelledby="fx1-h">
+    <div class="demo-h"><span class="demo-no">1</span><h2 id="fx1-h">讀取中骨架</h2></div>
+    <dl class="demo-cmp">
+      <dt>原本</dt><dd>畫面中間一個轉圈圈，看不出要載入什麼。</dd>
+      <dt>改成</dt><dd>先畫出機台卡片的輪廓，資料到了再一張張浮上來。</dd>
+    </dl>
+    <p class="demo-use">用在：打開 App、首頁、機台頁、報表、系統管理第一次讀取的時候。</p>
+    <div class="demo-stage"><div id="machine-list" class="machine-list"></div></div>
+    <div class="demo-actions">
+      <button type="button" id="btn-reload" class="btn btn-sm">重新載入機台清單</button>
+    </div>
+  </section>
+
+  <!-- 2 送出成功打勾 -->
+  <section class="card fx-demo" id="fx2" aria-labelledby="fx2-h">
+    <div class="demo-h"><span class="demo-no">2</span><h2 id="fx2-h">送出成功打勾</h2></div>
+    <dl class="demo-cmp">
+      <dt>原本</dt><dd>只有畫面下方一行小提示，巡機時很容易沒看到。</dd>
+      <dt>改成</dt><dd>畫面中間畫出綠色打勾，0.9 秒後自己消失，不擋操作。</dd>
+    </dl>
+    <p class="demo-use">用在：入幣／出幣／活動、開分／洗分送出成功，還有各種「儲存」成功。</p>
+    <div class="demo-stage">
+      <div class="panel">
+        <div class="panel-head">
+          <h3>出幣金額</h3>
+          <span class="small muted">今日出幣 <span id="out-total" class="num">$50</span></span>
+        </div>
+        <div class="quick-grid" id="quick-grid"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 漏填標紅 -->
+  <section class="card fx-demo" id="fx3" aria-labelledby="fx3-h">
+    <div class="demo-h"><span class="demo-no">3</span><h2 id="fx3-h">漏填標紅</h2></div>
+    <dl class="demo-cmp">
+      <dt>原本</dt><dd>下方跳一行「請輸入…」，要自己找是哪一格漏了。</dd>
+      <dt>改成</dt><dd>漏填的那一格直接紅框、抖一下，游標自動跳過去。</dd>
+    </dl>
+    <p class="demo-use">用在：登入、改密碼、自訂金額、系統管理的新增／編輯。</p>
+    <div class="demo-stage">
+      <form id="login-form" novalidate>
+        <div class="field"><label for="demo-user">帳號</label>
+          <input id="demo-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false"></div>
+        <div class="field"><label for="demo-pass">密碼</label>
+          <input id="demo-pass" type="password" autocomplete="off"></div>
+        <button type="submit" class="btn btn-primary btn-block">登入</button>
+      </form>
+    </div>
+    <p class="demo-use">直接按「登入」試試，再只填帳號按一次。</p>
+  </section>
+
+  <!-- 4 下拉更新 -->
+  <section class="card fx-demo" id="fx4" aria-labelledby="fx4-h">
+    <div class="demo-h"><span class="demo-no">4</span><h2 id="fx4-h">下拉更新</h2></div>
+    <dl class="demo-cmp">
+      <dt>原本</dt><dd>首頁沒有重新整理的按鈕，要等 5 分鐘自動更新，或切出 App 再切回來。</dd>
+      <dt>改成</dt><dd>在畫面最上面往下拉，圓圈變實心就放開，馬上重新讀取。</dd>
+    </dl>
+    <p class="demo-use">用在：首頁、機台頁、報表、活動查詢、系統管理。</p>
+    <div class="demo-stage">
+      <div class="demo-updated">
+        <span class="muted">最後更新</span>
+        <span id="updated-at" class="num"></span>
+      </div>
+      <p class="small muted" style="margin-top:6px">手機：捲回這頁最上面，手指往下拉。電腦沒有下拉手勢，用下面的按鈕看動畫。</p>
+    </div>
+    <div class="demo-actions">
+      <button type="button" id="btn-pull" class="btn btn-sm">看下拉動畫（不用手勢）</button>
+    </div>
+  </section>
+
+  <!-- 5 刪除收合 -->
+  <section class="card fx-demo" id="fx5" aria-labelledby="fx5-h">
+    <div class="demo-h"><span class="demo-no">5</span><h2 id="fx5-h">刪除收合</h2></div>
+    <dl class="demo-cmp">
+      <dt>原本</dt><dd>按確定作廢後整個清單直接重畫，看不出是哪一筆不見了。</dd>
+      <dt>改成</dt><dd>被作廢的那一筆先往左滑出、收起來，再重畫清單。</dd>
+    </dl>
+    <p class="demo-use">用在：本機台紀錄的 ✕ 作廢、快捷金額／獎型的刪除、系統管理的刪除。示範頁省略了「確定要作廢嗎？」那一步。</p>
+    <div class="demo-stage">
+      <div class="panel-head"><h3>本機台紀錄</h3></div>
+      <div id="record-list" class="record-list"></div>
+    </div>
+    <div class="demo-actions">
+      <button type="button" id="btn-reset" class="btn btn-sm">重置清單</button>
+    </div>
+  </section>
+
+  <footer class="demo-foot">
+    <p><strong>另外會自動生效、不用另外接的：</strong>主要按鈕（登入、儲存、入幣／出幣／活動、送出）按下去的漣漪，對話框和提示訊息的滑入滑出，頁面很長時右下角的「回到頂端」鈕。</p>
+    <p>看完跟我說要不要全部套用，或哪幾個要換掉。</p>
+  </footer>
+</main>
+
+<!-- 跟 index.html 一樣的提示訊息與「處理中…」，示範時才看得出實際的樣子 -->
+<div id="toast" class="toast" hidden></div>
+<div id="busy-badge" class="busy-badge" hidden aria-live="polite">
+  <span class="busy-pixels" aria-hidden="true"><span></span><span></span><span></span><span></span></span>
+  <span>處理中…</span>
+</div>
+
+<script>
+'use strict';
+(function () {
+  // ── 像素娃娃機（從 app.js 的 machineSvg 精簡而來：經典款＋骰子款）──
+  var MAPS = {
+    classic: [
+      '................', '..KKKKKKKKKKKK..', '..KLLLLLLLLLLK..', '..KLBBBBBBBBLK..', '.KKKKKKKKKKKKKK.',
+      '.KBGGGGGGGGGGBK.', '.KBGCCCCCCCCGBK.', '.KBGGGGCCGGGGBK.', '.KBGGGCCCCGGGBK.', '.KBGGGCGGCGGGBK.',
+      '.KBGGGGGGGGGGBK.', '.KBGGGGGGGGGGBK.', '.KBGGPPGGYYGGBK.', '.KBGPPPPGYYYYBK.', '.KKKKKKKKKKKKKK.',
+      '.KBBBBBBBBBBBBK.', '.KBSSBBBBBBWWBK.', '.KBBBBBBBBBBBBK.', '.KKKKKKKKKKKKKK.', '..KK........KK..'
+    ],
+    dice: [
+      '................', '..KKKKKKKKKKKK..', '..KLLLLLLLLLLK..', '..KLBBBBBBBBLK..', '.KKKKKKKKKKKKKK.',
+      '.KBGGGGGGGGGGBK.', '.KBGCCCCCCCCGBK.', '.KBGGGGCCGGGGBK.', '.KBGGGCCCCGGGBK.', '.KBGGGCGGCGGGBK.',
+      '.KBGGGGGGGGGGBK.', '.KBGGGGGGGGGGBK.', '.KBWWWWGGWKWWBK.', '.KBWWWWGGWWWWBK.', '.KBWRRWGGWWWWBK.',
+      '.KBWWWWGGWWKWBK.', '.KKKKKKKKKKKKKK.', '.KBBBBBBBBBBBBK.', '.KBSSBBBBBBWWBK.', '.KBBBBBBBBBBBBK.',
+      '.KKKKKKKKKKKKKK.', '..KK........KK..'
+    ]
+  };
+  var STATUS_COLORS = { running: '#4ADE80', maintenance: '#FBBF24', offline: '#6B7488' };
+  var STATUS_LABELS = { running: '營運中', maintenance: '維修中', offline: '停機' };
+
+  function lighten(hex, amount) {
+    var m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+    if (!m) return '#86A9FF';
+    var num = parseInt(m[1], 16);
+    return '#' + [16, 8, 0].map(function (shift) {
+      var c = (num >> shift) & 255;
+      return Math.round(c + (255 - c) * amount).toString(16).padStart(2, '0');
+    }).join('');
+  }
+
+  function machineSvg(height, bodyColor, status, icon) {
+    var map = MAPS[icon] || MAPS.classic;
+    var rows = map.length, cols = map[0].length, unit = height / rows;
+    var palette = {
+      K: '#0B0E14', B: bodyColor, L: lighten(bodyColor, 0.35), G: '#1B2333', C: '#B8C0D0',
+      W: '#FFFFFF', P: '#FF6FA5', Y: '#FFD34D', S: STATUS_COLORS[status], R: '#E8574F', O: '#FBBF24'
+    };
+    var ns = 'http://www.w3.org/2000/svg';
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('class', 'pixel-machine');
+    svg.setAttribute('width', String(Math.round(cols * unit)));
+    svg.setAttribute('height', String(Math.round(height)));
+    svg.setAttribute('viewBox', '0 0 ' + cols + ' ' + rows);
+    svg.setAttribute('role', 'img');
+    svg.setAttribute('aria-label', '娃娃機（' + STATUS_LABELS[status] + '）');
+    for (var y = 0; y < rows; y++) {
+      var x = 0;
+      while (x < cols) {
+        var ch = map[y][x], run = 1;
+        while (x + run < cols && map[y][x + run] === ch) run++;
+        if (ch !== '.') {
+          var rect = document.createElementNS(ns, 'rect');
+          rect.setAttribute('x', String(x)); rect.setAttribute('y', String(y));
+          rect.setAttribute('width', String(run)); rect.setAttribute('height', '1');
+          rect.setAttribute('fill', palette[ch] || '#000');
+          if (ch === 'S') rect.setAttribute('class', 'status-light ' + status);
+          svg.appendChild(rect);
+        }
+        x += run;
+      }
+    }
+    return svg;
+  }
+
+  // ── 跟 app.js 同一套的小工具：用 DOM 組畫面、文字一律 textContent ──
+  function h(tag, attrs, children) {
+    var el = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      var v = attrs[k];
+      if (v === null || v === undefined || v === false) return;
+      if (k === 'class') el.className = v;
+      else if (k === 'text') el.textContent = v;
+      else if (k.indexOf('on') === 0) el.addEventListener(k.slice(2), v);
+      else el.setAttribute(k, v);
+    });
+    [].concat(children || []).forEach(function (c) {
+      if (c === null || c === undefined) return;
+      el.appendChild(c instanceof Node ? c : document.createTextNode(String(c)));
+    });
+    return el;
+  }
+  function money(n) {
+    var v = Number(n) || 0;
+    return (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('zh-TW');
+  }
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function clock() { var d = new Date(); return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()); }
+
+  var toastTimer = null;
+  function toast(message, kind) {
+    var el = document.getElementById('toast');
+    el.textContent = message;
+    el.className = 'toast' + (kind ? ' ' + kind : '');
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.hidden = true; }, kind === 'error' ? 4200 : 2400);
+  }
+  function busy(show) { document.getElementById('busy-badge').hidden = !show; }
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  // ── 示範資料（跟本機開發用的示範資料同一種樣子，不是正式資料）──
+  var MACHINES = [
+    { name: '一號機', loc: '門口左側', color: '#4F7BE8', status: 'running', icon: 'dice', inAmt: 500, outAmt: 50, prize: 0 },
+    { name: '二號機', loc: '門口右側', color: '#E8574F', status: 'running', icon: 'classic', inAmt: 300, outAmt: 0, prize: 0 },
+    { name: '三號機', loc: '角落', color: '#FBBF24', status: 'maintenance', icon: 'dice', inAmt: 0, outAmt: 0, prize: 0 }
+  ];
+
+  function machineCard(m) {
+    var net = m.inAmt - m.outAmt - m.prize;
+    var netCls = net > 0 ? 'pos' : (net < 0 ? 'neg' : 'zero');
+    return h('button', { class: 'machine-card', type: 'button' }, [
+      machineSvg(72, m.color, m.status, m.icon),
+      h('div', { class: 'info' }, [
+        h('div', { class: 'name', text: m.name }),
+        h('div', { class: 'loc' }, [
+          m.loc,
+          m.status !== 'running' ? h('span', { class: 'badge badge-owner', style: 'margin-left:6px', text: STATUS_LABELS[m.status] }) : null
+        ])
+      ]),
+      h('div', { class: 'figures' }, [
+        h('div', { class: 'net num ' + netCls, text: money(net) }),
+        h('div', { class: 'breakdown num', text: '入 ' + money(m.inAmt) + ' · 出 ' + money(m.outAmt) + ' · 動 ' + money(m.prize) })
+      ])
+    ]);
+  }
+
+  // ── 1 讀取中骨架 ──
+  var list = document.getElementById('machine-list');
+  function showMachines(animate) {
+    list.className = 'machine-list' + (animate ? ' fx-fadein' : '');
+    list.replaceChildren.apply(list, MACHINES.map(machineCard));
+  }
+  var loading = false;
+  document.getElementById('btn-reload').addEventListener('click', async function () {
+    if (loading) return;
+    loading = true;
+    list.className = '';
+    list.innerHTML = window.fxSkeletonCards(3, '正在讀取機台資料…');  // 靜態骨架，沒有任何資料
+    await wait(1400);
+    showMachines(true);
+    loading = false;
+  });
+  showMachines(false);
+
+  // ── 2 送出成功打勾 ──
+  var outTotal = 50;
+  var sending = false;
+  document.getElementById('quick-grid').replaceChildren.apply(
+    document.getElementById('quick-grid'),
+    [100, 200, 500].map(function (amt) {
+      return h('button', {
+        class: 'btn quick-btn btn-out', type: 'button',
+        onclick: async function () {
+          if (sending) return;
+          sending = true;
+          busy(true);
+          await wait(700);        // 假裝在等後端回應
+          busy(false);
+          outTotal += amt;
+          document.getElementById('out-total').textContent = money(outTotal);
+          window.fxSuccess();
+          toast('出幣 ' + money(amt) + ' 已登錄', 'success');
+          sending = false;
+        }
+      }, money(amt));
+    })
+  );
+
+  // ── 3 漏填標紅 ──
+  document.getElementById('login-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var user = document.getElementById('demo-user');
+    var pass = document.getElementById('demo-pass');
+    if (!user.value.trim()) { toast('請輸入帳號', 'error'); window.fxFieldError(user); return; }
+    if (!pass.value) { toast('請輸入密碼', 'error'); window.fxFieldError(pass); return; }
+    toast('兩格都填好了（示範頁不會真的登入）', 'success');
+  });
+
+  // ── 4 下拉更新 ──
+  var updatedAt = document.getElementById('updated-at');
+  updatedAt.textContent = clock();
+  function refresh() {
+    return wait(900).then(function () {
+      updatedAt.textContent = clock();
+      toast('已更新', 'success');
+    });
+  }
+  window.fxPullToRefresh(refresh);   // 真的手勢：只有觸控螢幕會啟用
+
+  // 電腦上沒有下拉手勢：照同一套 .fx-ptr 樣式把「拉下來→變實心→轉圈→收回」演一次
+  var pulling = false;
+  document.getElementById('btn-pull').addEventListener('click', async function () {
+    if (pulling) return;
+    pulling = true;
+    var ind = h('div', { class: 'fx-ptr', 'aria-hidden': 'true' }, [h('span', { text: '↓' })]);
+    document.body.appendChild(ind);
+    function set(d, cls) {
+      ind.style.transform = 'translate(-50%,' + (d - 52) + 'px) rotate(' + (d * 4) + 'deg)';
+      ind.style.opacity = String(Math.min(1, d / 40));
+      ind.className = 'fx-ptr' + (cls ? ' ' + cls : '');
+    }
+    for (var d = 0; d <= 72; d += 6) { set(d, d >= 64 ? 'fx-ready' : ''); await wait(24); }
+    set(64, 'fx-busy');
+    await refresh();
+    ind.style.transition = 'transform .25s, opacity .25s';
+    set(0, '');
+    await wait(280);
+    ind.remove();
+    pulling = false;
+  });
+
+  // ── 5 刪除收合 ──
+  var RECORDS = [
+    { type: 'in', label: '入幣', title: '上班表 1,000 → 下班表 1,005', meta: '14:05 · 阿明', amt: '+$500' },
+    { type: 'out', label: '出幣', title: '出幣', meta: '14:12 · 阿明', amt: '−$50' },
+    { type: 'prize', label: '活動', title: '432 ×1', meta: '14:30 · 小美', amt: '−$200' },
+    { type: 'out', label: '出幣', title: '出幣', meta: '15:02 · 小美', amt: '−$100' }
+  ];
+  var records = RECORDS.slice();
+  var recordList = document.getElementById('record-list');
+  var voiding = false;
+
+  function renderRecords() {
+    recordList.replaceChildren.apply(recordList, records.length
+      ? records.map(function (r) {
+        return h('div', { class: 'record-item' }, [
+          h('span', { class: 'badge badge-' + r.type, text: r.label }),
+          h('div', { class: 'rec-main' }, [
+            h('div', { class: 'rec-title', text: r.title }),
+            h('div', { class: 'rec-meta', text: r.meta })
+          ]),
+          h('div', { class: 'rec-amount ' + r.type, text: r.amt }),
+          h('button', {
+            class: 'btn btn-sm btn-ghost', type: 'button', title: '作廢', 'aria-label': '作廢這筆',
+            onclick: async function () {
+              if (voiding) return;
+              voiding = true;
+              busy(true);
+              await wait(500);    // 假裝在等後端回應
+              busy(false);
+              // ui_fx.js 在按下 ✕ 時已經記住是哪一列，這裡只要把「重畫」包起來
+              window.fxRemoveThen(function () {
+                records.splice(records.indexOf(r), 1);
+                renderRecords();
+                toast('已作廢', 'success');
+                voiding = false;
+              });
+            }
+          }, '✕')
+        ]);
+      })
+      : [h('div', { class: 'empty', text: '還沒有任何紀錄' })]);
+  }
+  document.getElementById('btn-reset').addEventListener('click', function () {
+    records = RECORDS.slice();
+    renderRecords();
+  });
+  renderRecords();
+
+  // ── 目前是否「減少動態效果」 ──
+  var pill = document.getElementById('motion-pill');
+  function showMotion() {
+    var reduced = window.fxReduced();
+    pill.textContent = reduced ? '偵測到「減少動態效果」：效果已全部關閉' : '動態效果：開啟';
+    pill.classList.toggle('is-reduced', reduced);
+  }
+  showMotion();
+  try { window.matchMedia('(prefers-reduced-motion: reduce)').addEventListener('change', showMotion); } catch (e) {}
+})();
+</script>
+</body>
+</html>
