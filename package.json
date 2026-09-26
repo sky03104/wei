@@ -10,7 +10,8 @@
     "test:backend": "node tools/local-test.js",
     "test:backend:bundle": "node tools/local-test.js --bundle",
     "test:e2e": "node tools/e2e.js",
-    "check:syntax": "sh tools/check-gs.sh && node --check docs/app.js && node --check docs/sw.js",
+    "test:e2e:fx": "node tools/e2e-fx.js",
+    "check:syntax": "sh tools/check-gs.sh && node --check docs/app.js && node --check docs/ui_fx.js && node --check docs/sw.js",
     "check:pixelmap": "node tools/check-pixelmap.js",
     "check:bundle": "node tools/bundle-gas.js --check",
     "icons": "python3 tools/make-icons.py"

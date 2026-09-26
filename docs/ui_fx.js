@@ -407,9 +407,10 @@
   }
 
   /* ── 下拉更新：在最上面往下拉，超過門檻放開就執行 fn（fn 可回傳 Promise，轉圈到它結束）──
-     用法：fxPullToRefresh(function(){ return 重新載入(); })
+     用法：fxPullToRefresh(function(){ return 重新載入(); }, { enabled: function(){ return 現在能不能拉; } })
+     enabled 可省略；回傳 false 時手指放上去就不理（例如登入頁、記帳面板輸入到一半）。
      在對話框／輸入框上拉不觸發；同時關掉 Android Chrome 內建的下拉重新整理，避免整頁重載 */
-  window.fxPullToRefresh = function (fn) {
+  window.fxPullToRefresh = function (fn, opts) {
     try {
       if (!('ontouchstart' in window)) return;
       document.documentElement.style.overscrollBehaviorY = 'contain';
@@ -426,6 +427,7 @@
       var reset = function () { startY = null; dist = 0; ind.style.transition = 'transform .25s, opacity .25s'; set(0, ''); setTimeout(function () { ind.style.transition = ''; }, 260); };
       window.addEventListener('touchstart', function (e) {
         if (busy || window.scrollY > 0 || e.touches.length !== 1) return;
+        if (opts && typeof opts.enabled === 'function' && !opts.enabled()) return;
         var t = e.target;
         if (t && t.closest && t.closest('[style*="position: fixed"],' + MODAL_SEL + ',input,textarea,select')) return;
         startY = e.touches[0].clientY;

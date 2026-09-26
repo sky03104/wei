@@ -57,6 +57,24 @@
 /* 小塊骨架（行內用，例如某個數字還在讀取中） */
 .fx-sk-inline{display:inline-block;width:72px;height:18px;vertical-align:middle}
 
+/* 各畫面的骨架版面（app.js 的 loadingView() 組）：外觀照 styles.css 的 .stat／.card／.admin-item 做，
+   但刻意不用那些 class 名稱——程式和測試常用「.detail-hero／.admin-item 出現了」判斷資料到了，
+   骨架不能搶先冒充真畫面 */
+.fx-sk-view{display:grid;gap:var(--gap)}
+.fx-sk-row{display:flex;align-items:center;gap:14px}
+.fx-sk-row > .fx-sk-grow{flex:1;min-width:0}
+.fx-sk-stats{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.fx-sk-figs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.fx-sk-figs > :first-child{grid-column:1 / -1;padding:14px}
+.fx-sk-stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 8px;min-width:0}
+.fx-sk-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.fx-sk-item{display:flex;align-items:center;gap:10px;padding:11px;background:var(--surface-2);
+  border:1px solid var(--border);border-radius:var(--radius-sm)}
+@media (min-width:760px){
+  .fx-sk-stats.fx-sk-3{grid-template-columns:repeat(3,1fr)}
+  .fx-sk-stats.fx-sk-4{grid-template-columns:repeat(4,1fr)}
+}
+
 /* ── 分頁切換：滑動膠囊（ui_fx.js 的 fxMoveSlider() 負責定位）──
    容器要 position:relative；膠囊在容器內絕對定位，顏色由各畫面自己的 CSS 決定 */
 .fx-slider{position:absolute;left:0;top:0;width:0;height:0;border-radius:999px;pointer-events:none;opacity:0}
