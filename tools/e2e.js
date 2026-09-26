@@ -67,8 +67,16 @@ async function main() {
     await page.waitForSelector('.machine-card, .card.empty', { timeout: 8000 });
   }
 
+  // 刪除、作廢、營業開始／結單、登出……現在跳的是 App 自己的確認面板（askConfirm），按面板上的確定鈕
+  async function confirmSheet() {
+    await page.waitForSelector('.dialog .confirm-ok', { timeout: 5000 });
+    await page.click('.dialog .confirm-ok');
+    await page.waitForSelector('#dialog-backdrop', { state: 'detached', timeout: 5000 });
+  }
+
   async function logout() {
-    await page.click('button:has-text("登出")');
+    await page.click('.topbar button:has-text("登出")');
+    await confirmSheet();
     await page.waitForSelector('form', { timeout: 8000 });
   }
 
@@ -83,8 +91,11 @@ async function main() {
     await page.fill('input[autocomplete="username"]', 'admin');
     await page.fill('input[type="password"]', 'definitely-the-wrong-password');
     await page.click('button[type="submit"]');
-    await page.waitForSelector('#toast.error', { timeout: 8000 });
-    const msg = await page.locator('#toast').textContent();
+    // 錯誤寫在登入框裡（.login-error），不是畫面最下面的提示——手機鍵盤開著會擋住
+    await page.waitForSelector('.login-error:not([hidden])', { timeout: 8000 });
+    const msg = await page.locator('.login-error').textContent();
+    assert(await page.inputValue('input[autocomplete="username"]') === 'admin', '密碼錯誤時帳號不該被清掉');
+    assert(await page.inputValue('.pw-wrap input') === '', '密碼錯誤時密碼要清空讓人重打');
     assert(msg.indexOf('密碼') >= 0 || msg.indexOf('帳號') >= 0, '應該顯示帳號或密碼錯誤的提示，實際「' + msg + '」');
     assert(await page.locator('.login-wrap').count() === 1, '密碼錯誤時應該還停在登入頁');
   });
@@ -241,6 +252,7 @@ async function main() {
     await page.click('.panel-head button:has-text("✎ 編輯")');
     await page.waitForSelector('.meter-rate-panel');
     await page.click('button:has-text("改回沿用全局")');
+    await confirmSheet();
     await page.waitForFunction(() => document.body.textContent.includes('每格 $100（全局）'), { timeout: 8000 });
 
     await page.click('.panel-head button:has-text("完成")');
@@ -348,6 +360,7 @@ async function main() {
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
     await page.click('button:has-text("今日營業開始")');
+    await confirmSheet(); // 已經在營業中，會先問要不要重新開始
     await page.waitForSelector('.bizday-status:has-text("營業中")', { timeout: 8000 });
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
@@ -358,6 +371,7 @@ async function main() {
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
     await page.click('button:has-text("今日營業結單")');
+    await confirmSheet();
     await page.waitForSelector('.bizday-status:has-text("尚未開始")', { timeout: 8000 });
 
     await page.locator('.machine-card').first().click();
