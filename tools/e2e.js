@@ -1146,6 +1146,83 @@ async function main() {
     await page.waitForSelector('.machine-card');
   });
 
+  await check('骰台查詢「匯出截圖」：準備太久叫不出分享選單時跳視窗再按一次，一次分享全部張數；使用者取消就不再自動下載', async () => {
+    // 模擬手機的規則：share() 只在「使用者剛按下去」的有效期內才叫得出分享選單
+    // （Chromium 的 navigator.userActivation.isActive 就是這個有效期，約 5 秒），過了就丟
+    // NotAllowedError。自訂區間一長、每台機台的圖要準備好幾秒，手機上就是這樣失敗，
+    // 以前會直接退回逐一下載，變成 17 個分開的檔案。
+    // 自己開一個關掉 Service Worker 的瀏覽器：前面的測試已經裝好 Service Worker，
+    // 請求會先經過它，下面用 route 做的「故意拖慢」就攔不到了
+    const sctx = await browser.newContext({
+      viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, locale: 'zh-TW',
+      reducedMotion: 'reduce', serviceWorkers: 'block'
+    });
+    const sp = await sctx.newPage();
+    sp.on('pageerror', (e) => { consoleErrors.push('pageerror: ' + e.message); });
+    await sp.addInitScript(() => {
+      window.__shared = [];
+      navigator.canShare = (d) => !!(d && d.files && d.files.length);
+      navigator.share = (d) => {
+        if (!(navigator.userActivation && navigator.userActivation.isActive)) {
+          return Promise.reject(new DOMException('需要使用者剛按下去', 'NotAllowedError'));
+        }
+        window.__shared.push(d.files.length);
+        return Promise.resolve();
+      };
+    });
+    let slow = true;
+    await sp.route('**/api', async (route) => {
+      const body = decodeURIComponent(route.request().postData() || '');
+      if (slow && body.includes('"action":"exportLedgerGrids"')) await new Promise((r) => setTimeout(r, 6500));
+      await route.continue();
+    });
+    let downloads = 0;
+    sp.on('download', () => { downloads++; });
+
+    await sp.goto(BASE, { waitUntil: 'networkidle' });
+    await sp.waitForSelector('form');
+    await sp.fill('input[autocomplete="username"]', 'admin');
+    await sp.fill('input[type="password"]', 'admin123');
+    await sp.click('button[type="submit"]');
+    await sp.waitForSelector('.machine-card', { timeout: 8000 });
+    await sp.click('.home-sticky .seg button:has-text("加總")');
+    await sp.click('button:has-text("📊 骰台查詢")');
+    await sp.waitForSelector('.report-stats');
+
+    // 1) 準備太久：第一次自動分享被擋下 → 跳「截圖準備好了」→ 再按一次就一次分享全部張數。
+    //    按下去之後只能「單純等」：Playwright 每次在頁面裡執行程式（waitForSelector／evaluate 的輪詢）
+    //    都會被算成一次使用者操作，等於一直在延長有效期，邊等邊查就永遠測不出過期
+    await sp.click('button:has-text("📷 匯出截圖")');
+    await sp.waitForTimeout(9000);
+    await sp.waitForSelector('.dialog:has-text("截圖準備好了")', { timeout: 5000 });
+    assert(await sp.evaluate(() => window.__shared.length) === 0, '有效期過了，第一次自動分享應該被擋下');
+    assert(downloads === 0, '不該再退回逐一下載（那就是使用者收到一堆分開檔案的原因）');
+    const label = await sp.locator('.dialog button:has-text("一次分享")').textContent();
+    const n = Number(label.replace(/[^0-9]/g, ''));
+    await sp.click('.dialog button:has-text("一次分享")');
+    await sp.waitForFunction(() => window.__shared.length === 1, null, { timeout: 5000 });
+    const shared = await sp.evaluate(() => window.__shared[0]);
+    assert(n > 1 && shared === n, '再按一次應該一次分享全部 ' + n + ' 張，實際 ' + shared);
+    await sp.waitForSelector('#dialog-backdrop', { state: 'detached', timeout: 5000 });
+
+    // 2) 準備得夠快（沒超過有效期）：第一次就直接叫出分享選單，不用多按
+    slow = false;
+    await sp.click('button:has-text("📷 匯出截圖")');
+    await sp.waitForFunction(() => window.__shared.length === 2, null, { timeout: 10000 });
+    assert(await sp.locator('#dialog-backdrop').count() === 0, '夠快的話不該再跳視窗');
+
+    // 3) 使用者自己把分享選單關掉＝取消：不跳視窗、也不自動下載一堆檔案
+    await sp.evaluate(() => { navigator.share = () => Promise.reject(new DOMException('使用者取消', 'AbortError')); });
+    await sp.waitForFunction(() => document.getElementById('busy-badge').hidden);
+    await sp.click('button:has-text("📷 匯出截圖")');
+    await sp.waitForFunction(() => !document.getElementById('busy-badge').hidden, null, { timeout: 3000 }).catch(() => {});
+    await sp.waitForFunction(() => document.getElementById('busy-badge').hidden, null, { timeout: 10000 });
+    await sp.waitForTimeout(500);
+    assert(await sp.locator('#dialog-backdrop').count() === 0, '使用者取消不該再跳視窗');
+    assert(downloads === 0, '使用者取消不該自動下載，實際下載了 ' + downloads + ' 個檔案');
+    await sctx.close();
+  });
+
   // ── PWA 本體 ──
   await check('manifest 設定正確（standalone、圖示齊全）', async () => {
     const res = await page.request.get(BASE + '/manifest.webmanifest');
