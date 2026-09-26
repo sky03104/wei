@@ -9,6 +9,8 @@
  *           以及自動生效的按鈕漣漪、對話框／提示訊息進出場
  *   第二批：金額數字跳動、新紀錄亮一下、按鈕送出中、分頁滑動膠囊、記帳面板滑下來、
  *           報表長條長出來、首頁標題列陰影、離線提示條滑進滑出＋「已恢復連線」
+ *   第三批：像素娃娃機會動、換頁方向＋捲回原位、記帳反應＋飄字、入幣自動聚焦、＋長按連加、
+ *           App 樣式確認面板＋往下滑關掉、營業狀態呼吸燈＋開店亮燈、登入頁（框內錯誤、記住帳號、👁、開關）、空白插圖
  * 一般模式跑一輪，再開一個「手機設定：減少動態效果」的瀏覽器跑一輪——效果要全部關掉，
  * 但送出、作廢、下拉更新這些功能照常。任何 console 錯誤都算失敗。
  *
@@ -201,8 +203,8 @@ async function main() {
     assert(u.err && u.focus, '帳號格應該標紅並取得焦點 ' + JSON.stringify(u));
     assert(u.anim === 'fxShake', '應該抖一下，實際 ' + u.anim);
     assert(u.outline === 'rgb(248, 113, 113)', '紅框要用 --danger，實際 ' + u.outline);
-    const t = await p.evaluate(() => ({ cls: document.getElementById('toast').className, text: document.getElementById('toast').textContent }));
-    assert(t.cls.includes('error') && t.text === '請輸入帳號', '應該提示「請輸入帳號」，實際 ' + JSON.stringify(t));
+    const t = await p.evaluate(() => { const e = document.querySelector('.login-error'); return { hidden: e.hidden, text: e.textContent }; });
+    assert(!t.hidden && t.text === '請輸入帳號', '登入框裡應該寫「請輸入帳號」，實際 ' + JSON.stringify(t));
     await p.waitForTimeout(120);
     await shot('fx-app-01-login-error');
     await p.fill('input[autocomplete="username"]', 'admin');
@@ -405,6 +407,8 @@ async function main() {
     await p.waitForFunction(() => document.querySelectorAll('.record-item').length >= 2, null, { timeout: 5000 });
     const before = await p.locator('.record-item').count();
     await p.locator('.record-item').nth(1).locator('button[title="作廢"]').click();
+    await p.waitForSelector('.dialog .confirm-ok');
+    await p.click('.dialog .confirm-ok');
     await p.waitForFunction(() => {
       const r = document.querySelectorAll('.record-item')[1];
       return !!r && r.getAnimations().some((a) => a.constructor.name === 'Animation');
@@ -512,6 +516,132 @@ async function main() {
     await p.waitForFunction(() => document.getElementById('offline-bar').hidden, null, { timeout: 3000 });
   });
 
+  // ══ 第三批（23 項）══
+  await check('像素娃娃機：營運中的機台招牌跑馬燈、爪子、娃娃都在動；維修中的黃燈慢慢閃', async () => {
+    await p.click('button:has-text("← 返回主畫面")');
+    await p.waitForSelector('.machine-card');
+    const m = await p.evaluate(() => Array.from(document.querySelectorAll('.machine-card .pixel-machine')).map((s) => ({
+      alive: s.classList.contains('px-alive'),
+      names: s.getAnimations({ subtree: true }).map((a) => a.animationName).filter(Boolean)
+    })));
+    const alive = m.filter((x) => x.alive);
+    assert(alive.length >= 1, '至少要有一台營運中的機台會動 ' + JSON.stringify(m));
+    alive.forEach((x) => ['pxClawS2D2', 'pxBulb', 'pxHop', 'blink'].forEach((n) =>
+      assert(x.names.includes(n), '營運中的機台少了 ' + n + '：' + JSON.stringify(x.names))));
+    assert(m.some((x) => !x.alive && x.names.includes('blink-slow')), '維修中的機台黃燈要慢慢閃 ' + JSON.stringify(m));
+    await shot('fx-app-12-home-alive');
+  });
+
+  await check('換頁：點進機台從右邊滑進來；返回主畫面從左邊回來，並捲回剛剛的位置', async () => {
+    await p.setViewportSize({ width: 390, height: 520 });
+    await p.evaluate(() => window.scrollTo(0, 200));
+    await p.waitForTimeout(100);
+    const y0 = await p.evaluate(() => window.scrollY);
+    // 畫面矮時固定在上面的標題區會蓋住卡片（示範資料只有 3 台，要調矮才捲得動），直接觸發點擊
+    await p.locator('.machine-card').last().evaluate((el) => el.click());
+    await p.waitForSelector('.detail-hero');
+    assert(await p.evaluate(() => document.querySelector('#app > *').classList.contains('fx-page-fwd')), '進機台要從右邊滑進來');
+    const cls = await p.evaluate(() => { document.querySelector('.navbar button').click(); return document.querySelector('#app > *').className; });
+    await p.waitForSelector('.machine-card');
+    await p.waitForTimeout(400);
+    const y = await p.evaluate(() => window.scrollY);
+    await p.evaluate(() => window.scrollTo(0, 0));
+    await p.setViewportSize({ width: 390, height: 844 });
+    assert(cls.includes('fx-page-back'), '返回要從左邊回來 ' + cls);
+    assert(Math.abs(y - y0) < 4 && y0 > 0, '要捲回剛剛的位置：離開前 ' + y0 + '，回來 ' + y);
+  });
+
+  await check('記帳反應：出幣送出後大娃娃機彈出金幣、今日淨收益旁邊飄出「−$20」', async () => {
+    await openFirstMachine(p);
+    await p.click('.action-buttons button:has-text("出幣")');
+    await p.waitForSelector('.custom-amount input');
+    await p.fill('.custom-amount input', '20');
+    await p.click('.custom-amount button:has-text("送出")');
+    await p.waitForSelector('.net-stat .fx-delta', { timeout: 8000 });
+    const r = await p.evaluate(() => ({
+      text: document.querySelector('.net-stat .fx-delta').textContent,
+      coin: !!document.querySelector('.detail-hero .px-coin')
+    }));
+    assert(r.text === '−$20', '飄字應該是 −$20，實際 ' + r.text);
+    await p.waitForTimeout(250);
+    await shot('fx-app-13-reaction');
+    assert(r.coin || await p.evaluate(() => !!document.querySelector('.detail-hero .px-coin')), '要有金幣彈出來');
+    await p.click('.action-buttons button:has-text("出幣")');
+  });
+
+  await check('記帳更順手：打開入幣面板，游標直接在下班表；活動的＋長按會連加、合計跟著跳', async () => {
+    await p.click('.action-buttons button:has-text("入幣")');
+    await p.waitForSelector('.panel-total-in');
+    const f = await p.evaluate(() => { const ins = document.querySelectorAll('.panel input'); return document.activeElement === ins[1] || (ins[0].value === '' && document.activeElement === ins[0]); });
+    assert(f, '游標要在下班表');
+    await p.click('.action-buttons button:has-text("活動")');
+    await p.waitForSelector('.prize-row');
+    const plus = p.locator('.prize-row').first().locator('button[aria-label="加一"]');
+    const b = await plus.boundingBox();
+    await p.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+    await p.mouse.down(); await p.waitForTimeout(1100); await p.mouse.up();
+    const n = Number(await p.locator('.prize-row').first().locator('input').inputValue());
+    assert(n >= 4, '按住 1 秒應該連加好幾個，實際 ' + n);
+    await p.click('.action-buttons button:has-text("活動")');
+  });
+
+  await check('確認面板：作廢跳 App 樣式的面板（紅色作廢鈕），按取消不會作廢；面板往下滑就關掉', async () => {
+    const before = await p.locator('.record-item').count();
+    await p.locator('.record-item').first().locator('button[title="作廢"]').click();
+    await p.waitForSelector('.dialog .confirm-ok');
+    const c = await p.evaluate(() => ({ bg: getComputedStyle(document.querySelector('.confirm-ok')).backgroundColor, detail: document.querySelector('.confirm-detail').textContent, handle: !!document.querySelector('.dialog-handle') }));
+    assert(c.bg === 'rgb(248, 113, 113)' && c.detail.includes('$') && c.handle, JSON.stringify(c));
+    await shot('fx-app-14-confirm');
+    const h = await p.locator('.dialog h3').boundingBox();
+    await pull(N.cdp, h.x + 40, h.y + 5, 300);
+    await p.waitForSelector('#dialog-backdrop', { state: 'detached', timeout: 3000 });
+    await p.waitForTimeout(300);
+    assert(await p.locator('.record-item').count() === before, '往下滑關掉不該作廢');
+  });
+
+  await check('營業開始：狀態前面亮綠色呼吸燈、「結單」變成主要那顆，首頁機台依序亮燈', async () => {
+    await p.click('button:has-text("← 返回主畫面")');
+    await p.waitForSelector('.bizday-bar');
+    const open = await p.evaluate(() => !!document.querySelector('.bizday-dot.on'));
+    await p.click('button:has-text("今日營業開始")');
+    if (open) await p.click('.dialog .confirm-ok');
+    await p.waitForSelector('.bizday-dot.on', { timeout: 8000 });
+    await p.waitForFunction(() => Array.from(document.querySelectorAll('.machine-list .pixel-machine')).some((s) => s.getAnimations().length), null, { timeout: 3000 });
+    const b = await p.evaluate(() => ({
+      breath: getComputedStyle(document.querySelector('.bizday-dot')).animationName,
+      startDim: document.querySelector('.bizday-actions .btn-in').classList.contains('bizday-dim'),
+      endDim: document.querySelector('.bizday-actions .btn-out').classList.contains('bizday-dim')
+    }));
+    assert(b.breath === 'fxBreath' && b.startDim && !b.endDim, JSON.stringify(b));
+  });
+
+  await check('登出先問一聲；登入頁：帳號自動帶好、打錯密碼寫在框裡＋帳號不清掉、👁 看得到密碼、記住我是開關', async () => {
+    await p.click('.topbar button:has-text("登出")');
+    await p.waitForSelector('.dialog .confirm-ok');
+    await p.click('.dialog .confirm-ok');
+    await p.waitForSelector('.login-wrap');
+    assert(await p.inputValue('input[autocomplete="username"]') === 'admin', '上次的帳號要自動帶好');
+    await p.fill('.pw-wrap input', 'wrong');
+    await p.click('.pw-toggle');
+    assert(await p.getAttribute('.pw-wrap input', 'type') === 'text', '按 👁 要看得到密碼');
+    await p.click('button[type="submit"]');
+    await p.waitForSelector('.login-error:not([hidden])', { timeout: 8000 });
+    assert(await p.inputValue('input[autocomplete="username"]') === 'admin', '帳號不能被清掉');
+    assert(await p.evaluate(() => { const t = document.getElementById('toast'); return t.hidden || !t.classList.contains('error'); }), '錯誤寫在框裡，不用再跳下面的錯誤提示');
+    assert(await p.evaluate(() => getComputedStyle(document.querySelector('.checkbox input')).appearance) === 'none', '記住我要是開關樣式');
+    await shot('fx-app-15-login-error');
+    await p.fill('.pw-wrap input', 'admin123');
+    await p.click('button[type="submit"]');
+    await p.waitForSelector('.machine-card', { timeout: 8000 });
+  });
+
+  await check('空白提示：沒有紀錄的地方有一台打瞌睡的灰色娃娃機，z 會飄', async () => {
+    await p.evaluate(() => { document.body.appendChild(emptyState('測試')); });
+    const z = await p.evaluate(() => getComputedStyle(document.querySelector('.sleepy .zzz i')).animationName);
+    assert(z === 'fxZzz', '實際 ' + z);
+    await p.evaluate(() => document.querySelector('body > .empty-art').remove());
+  });
+
   await check('一般模式全程沒有 console 錯誤', async () => {
     assert(N.errors.length === 0, N.errors.slice(0, 3).join(' | '));
   });
@@ -602,6 +732,8 @@ async function main() {
     const before = await q.locator('.record-item').count();
     assert(before >= 2, '至少要有兩筆紀錄');
     await q.locator('.record-item').nth(1).locator('button[title="作廢"]').click();
+    await q.waitForSelector('.dialog .confirm-ok');
+    await q.click('.dialog .confirm-ok');
     let sawAnim = false;
     const t0 = Date.now();
     while (Date.now() - t0 < 3000) {
@@ -649,6 +781,14 @@ async function main() {
     await R.context.setOffline(false);
     await q.waitForFunction(() => document.getElementById('toast').textContent === '已恢復連線', null, { timeout: 3000 });
     assert(await q.evaluate(() => document.getElementById('offline-bar').hidden), '恢復連線要直接收起來');
+  });
+
+  await check('減少動態效果：像素娃娃機照樣動（跟狀態燈一樣是刻意的），換頁不滑', async () => {
+    await q.click('button:has-text("← 返回主畫面")');
+    await q.waitForSelector('.machine-card');
+    const names = await q.evaluate(() => document.querySelector('.machine-card .pixel-machine.px-alive').getAnimations({ subtree: true }).map((a) => a.animationName));
+    assert(names.includes('pxClawS2D2') && names.includes('pxBulb'), JSON.stringify(names));
+    assert(!(await q.evaluate(() => /fx-page-/.test(document.querySelector('#app > *').className))), '換頁不該有轉場');
   });
 
   await check('減少動態效果全程沒有 console 錯誤', async () => {

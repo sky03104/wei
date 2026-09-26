@@ -181,6 +181,7 @@ const MACHINE_COLORS = ['#4F7BE8', '#E8574F', '#4ADE80', '#FBBF24', '#C084FC', '
 
 const STORAGE_TOKEN = 'claw_token';
 const STORAGE_REMEMBER = 'claw_remember';
+const STORAGE_LAST_USER = 'claw_last_username'; // 上次登入的帳號（不含密碼），登入頁自動帶入
 const POLL_MS = 300000;
 
 /** Phase 5 雙軌驗證用（supabase/MIGRATION_PLAN.md）：'gas'（預設，跟現在
@@ -189,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v60';
+const APP_VERSION = 'v61';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -321,6 +322,14 @@ function toast(message, kind) {
   toastTimer = setTimeout(() => { el.hidden = true; }, kind === 'error' ? 4200 : 2400);
 }
 
+/** 馬上收掉目前的提示（例如登入成功時，剛剛那句「帳號或密碼錯誤」不要跟著進首頁）。 */
+function hideToast() {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  clearTimeout(toastTimer);
+  el.hidden = true;
+}
+
 // ── 動態效果（docs/ui_fx.js）────────────────────────────
 // ui_fx.js 提供的函式都掛在 window.fx…；這裡每個都先確認存在，沒載到（例如手機上
 // 還是舊版快取）就退回原本的行為，不影響功能。
@@ -432,20 +441,197 @@ function loadingView(kind) {
   ])));
 }
 
+/**
+ * 空白提示（還沒有紀錄、還沒有機台…）：上面放一台灰色的像素娃娃機在打瞌睡，
+ * 頭上飄「z z z」（ui_fx.css 的 .sleepy），不會只有一行字。
+ * z 是用 CSS 的 content 畫的，不算在文字內容裡，textContent 還是只有提示文字。
+ * extraClass：例如 'card'（整塊卡片樣式）；size：娃娃機的高度（面板裡用小一點的）。
+ */
+function emptyState(text, extraClass, size) {
+  return h('div', { class: 'empty empty-art' + (extraClass ? ' ' + extraClass : '') }, [
+    h('div', { class: 'sleepy', 'aria-hidden': 'true' }, [
+      machineSvg(size || 52, '#5B6478', 'offline', DEFAULT_MACHINE_ICON, { still: true }),
+      h('span', { class: 'zzz' }, [h('i'), h('i'), h('i')])
+    ]),
+    h('p', { text: text })
+  ]);
+}
+
 // ── 像素娃娃機 SVG ──────────────────────────────────────
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+function svgEl(tag, attrs) {
+  const el = document.createElementNS(SVG_NS, tag);
+  Object.keys(attrs || {}).forEach((k) => el.setAttribute(k, String(attrs[k])));
+  return el;
+}
+
+/**
+ * 找出某一款圖案裡「會動的零件」在哪幾格，每一款都用同一套規則，不用各寫一份：
+ *   橫桿：第一排出現 C 的那一排（不動）
+ *   爪子：橫桿以下的 C；左右能晃幾格、能往下降幾格，看旁邊／底下還有幾格空的玻璃（G）
+ *   娃娃：爪子底下、玻璃櫃裡的 P／Y／W／R／O（骰子的黑點 K 夾在白格中間，也算骰子的一部分），
+ *         上下左右相連的算同一個（一次跳一個）
+ *   燈泡：玻璃櫃上面招牌區的 L（「招牌」款是紅、橘兩排 R／O）
+ *   投幣口：玻璃櫃下面的 W
+ * 分析結果照款式快取起來。
+ */
+const _machinePartsCache = {};
+function machinePartsOf(icon) {
+  const key = MACHINE_ICON_MAPS[icon] ? icon : DEFAULT_MACHINE_ICON;
+  if (_machinePartsCache[key]) return _machinePartsCache[key];
+  const map = MACHINE_ICON_MAPS[key];
+  const rows = map.length;
+  const cols = map[0].length;
+  const at = (x, y) => (y >= 0 && y < rows && x >= 0 && x < cols ? map[y][x] : '.');
+
+  let railRow = -1;
+  let firstGlassRow = -1;
+  let glassBottom = -1;
+  for (let y = 0; y < rows; y++) {
+    if (railRow < 0 && map[y].indexOf('C') >= 0) railRow = y;
+    if (map[y].indexOf('G') >= 0) {
+      if (firstGlassRow < 0) firstGlassRow = y;
+      glassBottom = y;
+    }
+  }
+
+  const role = map.map((line) => line.split('').map(() => ''));
+  const clawCells = [];
+  let clawBottom = -1;
+  for (let y = railRow + 1; y <= glassBottom; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (map[y][x] === 'C') { role[y][x] = 'claw'; clawCells.push([x, y]); clawBottom = Math.max(clawBottom, y); }
+    }
+  }
+
+  // 左右能晃幾格：每一段爪子往左／往右數，碰到「不是玻璃也不是爪子」的格子就停；
+  // 取最緊的那一段再留一格空隙，最多 2 格
+  const freeToward = (x, y, dx) => {
+    let n = 0;
+    for (let cx = x + dx; ; cx += dx) {
+      const ch = at(cx, y);
+      if (ch === 'G' || role[y][cx] === 'claw') n++;
+      else break;
+    }
+    return n;
+  };
+  let sway = 2;
+  clawCells.forEach(([x, y]) => {
+    if (role[y][x - 1] !== 'claw') sway = Math.min(sway, freeToward(x, y, -1) - 1);
+    if (role[y][x + 1] !== 'claw') sway = Math.min(sway, freeToward(x, y, 1) - 1);
+  });
+  sway = Math.max(0, sway);
+
+  // 往下能降幾格：每一欄最底下那格爪子，底下還有幾格玻璃；最多 2 格（剛好碰到娃娃）
+  let drop = 2;
+  const lowest = {};
+  clawCells.forEach(([x, y]) => { lowest[x] = Math.max(lowest[x] === undefined ? -1 : lowest[x], y); });
+  Object.keys(lowest).forEach((xs) => {
+    const x = Number(xs);
+    let n = 0;
+    for (let y = lowest[x] + 1; y <= glassBottom && at(x, y) === 'G'; y++) n++;
+    drop = Math.min(drop, n);
+  });
+  drop = clawCells.length ? drop : 0;
+
+  // 纜繩：爪子往下降時，橫桿跟爪子中間露出來的那一段（位置＝爪子最上面那一排）
+  const cables = [];
+  if (drop > 0) {
+    const top = railRow + 1;
+    for (let x = 0; x < cols; x++) {
+      if (role[top][x] === 'claw' && role[top][x - 1] !== 'claw') {
+        let w = 1;
+        while (role[top][x + w] === 'claw') w++;
+        cables.push({ x: x, y: top, w: w });
+      }
+    }
+  }
+
+  // 娃娃（骰子）：爪子底下、玻璃櫃裡的東西，相連的一組
+  const isPrizeCell = (x, y) => {
+    const ch = at(x, y);
+    if ('PYWRO'.indexOf(ch) >= 0) return true;
+    return ch === 'K' && (at(x - 1, y) === 'W' || at(x + 1, y) === 'W');
+  };
+  for (let y = clawBottom + 1; y <= glassBottom; y++) {
+    for (let x = 0; x < cols; x++) if (isPrizeCell(x, y)) role[y][x] = 'prize';
+  }
+  const prizes = [];
+  const seen = {};
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (role[y][x] !== 'prize' || seen[x + ',' + y]) continue;
+      const cells = [];
+      const stack = [[x, y]];
+      seen[x + ',' + y] = true;
+      while (stack.length) {
+        const [cx, cy] = stack.pop();
+        cells.push([cx, cy]);
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+          const nx = cx + dx;
+          const ny = cy + dy;
+          if (role[ny] && role[ny][nx] === 'prize' && !seen[nx + ',' + ny]) { seen[nx + ',' + ny] = true; stack.push([nx, ny]); }
+        });
+      }
+      const xs = cells.map((c) => c[0]);
+      prizes.push({ cells: cells, minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs) });
+    }
+  }
+
+  // 招牌燈泡、投幣口
+  const bulbs = [];
+  const slot = [];
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const ch = map[y][x];
+      if (y < firstGlassRow && (ch === 'L' || ch === 'R' || ch === 'O')) bulbs.push([x, y]);
+      if (y > glassBottom && ch === 'W') slot.push([x, y]);
+    }
+  }
+
+  const clawXs = clawCells.map((c) => c[0]);
+  const parts = {
+    rows: rows, cols: cols, role: role, sway: sway, drop: drop, cables: cables, prizes: prizes, bulbs: bulbs,
+    slot: slot, glassBottom: glassBottom,
+    clawMinX: clawXs.length ? Math.min.apply(null, clawXs) : 0,
+    clawMaxX: clawXs.length ? Math.max.apply(null, clawXs) : 0
+  };
+  _machinePartsCache[key] = parts;
+  return parts;
+}
+
+/** 字串→穩定的小整數（讓每台機台的動畫節奏固定錯開，重畫也一樣）。 */
+function hashSeed(str) {
+  let n = 0;
+  const s = String(str || '');
+  for (let i = 0; i < s.length; i++) n = (n * 31 + s.charCodeAt(i)) % 100000;
+  return n * 997;
+}
 
 /**
  * 把某一款像素圖案展開成 SVG。icon 對應 MACHINE_ICON_MAPS 的鍵值，
  * 沒給或給了不認得的鍵值就落回經典款。
  * 同一個函式供首頁小圖、詳細頁大圖、登入頁使用，只有一份圖案定義。
  * 相鄰同色的格子會合併成一個 rect，節點數少一半以上。
+ *
+ * 會動的零件（爪子、娃娃、招牌燈泡，見 machinePartsOf）另外包成群組疊在最上面，
+ * 原位補上玻璃色，零件移開時看到的是玻璃。營運中的機台（px-alive）零件會自己動：
+ * 招牌跑馬燈、爪子左右晃＋偶爾下去抓一下、娃娃偶爾跳一下（styles.css 的「像素娃娃機會動的部分」）。
+ * 記帳時的反應（掉金幣、夾娃娃…）由 machineAct() 播。
+ * opts.still：只要靜態圖（例如選圖案的小按鈕），不拆零件、不動；
+ * opts.seed：讓這台的節奏跟別台錯開的種子（通常給機台編號）。
  */
-function machineSvg(height, bodyColor, status, icon) {
+function machineSvg(height, bodyColor, status, icon, opts) {
+  const o = opts || {};
   const map = MACHINE_ICON_MAPS[icon] || MACHINE_ICON_MAPS[DEFAULT_MACHINE_ICON];
   const rows = map.length;
   const cols = map[0].length;
   const unit = height / rows;
   const width = cols * unit;
+  const parts = o.still ? null : machinePartsOf(icon);
+  const alive = !!parts && (status || 'running') === 'running';
 
   const palette = {
     K: '#0B0E14',
@@ -461,35 +647,263 @@ function machineSvg(height, bodyColor, status, icon) {
     O: '#FBBF24'
   };
 
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', 'pixel-machine');
-  svg.setAttribute('width', String(Math.round(width)));
-  svg.setAttribute('height', String(Math.round(height)));
-  svg.setAttribute('viewBox', '0 0 ' + cols + ' ' + rows);
-  svg.setAttribute('role', 'img');
-  svg.setAttribute('aria-label', '娃娃機（' + (STATUS_LABELS[status] || '營運中') + '）');
+  const svg = svgEl('svg', {
+    class: 'pixel-machine' + (alive ? ' px-alive' : ''),
+    width: Math.round(width),
+    height: Math.round(height),
+    viewBox: '0 0 ' + cols + ' ' + rows,
+    role: 'img',
+    'aria-label': '娃娃機（' + (STATUS_LABELS[status] || '營運中') + '）'
+  });
+  if (alive) {
+    // 動畫的起點用「現在幾點」算：同一台機台重畫（背景更新、記帳後）時接著原本的節奏，不會跳回開頭。
+    // 24 秒是所有零件動畫週期的公倍數（爪子 8 秒、雙爪 6 秒、燈泡 1.2 秒、娃娃 6 秒）
+    svg.style.setProperty('--px-t', -((Date.now() + hashSeed(o.seed)) % 24000) + 'ms');
+  }
 
+  // 底圖：零件的位置先畫成玻璃色
+  const cellChar = (x, y) => (parts && parts.role[y][x] ? 'G' : map[y][x]);
   for (let y = 0; y < rows; y++) {
-    const line = map[y];
     let x = 0;
     while (x < cols) {
-      const ch = line[x];
+      const ch = cellChar(x, y);
       let run = 1;
-      while (x + run < cols && line[x + run] === ch) run++;
+      while (x + run < cols && cellChar(x + run, y) === ch) run++;
       if (ch !== '.') {
-        const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-        rect.setAttribute('x', String(x));
-        rect.setAttribute('y', String(y));
-        rect.setAttribute('width', String(run));
-        rect.setAttribute('height', '1');
-        rect.setAttribute('fill', palette[ch] || '#000');
+        const rect = svgEl('rect', { x: x, y: y, width: run, height: 1, fill: palette[ch] || '#000' });
         if (ch === 'S') rect.setAttribute('class', 'status-light ' + (status || 'running'));
         svg.appendChild(rect);
       }
       x += run;
     }
   }
+  if (!parts) return svg;
+
+  // 把一組格子畫成一個群組（同一排相鄰的合併成一個 rect）
+  const drawGroup = (cells, cls, colorOf) => {
+    const g = svgEl('g', { class: cls });
+    const byRow = {};
+    cells.forEach(([x, y]) => { (byRow[y] = byRow[y] || []).push(x); });
+    Object.keys(byRow).forEach((ys) => {
+      const y = Number(ys);
+      const xs = byRow[y].sort((a, b) => a - b);
+      let i = 0;
+      while (i < xs.length) {
+        let j = i;
+        while (j + 1 < xs.length && xs[j + 1] === xs[j] + 1 && colorOf(xs[j + 1], y) === colorOf(xs[i], y)) j++;
+        g.appendChild(svgEl('rect', { x: xs[i], y: y, width: j - i + 1, height: 1, fill: colorOf(xs[i], y) }));
+        i = j + 1;
+      }
+    });
+    return g;
+  };
+  const mapColor = (x, y) => palette[map[y][x]] || '#000';
+
+  // 娃娃：一個一組，各自錯開跳的時間
+  const prizeGroups = parts.prizes.map((p, i) => {
+    const g = drawGroup(p.cells, 'px-prize', mapColor);
+    g.style.setProperty('--px-o', (i * 1700 + 600) + 'ms');
+    svg.appendChild(g);
+    return g;
+  });
+
+  // 纜繩（平常縮成 0 高、看不到；爪子往下時才拉長）
+  const cableEls = parts.cables.map((c) => {
+    const r = svgEl('rect', { class: 'px-cable px-drop-' + parts.drop, x: c.x, y: c.y, width: c.w, height: parts.drop, fill: palette.C });
+    svg.appendChild(r);
+    return r;
+  });
+
+  // 爪子
+  const clawCells = [];
+  parts.role.forEach((line, y) => line.forEach((r, x) => { if (r === 'claw') clawCells.push([x, y]); }));
+  const claw = drawGroup(clawCells, 'px-claw px-sway-' + parts.sway + ' px-drop-' + parts.drop, mapColor);
+  svg.appendChild(claw);
+
+  // 招牌燈泡：只有營運中的機台有；照 x 分成三組輪流亮，看起來像往右跑的跑馬燈
+  if (alive && parts.bulbs.length) {
+    [0, 1, 2].forEach((k) => {
+      const cells = parts.bulbs.filter(([x]) => x % 3 === k);
+      if (cells.length) svg.appendChild(drawGroup(cells, 'px-bulbs px-bulbs-' + k, () => '#FFF4C4'));
+    });
+  }
+
+  // 投幣口（掉金幣時亮一下用）
+  const slotRects = [];
+  svg.querySelectorAll('rect').forEach((r) => {
+    const x = Number(r.getAttribute('x'));
+    const y = Number(r.getAttribute('y'));
+    if (parts.slot.some(([sx, sy]) => sx === x && sy === y)) slotRects.push(r);
+  });
+
+  svg._px = { parts: parts, claw: claw, cables: cableEls, prizes: prizeGroups, slotRects: slotRects, unit: unit };
+  if (alive) watchMachineVisibility(svg);
   return svg;
+}
+
+/**
+ * 捲到畫面外的機台先停下來（.px-off），回到畫面上再接著動——機台一多（二、三十台），
+ * 全部一起動會讓手機一直在重畫看不到的東西、比較耗電。停的時候節奏照樣用 --px-t 對時，
+ * 捲回來不會整排從頭開始。
+ */
+let _pxObserver = null;
+function watchMachineVisibility(svg) {
+  if (!('IntersectionObserver' in window)) return;
+  if (!_pxObserver) {
+    _pxObserver = new IntersectionObserver((entries) => {
+      entries.forEach((en) => en.target.classList.toggle('px-off', !en.isIntersecting));
+    }, { rootMargin: '80px 0px' });
+  }
+  svg.classList.add('px-off'); // 還沒確認看得到之前先停著，觀察器一回報就開始動
+  _pxObserver.observe(svg);
+}
+
+/**
+ * 讓一台像素娃娃機做一個動作（記帳時的反應、登入頁的互動）：
+ *   'grab'     爪子下去抓一下，把底下的娃娃帶上來一點再放掉（活動、登入成功、點登入頁的娃娃機）
+ *   'coinIn'   一枚金幣從上面掉進投幣口，投幣口亮一下（入幣、開分）
+ *   'coinOut'  一枚金幣從出口彈出來（出幣、洗分）
+ *   'shake'    整台左右搖一下（作廢、登入失敗）
+ *   'powerOn'  燈亮起來（營業開始）／'powerOff' 燈熄掉再恢復（結單）
+ * 一律一格一格跳（steps），維持像素風。用 Web Animations 疊在平常的動畫上面，做完就拿掉，
+ * 平常的跑馬燈、爪子晃動接著原本的節奏繼續。
+ * 回傳 Promise，做完才 resolve；手機開了「減少動態效果」或這台沒有零件時馬上 resolve。
+ */
+function machineAct(svg, kind) {
+  return new Promise((resolve) => {
+    try {
+      const reduced = typeof window.fxReduced === 'function' ? window.fxReduced() : false;
+      if (!svg || !svg.animate || reduced) { resolve(); return; }
+      const px = svg._px;
+      const step = (frames) => frames.map((f) => Object.assign({ easing: 'steps(1, end)' }, f));
+      const finish = (anim) => {
+        let done = false;
+        const go = () => { if (!done) { done = true; resolve(); } };
+        anim.onfinish = go;
+        anim.oncancel = go;
+        setTimeout(go, (anim.effect && anim.effect.getTiming().duration || 1000) + 400);
+      };
+
+      if (kind === 'shake') {
+        const u = Math.max(2, Math.round(px ? px.unit : 4));
+        finish(svg.animate(step([
+          { translate: '0 0' }, { translate: -u + 'px 0', offset: 0.15 }, { translate: u + 'px 0', offset: 0.35 },
+          { translate: -u + 'px 0', offset: 0.55 }, { translate: u + 'px 0', offset: 0.75 }, { translate: '0 0', offset: 0.9 },
+          { translate: '0 0' }
+        ]), { duration: 420 }));
+        return;
+      }
+      if (kind === 'powerOn') {
+        finish(svg.animate([
+          { filter: 'brightness(0.3) saturate(0.2)' }, { filter: 'brightness(1.5)', offset: 0.25 },
+          { filter: 'brightness(0.45) saturate(0.4)', offset: 0.4 }, { filter: 'brightness(1.3)', offset: 0.6 },
+          { filter: 'brightness(1)' }
+        ], { duration: 700, easing: 'steps(1, end)' }));
+        return;
+      }
+      if (kind === 'powerOff') {
+        finish(svg.animate([
+          { filter: 'brightness(1)' }, { filter: 'brightness(0.3) saturate(0.25)', offset: 0.2 },
+          { filter: 'brightness(0.3) saturate(0.25)', offset: 0.75 }, { filter: 'brightness(1)' }
+        ], { duration: 1300, easing: 'ease-in-out' }));
+        return;
+      }
+      if (!px) { resolve(); return; }
+      const P = px.parts;
+
+      if (kind === 'grab') {
+        const D = P.drop;
+        if (!D) {
+          // 雙爪這種沒空間往下的：原地左右扭一下
+          finish(px.claw.animate(step([
+            { transform: 'translate(0px, 0px)' }, { transform: 'translate(-1px, 0px)', offset: 0.25 },
+            { transform: 'translate(1px, 0px)', offset: 0.5 }, { transform: 'translate(0px, 0px)', offset: 0.75 },
+            { transform: 'translate(0px, 0px)' }
+          ]), { duration: 600 }));
+          return;
+        }
+        // 時間軸（1 秒）：0.1 起一格一格往下 → 停在底下（夾）→ 0.5 起一格一格往上，娃娃跟著上來 →
+        // 在頂上停一下 → 0.85 起娃娃一格一格掉回去
+        const down = [];
+        const up = [];
+        for (let i = 1; i <= D; i++) down.push({ y: i, at: 0.1 * i });
+        for (let i = D - 1; i >= 0; i--) up.push({ y: i, at: 0.5 + 0.1 * (D - 1 - i) });
+        const clawFrames = [{ transform: 'translate(0px, 0px)', offset: 0 }]
+          .concat(down.map((s) => ({ transform: 'translate(0px, ' + s.y + 'px)', offset: s.at })))
+          .concat(up.map((s) => ({ transform: 'translate(0px, ' + s.y + 'px)', offset: s.at })))
+          .concat([{ transform: 'translate(0px, 0px)', offset: 1 }]);
+        const cableFrames = [{ transform: 'scaleY(0)', offset: 0 }]
+          .concat(down.map((s) => ({ transform: 'scaleY(' + (s.y / D) + ')', offset: s.at })))
+          .concat(up.map((s) => ({ transform: 'scaleY(' + (s.y / D) + ')', offset: s.at })))
+          .concat([{ transform: 'scaleY(0)', offset: 1 }]);
+        const anim = px.claw.animate(step(clawFrames), { duration: 1000 });
+        px.cables.forEach((c) => c.animate(step(cableFrames), { duration: 1000 }));
+        // 帶上來的娃娃：跟爪子左右重疊最多的那一個
+        let best = null;
+        let bestOverlap = 0;
+        P.prizes.forEach((p, i) => {
+          const overlap = Math.min(p.maxX, P.clawMaxX) - Math.max(p.minX, P.clawMinX) + 1;
+          if (overlap > bestOverlap) { bestOverlap = overlap; best = px.prizes[i]; }
+        });
+        if (best) {
+          const lift = [{ transform: 'translate(0px, 0px)', offset: 0 }]
+            .concat(up.map((s) => ({ transform: 'translate(0px, ' + (s.y - D) + 'px)', offset: s.at })))
+            .concat([{ transform: 'translate(0px, ' + -D + 'px)', offset: 0.85 }]);
+          for (let i = D - 1; i >= 0; i--) lift.push({ transform: 'translate(0px, ' + -i + 'px)', offset: 0.85 + 0.05 * (D - i) });
+          lift.push({ transform: 'translate(0px, 0px)', offset: 1 });
+          best.animate(step(lift), { duration: 1000 });
+        }
+        finish(anim);
+        return;
+      }
+
+      if (kind === 'coinIn' || kind === 'coinOut') {
+        // 投幣口：玻璃櫃下面的白格；沒有投幣口的款式（雙爪）就落在機台正中央下方
+        const sx = P.slot.length ? Math.min.apply(null, P.slot.map((c) => c[0])) : Math.floor(P.cols / 2) - 1;
+        const sy = P.slot.length ? P.slot[0][1] : P.glassBottom + 2;
+        const coin = svgEl('g', { class: 'px-coin' });
+        [[0, 0, '#FFF1A8'], [1, 0, '#FFD34D'], [0, 1, '#FFD34D'], [1, 1, '#D9A300']].forEach(([cx, cy, fill]) => {
+          coin.appendChild(svgEl('rect', { x: sx + cx, y: cy, width: 1, height: 1, fill: fill }));
+        });
+        svg.appendChild(coin);
+        let anim;
+        if (kind === 'coinIn') {
+          // 從機台上面外面一路掉到投幣口上方，消失的那一下投幣口亮起來
+          const from = -3;
+          const to = sy - 2;
+          anim = coin.animate([
+            { transform: 'translate(0px, ' + from + 'px)', opacity: 1, easing: 'steps(' + (to - from) + ', end)' },
+            { transform: 'translate(0px, ' + to + 'px)', opacity: 1, offset: 0.8 },
+            { transform: 'translate(0px, ' + to + 'px)', opacity: 0, offset: 0.81 },
+            { transform: 'translate(0px, ' + to + 'px)', opacity: 0 }
+          ], { duration: 800 });
+          px.slotRects.forEach((r) => r.animate(step([
+            { fill: '#FFFFFF' }, { fill: '#FFD34D', offset: 0.8 }, { fill: '#FFFFFF', offset: 0.95 }, { fill: '#FFFFFF' }
+          ]), { duration: 900 }));
+        } else {
+          // 從投幣口跳出來：往右上彈兩格，再往右下掉出機台外面淡掉
+          anim = coin.animate(step([
+            { transform: 'translate(0px, ' + (sy - 1) + 'px)', opacity: 1 },
+            { transform: 'translate(1px, ' + (sy - 3) + 'px)', offset: 0.15 },
+            { transform: 'translate(2px, ' + (sy - 4) + 'px)', offset: 0.3 },
+            { transform: 'translate(3px, ' + (sy - 3) + 'px)', offset: 0.45 },
+            { transform: 'translate(4px, ' + (sy - 1) + 'px)', offset: 0.6, opacity: 1 },
+            { transform: 'translate(5px, ' + (sy + 1) + 'px)', offset: 0.75, opacity: 0.6 },
+            { transform: 'translate(6px, ' + (sy + 3) + 'px)', offset: 0.9, opacity: 0.2 },
+            { transform: 'translate(6px, ' + (sy + 3) + 'px)', opacity: 0 }
+          ]), { duration: 800 });
+        }
+        const cleanup = () => { if (coin.parentNode) coin.parentNode.removeChild(coin); };
+        anim.addEventListener('finish', cleanup);
+        anim.addEventListener('cancel', cleanup);
+        finish(anim);
+        return;
+      }
+      resolve();
+    } catch (err) {
+      resolve(); // 動畫失敗不能擋住登入、記帳
+    }
+  });
 }
 
 // ── API ─────────────────────────────────────────────────
@@ -550,8 +964,12 @@ async function apiGas(action, payload) {
   if (!json.ok) {
     if (json.code === 'AUTH') {
       clearSession();
-      state.view = 'login';
-      render();
+      // 已經在登入頁（這次就是登入本身帳密打錯）就不要重畫：重畫會把剛打的帳號清掉，
+      // 登入框裡的錯誤訊息也會跟著不見
+      if (state.view !== 'login') {
+        state.view = 'login';
+        render();
+      }
     }
     throw ApiError(json.error || '操作失敗', json.code);
   }
@@ -976,13 +1394,14 @@ async function run(fn, opts) {
     if (options.success) toast(options.success, 'success');
     return result;
   } catch (err) {
+    // onError：呼叫端要自己顯示錯誤（登入表單把錯誤寫在登入框裡），就交給它，不跳提示。
+    // 登入表單一定要自己接：帳密錯誤／帳號被鎖，後端一樣是用 AUTH 這個代碼回傳，
+    // 照下面的預設會整個被吃掉，使用者只會看到轉圈圈轉完、什麼也沒發生。
     // 背景輪詢失敗不打擾使用者（離線時本來就有提示條，不需要每次輪詢都再彈一次）。
     // AUTH 錯誤預設也不彈 toast——這是為了「操作到一半 session 過期，靜靜跳回
-    // 登入頁就好，不用再彈一個刺眼的錯誤」設計的。但登入表單本身送出的帳密錯誤／
-    // 帳號被鎖，後端一樣是用 AUTH 這個代碼回傳，如果照這條規則整個吃掉，
-    // 使用者會看到轉圈圈轉完、什麼也沒發生、停在空白登入頁，完全不知道錯在哪。
-    // 呼叫端（登入表單）用 showAuthError:true 蓋掉這個預設，帳密錯誤才會顯示出來。
-    if (!options.silent && (err.code !== 'AUTH' || options.showAuthError)) toast(err.message, 'error');
+    // 登入頁就好，不用再彈一個刺眼的錯誤」設計的。
+    if (options.onError) options.onError(err);
+    else if (!options.silent && err.code !== 'AUTH') toast(err.message, 'error');
     return undefined;
   } finally {
     if (restoreButton) restoreButton();
@@ -1085,24 +1504,75 @@ function canRecord() { return state.user && (state.user.role === 'admin' || stat
 
 function openDialog(title, contentNodes, actions) {
   closeDialog();
+  const sheet = h('div', { class: 'dialog' }, [
+    // 手機上是從底部滑出來的面板：上面一條小把手，提示可以往下滑關掉（ui_fx.js 的 fxSwipeToClose）
+    h('div', { class: 'dialog-handle', 'aria-hidden': 'true' }),
+    h('h3', { text: title }),
+    contentNodes,
+    h('div', { class: 'dialog-actions' }, actions)
+  ]);
   const backdrop = h('div', {
     class: 'dialog-backdrop',
     id: 'dialog-backdrop',
     onclick: (e) => { if (e.target === backdrop) closeDialog(); }
-  }, [
-    h('div', { class: 'dialog' }, [
-      h('h3', { text: title }),
-      contentNodes,
-      h('div', { class: 'dialog-actions' }, actions)
-    ])
-  ]);
+  }, [sheet]);
   document.body.appendChild(backdrop);
+  if (typeof window.fxSwipeToClose === 'function') {
+    window.fxSwipeToClose(sheet, () => { if (backdrop.isConnected) closeDialog(); }, backdrop);
+  }
   return backdrop;
 }
 
+/**
+ * 關掉目前的對話框。對話框可以在 backdrop._onClose 掛一個「被關掉時」要做的事——
+ * askConfirm() 用它：不管是按取消、點外面、往下滑關掉，還是被下一個對話框頂掉，
+ * 都當成「不要」回報給呼叫端，不會有等不到答案、卡住的確認。
+ */
 function closeDialog() {
   const existing = document.getElementById('dialog-backdrop');
-  if (existing) existing.remove();
+  if (!existing) return;
+  const onClose = existing._onClose;
+  existing._onClose = null;
+  existing.remove();
+  if (onClose) onClose();
+}
+
+/**
+ * App 自己樣式的確認面板，取代瀏覽器內建的 confirm()：內建的小視窗在手機上會拿網址
+ * 當標題、白底樣式跟 App 不搭，也看不出哪個是「刪了就沒了」的動作。
+ * 回傳 Promise：按確定 → true；按取消、點外面、往下滑關掉 → false。
+ * opts：
+ *   title   標題（一句問句）
+ *   message 補充說明（可以用 \n 換行）
+ *   detail  要處理的是哪一筆（例如「出幣 $50」），放在醒目的框裡，避免刪錯
+ *   okText  確定鈕的字（預設「確定」）
+ *   danger  true＝刪除／作廢這類動作，確定鈕是紅色
+ * 注意：呼叫端如果還要用到 e.currentTarget（按鈕轉圈），要在 await 之前先存起來——
+ * 事件處理完之後 currentTarget 就變成 null 了。
+ */
+function askConfirm(opts) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      closeDialog();
+      resolve(ok);
+    };
+    const body = [
+      opts.message ? h('p', { class: 'confirm-msg', text: opts.message }) : null,
+      opts.detail ? h('div', { class: 'confirm-detail', text: opts.detail }) : null
+    ];
+    const backdrop = openDialog(opts.title, body, [
+      h('button', { class: 'btn confirm-cancel', onclick: () => finish(false) }, '取消'),
+      h('button', {
+        class: 'btn confirm-ok ' + (opts.danger ? 'btn-danger-solid' : 'btn-primary'),
+        onclick: () => finish(true)
+      }, opts.okText || '確定')
+    ]);
+    backdrop.classList.add('confirm-backdrop');
+    backdrop._onClose = () => finish(false);
+  });
 }
 
 function dialogField(label, input) {
@@ -1111,54 +1581,133 @@ function dialogField(label, input) {
 
 // ── 畫面：登入 ──────────────────────────────────────────
 
+/** 上一次成功登入的帳號（只記帳號、不記密碼），下次打開登入頁自動帶入。 */
+function readLastUsername() {
+  try { return localStorage.getItem(STORAGE_LAST_USER) || ''; } catch (err) { return ''; }
+}
+function saveLastUsername(name) {
+  try { localStorage.setItem(STORAGE_LAST_USER, name); } catch (err) { /* 無痕模式寫不進去就算了 */ }
+}
+
 function viewLogin() {
-  const username = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false' });
-  const password = h('input', { type: 'password', autocomplete: 'current-password' });
-  const remember = h('input', { type: 'checkbox', checked: state.remember });
+  const lastUser = readLastUsername();
+  // enterkeyhint：手機鍵盤右下角那顆鍵，帳號格顯示「下一個」、密碼格顯示「前往」
+  const username = h('input', {
+    type: 'text', autocomplete: 'username', autocapitalize: 'none', autocorrect: 'off', spellcheck: 'false',
+    enterkeyhint: 'next', value: lastUser || null
+  });
+  const password = h('input', { type: 'password', autocomplete: 'current-password', enterkeyhint: 'go' });
+  const remember = h('input', { type: 'checkbox', class: 'switch', role: 'switch', checked: state.remember });
   const submitBtn = h('button', { type: 'submit', class: 'btn btn-primary btn-block' }, '登入');
+  // 登入失敗的訊息直接寫在登入框裡：畫面最下面的小提示在手機鍵盤開著時會被擋住，看起來像按了沒反應
+  const errorEl = h('p', { class: 'login-error', role: 'alert', hidden: true });
+  const machine = machineSvg(104, '#4F7BE8', 'running', null, { seed: 'login' });
+  machine.classList.add('login-machine');
+  // 小彩蛋：點一下娃娃機，爪子下去抓一下
+  machine.addEventListener('click', () => { machineAct(machine, 'grab'); });
+
+  // 密碼旁邊的「👁」：點一下看得到自己打了什麼（手機上最容易打錯），再點一下藏起來
+  const pwToggle = h('button', { type: 'button', class: 'pw-toggle', 'aria-label': '顯示密碼', 'aria-pressed': 'false' }, '👁');
+  let pwHadFocus = false;
+  pwToggle.addEventListener('pointerdown', () => { pwHadFocus = document.activeElement === password; });
+  pwToggle.addEventListener('click', () => {
+    const show = password.type === 'password';
+    password.type = show ? 'text' : 'password';
+    pwToggle.classList.toggle('on', show);
+    pwToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+    pwToggle.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼');
+    // 本來就在打密碼的話，游標放回去（按這顆鈕會讓密碼格失去焦點、手機鍵盤收起來）
+    if (pwHadFocus) {
+      password.focus();
+      try { password.setSelectionRange(password.value.length, password.value.length); } catch (err) { /* 有些瀏覽器不給設 */ }
+    }
+  });
+
+  let card = null;
+  const clearError = () => { errorEl.hidden = true; errorEl.textContent = ''; };
+  const showError = (message, field) => {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+    if (field && typeof window.fxFieldError === 'function') window.fxFieldError(field);
+    else if (typeof window.fxShake === 'function') window.fxShake(card);
+  };
+  username.addEventListener('input', clearError);
+  password.addEventListener('input', clearError);
+
+  // 帳號格按 Enter：跳到密碼格（原本會直接送出，再跳一個「請輸入密碼」的錯誤）
+  username.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    e.preventDefault();
+    if (!username.value.trim()) { showError('請輸入帳號', username); return; }
+    password.focus();
+  });
 
   const form = h('form', {
     onsubmit: async (e) => {
       e.preventDefault();
+      clearError();
       // 空白就不用送到後端再等它回「請輸入帳號與密碼」：直接標出漏填的那一格
-      if (!username.value.trim()) { fieldError(username, '請輸入帳號'); return; }
-      if (!password.value) { fieldError(password, '請輸入密碼'); return; }
+      if (!username.value.trim()) { showError('請輸入帳號', username); return; }
+      if (!password.value) { showError('請輸入密碼', password); return; }
       submitBtn.disabled = true;
+      machine.classList.add('fx-m-busy'); // 等後端的時候爪子上下動
+      let failure = null;
       const data = await run(() => api('login', {
         username: username.value.trim(),
         password: password.value,
         remember: remember.checked
-      }), { showAuthError: true, button: submitBtn, busyText: '登入中…' });
+      }), { button: submitBtn, busyText: '登入中…', onError: (err) => { failure = err; } });
       submitBtn.disabled = false;
-      if (!data) return;
+      machine.classList.remove('fx-m-busy');
+      if (!data) {
+        // 帳密錯誤、帳號被鎖、連不上……都寫在框裡；框搖一下、機台也搖一下，密碼清掉讓人直接重打
+        showError(failure ? failure.message : '登入失敗，請再試一次');
+        machineAct(machine, 'shake');
+        password.value = '';
+        password.focus();
+        return;
+      }
+      saveLastUsername(username.value.trim());
+      hideToast(); // 剛剛打錯的那句錯誤提示不要跟著進首頁
       saveSession(data.token, data.remember);
       state.user = data.user;
       password.value = '';
       // login 已經把首頁資料一起帶回來了（見 Auth.gs），不用再多打一次 dashboard。
       state.home = data.dashboard;
       _resetToHomeNav();
+      // 爪子抓一下再進首頁（0.6 秒；減少動態效果時馬上進）
+      await machineAct(machine, 'grab');
       render();
       prefetchMachineDetails();
     }
   }, [
     dialogField('帳號', username),
-    dialogField('密碼', password),
+    dialogField('密碼', h('div', { class: 'pw-wrap' }, [password, pwToggle])),
     h('label', { class: 'checkbox', style: 'margin-bottom:18px' }, [
       remember,
       h('span', {}, '記住我（7 天內免重新登入）')
     ]),
+    errorEl,
     submitBtn
   ]);
+  card = h('div', { class: 'card login-card' }, form);
 
-  return h('div', { class: 'login-wrap' }, [
+  // 上次登入過就帶好帳號，游標直接放在密碼格（render() 畫好之後才放得進去）
+  if (lastUser) _focusAfterRender = password;
+
+  // 進場動畫只在「剛打開登入頁」播一次，同一頁重畫不重播
+  const intro = !(_lastRenderKey && _lastRenderKey.indexOf('login:') === 0);
+  return h('div', { class: 'login-wrap' + (intro ? ' fx-login-intro' : '') }, [
     h('div', { class: 'login-head' }, [
-      machineSvg(104, '#4F7BE8', 'running'),
+      machine,
       h('h1', { text: '娃娃機管理系統' })
     ]),
-    h('div', { class: 'card' }, form),
-    h('p', { class: 'small muted center', style: 'margin-top:14px' },
-      '帳號由管理員建立。忘記密碼請找管理員重設。'),
-    h('p', { class: 'small muted center', style: 'margin-top:6px', text: '版本號 ' + APP_VERSION })
+    card,
+    h('div', { class: 'login-foot' }, [
+      h('p', { class: 'small muted center', style: 'margin-top:14px' },
+        '帳號由管理員建立。忘記密碼請找管理員重設。'),
+      h('p', { class: 'small muted center', style: 'margin-top:6px', text: '版本號 ' + APP_VERSION })
+    ])
   ]);
 }
 
@@ -1228,7 +1777,7 @@ function viewHome() {
 
   if (state.homeTab === 'electronic') {
     const t = data.electronicTotal;
-    summary = h('div', { class: 'summary-strip' }, [
+    summary = h('div', { class: 'summary-strip summary-strip-3' }, [
       statNum('今日開分', t.chipIn, money, 'net pos', 'home:el:chipIn'),
       statNum('今日洗分', t.chipOut, money, '', 'home:el:chipOut'),
       statNum('今日盈虧', t.chipNet, money, 'net ' + netClass(t.chipNet), 'home:el:chipNet')
@@ -1236,13 +1785,16 @@ function viewHome() {
     const machines = data.machines.filter((m) => m.category === 'electronic');
     list = machines.length
       ? h('div', { class: 'machine-list' }, machines.map(machineCard))
-      : h('div', { class: 'card empty' }, isAdmin()
+      : emptyState(isAdmin()
         ? '還沒有電子機台。到「⚙ 系統管理 → 機台」新增一台。'
-        : '目前沒有開放給你的電子機台。');
+        : '目前沒有開放給你的電子機台。', 'card');
   } else if (state.homeTab === 'total') {
     const dice = data.diceTotal;
     const electronic = data.electronicTotal;
     const grandNet = dice.net + electronic.chipNet;
+    // 今日總淨收益是這一頁最重要的數字：手機上自己佔一整排、字放大（.stat-hero），一眼看到
+    const grandStat = statNum('今日總淨收益', grandNet, money, 'net ' + netClass(grandNet), 'home:total:grandNet');
+    grandStat.classList.add('stat-hero');
     summary = h('div', {}, [
       // 本月432/441支數放最上面，跟下面「今日」那排分開——是不同時間
       // 範圍的數字，混在同一排容易誤看成也是「今日」的。
@@ -1250,10 +1802,10 @@ function viewHome() {
         statNum('本月432支數', data.month432Count || 0, countText, '', 'home:total:m432'),
         statNum('本月441支數', data.month441Count || 0, countText, '', 'home:total:m441')
       ]),
-      h('div', { class: 'summary-strip' }, [
+      h('div', { class: 'summary-strip summary-strip-3' }, [
         statNum('今日骰台淨收益', dice.net, money, 'net ' + netClass(dice.net), 'home:total:diceNet'),
         statNum('今日電子淨收益', electronic.chipNet, money, 'net ' + netClass(electronic.chipNet), 'home:total:elNet'),
-        statNum('今日總淨收益', grandNet, money, 'net ' + netClass(grandNet), 'home:total:grandNet')
+        grandStat
       ])
     ]);
     list = ledgerCard(data);
@@ -1273,9 +1825,9 @@ function viewHome() {
     const machines = data.machines.filter((m) => m.category !== 'electronic');
     list = machines.length
       ? h('div', { class: 'machine-list' }, machines.map(machineCard))
-      : h('div', { class: 'card empty' }, isAdmin()
+      : emptyState(isAdmin()
         ? '還沒有任何機台。到「⚙ 系統管理 → 機台」新增第一台。'
-        : '目前沒有開放給你的機台，請聯絡管理員。');
+        : '目前沒有開放給你的機台，請聯絡管理員。', 'card');
   }
 
   return h('div', {}, [
@@ -1370,8 +1922,11 @@ function ledgerCard(data) {
   // 上面一排橫的兩顆——手機螢幕塞不下時用橫向捲動（跟 .tabs／
   // .machine-switcher 同一種做法），不要讓按鈕擠壓成直的好幾排。
   // 「匯出明細截圖」放最下面總結餘下面，不跟這排擠在一起。
-  const actionsRow = h('div', { class: 'row', style: 'flex-wrap:nowrap; overflow-x:auto; gap:8px; margin-bottom:10px; justify-content:flex-end' }, [
-    h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto', onclick: goActivityQuery }, '🎁 活動查詢'),
+  // 靠右排用第一顆的 margin-left:auto，不用 justify-content:flex-end——後者在按鈕總寬超過
+  // 螢幕時會把多出來的部分推到「左邊外面」，那一截捲不回來（最左邊的「活動查詢」會被切掉一截）；
+  // auto 外距在塞不下時自動變成 0，改成從左邊開始排、往右捲得到全部。
+  const actionsRow = h('div', { class: 'row', style: 'flex-wrap:nowrap; overflow-x:auto; gap:8px; margin-bottom:10px' }, [
+    h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto; margin-left:auto', onclick: goActivityQuery }, '🎁 活動查詢'),
     h('button', { class: 'btn btn-sm', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => goReport('', 'dice') }, '📊 骰台查詢'),
     canRecord()
       ? h('button', { class: 'btn btn-sm btn-prize', style: 'white-space:nowrap; flex:0 0 auto', onclick: () => editDailyLedger(data) }, '✎ 設定今日數字')
@@ -1661,9 +2216,11 @@ function businessDayBar(biz) {
       + (biz.current.openedByName ? '（' + biz.current.openedByName + '）' : '')
     : '尚未開始今日營業，記帳暫時照行事曆日期算';
 
+  // 兩顆都一直能按，只是「現在不該按的那顆」退成外框樣式（bizday-dim），提示該按哪一顆：
+  // 還沒營業時突顯「開始」，營業中突顯「結單」
   const actions = [
-    h('button', { class: 'btn btn-in', onclick: doStartBusinessDay }, '▶ 今日營業開始'),
-    h('button', { class: 'btn btn-out', onclick: doEndBusinessDay }, '⏹ 今日營業結單')
+    h('button', { class: 'btn btn-in' + (isOpen ? ' bizday-dim' : ''), onclick: doStartBusinessDay }, '▶ 今日營業開始'),
+    h('button', { class: 'btn btn-out' + (isOpen ? '' : ' bizday-dim'), onclick: doEndBusinessDay }, '⏹ 今日營業結單')
   ];
   // 誤按「結單」的復原按鈕：只有管理員看得到，只在目前沒有進行中的
   // 營業日時才出現。真的「沒有可以復原的營業日」（例如從沒按過這個
@@ -1674,7 +2231,11 @@ function businessDayBar(biz) {
   }
 
   return h('div', { class: 'bizday-bar' }, [
-    h('div', { class: 'bizday-status small muted', text: status }),
+    // 狀態前面的小圓點：營業中是會呼吸的綠燈（ui_fx.css 的 .fx-breath），還沒營業是不亮的灰點
+    h('div', { class: 'bizday-status small muted' }, [
+      h('span', { class: 'bizday-dot' + (isOpen ? ' on fx-breath' : ''), 'aria-hidden': 'true' }),
+      status
+    ]),
     h('div', { class: 'bizday-actions' }, actions)
   ]);
 }
@@ -1692,35 +2253,53 @@ function _clearMachineDetailCache() {
   });
 }
 
-function doStartBusinessDay(e) {
+async function doStartBusinessDay(e) {
+  const btn = e && e.currentTarget; // 見 askConfirm() 的說明：要在 await 之前記下來
   const biz = state.home && state.home.businessDay;
-  if (biz && biz.open && !confirm('目前已經在營業中，確定要重新開始今日營業嗎？\n這會自動結算目前這個營業日，並開一個新的。')) return;
+  if (biz && biz.open && !(await askConfirm({
+    title: '重新開始今日營業？',
+    message: '目前已經在營業中。重新開始會自動結算目前這個營業日，並開一個新的。',
+    okText: '重新開始'
+  }))) return;
   run(async () => {
     await api('startBusinessDay', {});
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: e && e.currentTarget, busyText: '處理中…' });
+    playShopLights('open');
+  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: btn, busyText: '處理中…' });
 }
 
-function doEndBusinessDay(e) {
-  if (!confirm('確定要結算今日營業嗎？結單後才能再次「今日營業開始」。')) return;
+async function doEndBusinessDay(e) {
+  const btn = e && e.currentTarget;
+  if (!(await askConfirm({
+    title: '結算今日營業？',
+    message: '結單後才能再次「今日營業開始」。',
+    okText: '結單'
+  }))) return;
   run(async () => {
     await api('endBusinessDay', {});
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已結算今日營業', button: e && e.currentTarget, busyText: '處理中…' });
+    playShopLights('close');
+  }, { success: '已結算今日營業', button: btn, busyText: '處理中…' });
 }
 
-function doReopenBusinessDay(e) {
-  if (!confirm('確定要復原剛剛的結單嗎？會把最近一筆營業日改回「進行中」。')) return;
+async function doReopenBusinessDay(e) {
+  const btn = e && e.currentTarget;
+  if (!(await askConfirm({
+    title: '復原剛剛的結單？',
+    message: '會把最近一筆營業日改回「進行中」。',
+    okText: '復原'
+  }))) return;
   run(async () => {
     await api('reopenBusinessDay', {});
     showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
-  }, { success: '已復原，回到營業中', button: e && e.currentTarget, busyText: '處理中…' });
+    playShopLights('open');
+  }, { success: '已復原，回到營業中', button: btn, busyText: '處理中…' });
 }
 
 function machineCard(m) {
@@ -1735,7 +2314,7 @@ function machineCard(m) {
     type: 'button',
     onclick: () => goMachine(m.machineId)
   }, [
-    machineSvg(72, m.color, m.status, m.icon),
+    machineSvg(72, m.color, m.status, m.icon, { seed: m.machineId }),
     h('div', { class: 'info' }, [
       h('div', { class: 'name', text: m.name }),
       h('div', { class: 'loc' }, [
@@ -1753,6 +2332,46 @@ function machineCard(m) {
 }
 
 // ── 畫面：機台詳細 ──────────────────────────────────────
+
+/**
+ * 記帳成功後，機台頁上面那台大娃娃機跟著做動作（machineAct），「今日淨收益」旁邊飄出這筆的金額。
+ * 送出成功時先用 queueMachineReaction() 記下來，接著畫面重畫、viewMachine() 畫到同一台時
+ * 用 playMachineReaction() 播——跟「新紀錄亮一下」同一個做法：只用一次，15 秒內、同一台才算
+ * （送出後還沒等到後端回來就切去別台，不會在別台播）。
+ * delta：{ amount：這筆讓淨收益加減多少, tone：'in'／'out'／'prize'（飄字的顏色）}，可省略。
+ */
+let _machineReaction = null;
+function queueMachineReaction(machineId, act, delta) {
+  _machineReaction = { machineId: machineId, act: act, delta: delta || null, at: Date.now() };
+}
+function playMachineReaction(machineId, svg, anchor) {
+  const r = _machineReaction;
+  if (!r || r.machineId !== machineId) return;
+  _machineReaction = null;
+  if (Date.now() - r.at > 15000) return;
+  if (typeof window.fxReduced !== 'function' || window.fxReduced()) return; // 沒載到 ui_fx 或減少動態效果：不播
+  // 畫面要等 render() 放進頁面才看得到，下一個畫面更新再開始播
+  requestAnimationFrame(() => { if (svg.isConnected) machineAct(svg, r.act); });
+  if (r.delta && anchor) {
+    const d = r.delta;
+    const float = h('span', {
+      class: 'fx-delta fx-delta-' + d.tone,
+      'aria-hidden': 'true',
+      text: (d.amount >= 0 ? '+' : '−') + money(Math.abs(d.amount))
+    });
+    anchor.classList.add('fx-delta-anchor');
+    anchor.appendChild(float);
+    setTimeout(() => float.remove(), 1700);
+  }
+}
+
+/** 營業開始／結單後，首頁每台機台的燈從上到下依序亮起來（open）或熄掉再恢復（close）。 */
+function playShopLights(kind) {
+  if (typeof window.fxReduced !== 'function' || window.fxReduced()) return;
+  document.querySelectorAll('.machine-list .pixel-machine').forEach((svg, i) => {
+    setTimeout(() => machineAct(svg, kind === 'open' ? 'powerOn' : 'powerOff'), i * 110);
+  });
+}
 
 function viewMachine() {
   const d = state.detail;
@@ -1774,8 +2393,9 @@ function viewMachine() {
     h('button', { class: 'btn btn-sm', onclick: () => goReport(m.machineId) }, '📊 查詢報表')
   ]);
 
+  const heroSvg = machineSvg(96, m.color, m.status, m.icon, { seed: m.machineId });
   const hero = h('div', { class: 'detail-hero' }, [
-    machineSvg(96, m.color, m.status, m.icon),
+    heroSvg,
     h('div', { class: 'title' }, [
       h('h2', { text: m.name }),
       h('div', { class: 'small muted', text: m.location || '—' }),
@@ -1788,14 +2408,17 @@ function viewMachine() {
 
   const switcher = machineSwitcher(m.machineId);
 
-  if (m.category === 'electronic') return viewElectronicMachine(d, nav, hero, switcher);
+  if (m.category === 'electronic') return viewElectronicMachine(d, nav, hero, switcher, heroSvg);
+
+  const netStat = h('div', { class: 'stat net-stat center' }, [
+    h('div', { class: 'stat-label', text: '今日淨收益（已扣活動成本）' }),
+    countEl('div', 'stat-value num net ' + netClass(d.today.net), d.today.net, money, 'detail:' + m.machineId + ':net'),
+    countEl('div', 'small muted num', d.total.net, (n) => '本週淨收益 ' + money(n), 'detail:' + m.machineId + ':week')
+  ]);
+  playMachineReaction(m.machineId, heroSvg, netStat);
 
   const figures = h('div', { class: 'figures-panel' }, [
-    h('div', { class: 'stat net-stat center' }, [
-      h('div', { class: 'stat-label', text: '今日淨收益（已扣活動成本）' }),
-      countEl('div', 'stat-value num net ' + netClass(d.today.net), d.today.net, money, 'detail:' + m.machineId + ':net'),
-      countEl('div', 'small muted num', d.total.net, (n) => '本週淨收益 ' + money(n), 'detail:' + m.machineId + ':week')
-    ]),
+    netStat,
     statNum('今日入幣', d.today.in, money, '', 'detail:' + m.machineId + ':in'),
     statNum('今日出幣', d.today.out, money, '', 'detail:' + m.machineId + ':out'),
     statNum('今日432數量', d.today432Count || 0, countText, '', 'detail:' + m.machineId + ':432')
@@ -1820,11 +2443,13 @@ function viewMachine() {
 }
 
 /** 電子機台的詳細頁：只有開分／洗分兩顆按鈕，沒有入幣/出幣/活動。 */
-function viewElectronicMachine(d, nav, hero, switcher) {
+function viewElectronicMachine(d, nav, hero, switcher, heroSvg) {
+  const netStat = statNum('盈虧金額', d.today.chipNet, money, 'net ' + netClass(d.today.chipNet), 'detail:' + d.machine.machineId + ':chipNet');
+  playMachineReaction(d.machine.machineId, heroSvg, netStat);
   const figures = h('div', { class: 'figures-panel' }, [
     statNum('開分金額', d.today.chipIn, money, 'net pos', 'detail:' + d.machine.machineId + ':chipIn'),
     statNum('洗分金額', d.today.chipOut, money, '', 'detail:' + d.machine.machineId + ':chipOut'),
-    statNum('盈虧金額', d.today.chipNet, money, 'net ' + netClass(d.today.chipNet), 'detail:' + d.machine.machineId + ':chipNet')
+    netStat
   ]);
 
   const actions = canRecord()
@@ -1977,7 +2602,9 @@ function renderPanel(d) {
 // ── 面板：電子機台開分／洗分（永遠手動輸入，沒有快捷金額）───
 
 function chipPanel(d, type) {
-  const custom = h('input', { type: 'number', inputmode: 'decimal', min: '1', placeholder: '輸入金額', autofocus: true });
+  const custom = h('input', { type: 'number', inputmode: 'decimal', min: '1', placeholder: '輸入金額' });
+  // 剛打開面板：游標直接放進金額格，數字鍵盤馬上出來（autofocus 屬性只有頁面第一次有效，所以不用它）
+  if (_panelJustOpened) _focusAfterRender = custom;
 
   const sendBtn = h('button', { class: 'btn btn-' + (type === 'chip_in' ? 'in' : 'out') }, '送出');
   const submit = () => {
@@ -2013,7 +2640,7 @@ function quickPanel(d, type) {
       btn,
       h('div', { class: 'quick-edit' }, [
         h('button', { class: 'btn', onclick: () => editQuickAmount(d, type, qa) }, '改'),
-        h('button', { class: 'btn btn-danger', onclick: () => deleteQuickAmount(qa) }, '刪')
+        h('button', { class: 'btn btn-danger', onclick: () => deleteQuickAmount(qa, type) }, '刪')
       ])
     ]);
   });
@@ -2039,7 +2666,7 @@ function quickPanel(d, type) {
     ]),
     list.length
       ? h('div', { class: 'quick-grid' }, buttons)
-      : h('div', { class: 'empty' }, isAdmin() ? '還沒有快捷金額，點「✎ 編輯」新增。' : '尚未設定快捷金額，請用下方自訂金額。'),
+      : emptyState(isAdmin() ? '還沒有快捷金額，點「✎ 編輯」新增。' : '尚未設定快捷金額，請用下方自訂金額。', null, 40),
     h('div', { class: 'custom-amount' }, [
       custom,
       h('button', {
@@ -2062,15 +2689,20 @@ function scopeNote(machineId, sheet, scope) {
     h('span', { text: isGlobal ? '目前沿用全局設定（改動會影響所有機台）' : '目前是本台專屬設定' }),
     h('button', {
       class: 'btn btn-sm btn-ghost',
-      onclick: (e) => run(async () => {
-        if (isGlobal) {
-          await api('forkScope', { sheet: sheet, machineId: machineId });
-        } else {
-          if (!confirm('要刪除本台的專屬設定、改回沿用全局嗎？')) return;
-          await api('resetScope', { sheet: sheet, machineId: machineId });
-        }
-        await loadDetail(machineId);
-      }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局', button: e.currentTarget, busyText: '處理中…' })
+      onclick: async (e) => {
+        const btn = e.currentTarget; // 見 askConfirm() 的說明：要在 await 之前記下來
+        if (!isGlobal && !(await askConfirm({
+          title: '改回沿用全局？',
+          message: '會刪除本台的專屬設定，改回跟其他機台共用的全局設定。',
+          okText: '改回全局',
+          danger: true
+        }))) return;
+        run(async () => {
+          if (isGlobal) await api('forkScope', { sheet: sheet, machineId: machineId });
+          else await api('resetScope', { sheet: sheet, machineId: machineId });
+          await loadDetail(machineId);
+        }, { success: isGlobal ? '已改為本台專屬設定' : '已改回沿用全局', button: btn, busyText: '處理中…' });
+      }
     }, isGlobal ? '改成本台自訂' : '改回沿用全局')
   ]);
 }
@@ -2108,8 +2740,13 @@ function editQuickAmount(d, type, qa) {
   ]);
 }
 
-function deleteQuickAmount(qa) {
-  if (!confirm('確定要刪除這個快捷鍵嗎？')) return;
+async function deleteQuickAmount(qa, type) {
+  if (!(await askConfirm({
+    title: '刪除這個快捷鍵？',
+    detail: TYPE_LABELS[type] + ' ' + (qa.label || money(qa.amount)),
+    okText: '刪除',
+    danger: true
+  }))) return;
   run(async () => {
     await api('deleteQuickAmount', { qaId: qa.qaId });
     await collapseDeletedRow();
@@ -2127,7 +2764,14 @@ function submitAmount(machineId, type, amount, btn) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
+    else {
+      toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success');
+      showSuccessCheck();
+      flashNewRecords(before);
+      // 開分：金幣掉進去、盈虧變多；出幣／洗分：金幣彈出來、淨收益變少
+      if (type === 'chip_in') queueMachineReaction(machineId, 'coinIn', { amount: amount, tone: 'in' });
+      else queueMachineReaction(machineId, 'coinOut', { amount: -amount, tone: 'out' });
+    }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
@@ -2149,6 +2793,8 @@ function meterPanel(d) {
     value: d.lastMeterReading === null ? '' : String(d.lastMeterReading)
   });
   const endInput = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1' });
+  // 剛打開面板：游標直接放進下班表（上班表已經帶好上次的讀數）；第一次用、上班表還空著就放上班表
+  if (_panelJustOpened) _focusAfterRender = startInput.value === '' ? startInput : endInput;
   const previewEl = h('span', { class: 'amount num', text: money(0) });
   const submitBtn = h('button', { class: 'btn btn-in', disabled: true }, '送出');
   const hintEl = h('p', { class: 'small muted', style: 'margin-top:6px' }, '');
@@ -2190,7 +2836,8 @@ function meterPanel(d) {
     dialogField('上班表', startInput),
     dialogField('下班表', endInput),
     hintEl,
-    h('div', { class: 'panel-total' }, [
+    // panel-total-in：金額用入幣的綠色（.panel-total 預設是活動的紫色，那是給活動面板用的）
+    h('div', { class: 'panel-total panel-total-in' }, [
       h('span', { class: 'muted' }, '本次入幣'),
       h('div', { class: 'row' }, [previewEl, submitBtn])
     ]),
@@ -2210,7 +2857,12 @@ function submitMeterRecord(machineId, startInput, endInput, btn) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
+    else {
+      toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success');
+      showSuccessCheck();
+      flashNewRecords(before);
+      queueMachineReaction(machineId, 'coinIn', { amount: res.records[0].amount, tone: 'in' });
+    }
     // 後端已經把送出之後最新的詳細頁資料一起回傳（見 Service.gs 的
     // addMeterRecord），不用再另外打一次 machineDetail，省一趟網路來回。
     applyDetail(machineId, res.detail);
@@ -2255,10 +2907,14 @@ function prizePanel(d) {
   const totalEl = h('span', { class: 'amount num', text: money(0) });
   const submitBtn = h('button', { class: 'btn btn-prize', disabled: true }, '送出');
 
+  // 合計金額：按＋／－之後從舊數字跳到新數字（第一次畫直接顯示）
+  let shownSum = null;
   function recalc() {
     let sum = 0;
     prizes.forEach((p) => { sum += (state.prizeCounts[p.prizeId] || 0) * p.amount; });
-    totalEl.textContent = money(sum);
+    if (shownSum !== null && shownSum !== sum && typeof window.fxCountFrom === 'function') window.fxCountFrom(totalEl, shownSum, sum, money);
+    else totalEl.textContent = money(sum);
+    shownSum = sum;
     submitBtn.disabled = sum <= 0;
   }
 
@@ -2270,9 +2926,12 @@ function prizePanel(d) {
 
     function setCount(n) {
       const v = Math.max(0, Math.min(9999, Math.floor(Number(n) || 0)));
+      const changed = v !== (state.prizeCounts[p.prizeId] || 0);
       state.prizeCounts[p.prizeId] = v;
       input.value = String(v);
       row.classList.toggle('has-count', v > 0);
+      // 數字變了就彈一下（ui_fx.js 的 fxBump），長按連加時看得出一直在加
+      if (changed && typeof window.fxBump === 'function') window.fxBump(input);
       recalc();
     }
 
@@ -2289,9 +2948,9 @@ function prizePanel(d) {
           h('button', { class: 'btn btn-sm btn-danger', onclick: () => deletePrize(p) }, '刪')
         ])
         : h('div', { class: 'stepper' }, [
-          h('button', { type: 'button', onclick: () => setCount((state.prizeCounts[p.prizeId] || 0) - 1) }, '−'),
+          holdRepeat(h('button', { type: 'button', 'aria-label': '減一' }, '−'), () => setCount((state.prizeCounts[p.prizeId] || 0) - 1)),
           input,
-          h('button', { type: 'button', onclick: () => setCount((state.prizeCounts[p.prizeId] || 0) + 1) }, '＋')
+          holdRepeat(h('button', { type: 'button', 'aria-label': '加一' }, '＋'), () => setCount((state.prizeCounts[p.prizeId] || 0) + 1))
         ])
     ]);
 
@@ -2312,8 +2971,8 @@ function prizePanel(d) {
         }, state.editMode ? '完成' : '✎ 編輯')
         : null
     ]),
-    prizes.length ? h('div', {}, rows) : h('div', { class: 'empty' },
-      isAdmin() ? '還沒有獎型，點「✎ 編輯」新增。' : '尚未設定獎型，請聯絡管理員。'),
+    prizes.length ? h('div', {}, rows) : emptyState(
+      isAdmin() ? '還沒有獎型，點「✎ 編輯」新增。' : '尚未設定獎型，請聯絡管理員。', null, 40),
     state.editMode && isAdmin()
       ? h('button', { class: 'btn btn-block', style: 'margin-top:10px', onclick: () => editPrize(d, null) }, '＋ 新增獎型')
       : null,
@@ -2325,6 +2984,40 @@ function prizePanel(d) {
       : null,
     isAdmin() ? scopeNote(d.machine.machineId, 'Prizes', prizes.length ? prizes[0].scope : 'global') : null
   ]);
+}
+
+/**
+ * 按住連續觸發（活動的＋／－）：點一下加一次；按住 0.45 秒後開始連加，越按越快。
+ * 手指按下去就移動（其實是要捲動面板）不算；用鍵盤按（Enter／空白鍵）照樣加一次。
+ * 回傳按鈕本身，方便直接放進 h() 的 children。
+ */
+function holdRepeat(btn, fn) {
+  let timer = null;
+  let active = false;
+  let repeating = false;
+  let n = 0;
+  let sx = 0;
+  let sy = 0;
+  const stop = () => { clearTimeout(timer); timer = null; active = false; repeating = false; };
+  const repeat = () => { fn(); n++; timer = setTimeout(repeat, Math.max(50, 150 - n * 10)); };
+  btn.addEventListener('pointerdown', (e) => {
+    if (e.button !== undefined && e.button !== 0) return;
+    stop();
+    active = true;
+    n = 0;
+    sx = e.clientX;
+    sy = e.clientY;
+    timer = setTimeout(() => { repeating = true; repeat(); }, 450);
+  });
+  btn.addEventListener('pointermove', (e) => {
+    if (active && !repeating && (Math.abs(e.clientX - sx) > 8 || Math.abs(e.clientY - sy) > 8)) stop();
+  });
+  btn.addEventListener('pointerup', () => { if (active && !repeating) fn(); stop(); });
+  btn.addEventListener('pointercancel', stop);
+  btn.addEventListener('pointerleave', stop);
+  btn.addEventListener('click', (e) => { if (e.detail === 0) fn(); }); // 鍵盤按的 click 沒有 pointer 事件
+  btn.addEventListener('contextmenu', (e) => e.preventDefault()); // 長按不要跳出系統選單
+  return btn;
 }
 
 function submitPrizes(machineId, prizes, btn) {
@@ -2341,7 +3034,13 @@ function submitPrizes(machineId, prizes, btn) {
       clientToken: uuid()
     });
     if (res.duplicated) toast('這筆已經記過了', 'success');
-    else { toast('活動 ' + money(res.total) + ' 已登錄', 'success'); showSuccessCheck(); flashNewRecords(before); }
+    else {
+      toast('活動 ' + money(res.total) + ' 已登錄', 'success');
+      showSuccessCheck();
+      flashNewRecords(before);
+      // 爪子下去夾一個娃娃上來；活動成本從淨收益扣掉
+      queueMachineReaction(machineId, 'grab', { amount: -res.total, tone: 'prize' });
+    }
     state.prizeCounts = {};
     await loadDetail(machineId);
   }, { button: btn, busyText: '送出中…' });
@@ -2380,8 +3079,14 @@ function editPrize(d, prize) {
   ]);
 }
 
-function deletePrize(prize) {
-  if (!confirm('確定要刪除「' + prize.name + '」嗎？\n已登錄的歷史紀錄不會受影響。')) return;
+async function deletePrize(prize) {
+  if (!(await askConfirm({
+    title: '刪除這個獎型？',
+    message: '已登錄的歷史紀錄不會受影響。',
+    detail: prize.name + '（單價 ' + money(prize.amount) + '）',
+    okText: '刪除',
+    danger: true
+  }))) return;
   run(async () => {
     await api('deletePrize', { prizeId: prize.prizeId });
     await collapseDeletedRow();
@@ -2417,7 +3122,7 @@ function renderRecords(d) {
   const since = f && f.machineId === d.machine.machineId && Date.now() - f.at < 5000 ? f.ids : null;
   const items = d.records.length
     ? d.records.map((r) => recordItem(r, !!since && !since.has(r.recordId)))
-    : [h('div', { class: 'empty' }, '還沒有任何紀錄')];
+    : [emptyState('還沒有任何紀錄')];
 
   return h('div', { class: 'card' }, [
     h('div', { class: 'panel-head' }, [
@@ -2450,11 +3155,18 @@ function recordItem(r, isNew) {
   ]);
 }
 
-function voidRecord(r) {
-  if (!confirm('確定要作廢這筆紀錄嗎？\n' + TYPE_LABELS[r.type] + ' ' + money(r.amount))) return;
+async function voidRecord(r) {
+  const what = r.type === 'prize' ? ('活動 ' + r.prizeName + ' ×' + r.count) : TYPE_LABELS[r.type];
+  if (!(await askConfirm({
+    title: '作廢這筆紀錄？',
+    detail: what + '　' + money(r.amount) + '\n' + formatTime(r.createdAt) + ' · ' + (r.userName || '—'),
+    okText: '作廢',
+    danger: true
+  }))) return;
   run(async () => {
     await api('voidRecord', { recordId: r.recordId });
     await collapseDeletedRow();
+    queueMachineReaction(state.machineId, 'shake'); // 作廢：機台搖一下
     await loadDetail(state.machineId);
   }, { success: '已作廢' });
 }
@@ -2505,13 +3217,15 @@ function viewActivityQuery() {
     }))
   ]);
 
-  const title = h('h1', { text: '活動查詢' });
+  // 標題包在 .topbar 裡，字級跟查詢報表頁的機台名稱一樣（styles.css 的 .topbar h1）；
+  // 原本是沒套樣式的 h1，瀏覽器預設 2 倍大，比其他頁的標題大一截
+  const title = h('div', { class: 'topbar' }, [h('h1', { text: '活動查詢' })]);
 
   if (!r) {
     return h('div', {}, [nav, title, customRange, loadingView('activity')]);
   }
 
-  const stats = h('div', { class: 'report-stats' }, [
+  const stats = h('div', { class: 'report-stats report-stats-3' }, [
     statBox('432支數', String(r.count432 || 0), ''),
     statBox('441支數', String(r.count441 || 0), ''),
     statBox('開銷', money(r.manualExpense), '')
@@ -2598,7 +3312,7 @@ function viewReport() {
   // 要改用 chipIn/chipOut/chipNet。
   const isElectronic = rep.scope.category === 'electronic';
   const stats = isElectronic
-    ? h('div', { class: 'report-stats', style: 'margin-bottom:12px' }, [
+    ? h('div', { class: 'report-stats report-stats-3', style: 'margin-bottom:12px' }, [
       statBox('開分', money(s.chipIn), 'net pos'),
       statBox('洗分', money(s.chipOut)),
       statBox('盈虧金額', money(s.chipNet), 'net ' + netClass(s.chipNet))
@@ -2759,7 +3473,7 @@ function recordsTableCard(rep) {
           h('tbody', {}, rows)
         ])
       ])
-      : h('div', { class: 'empty' }, '這個區間沒有紀錄')
+      : emptyState('這個區間沒有紀錄')
   ]);
 }
 
@@ -3131,7 +3845,7 @@ const MACHINE_CATEGORY_LABELS = { dice: '骰台', electronic: '電子' };
 
 function adminMachines(data) {
   const items = data.machines.map((m) => h('div', { class: 'admin-item' }, [
-    machineSvg(40, m.color, m.status, m.icon),
+    machineSvg(40, m.color, m.status, m.icon, { seed: m.machineId }),
     h('div', { class: 'admin-main' }, [
       h('div', { class: 'admin-name' }, [
         m.name,
@@ -3167,7 +3881,7 @@ function editMachine(m, presetCategory) {
   let color = m ? m.color : MACHINE_COLORS[0];
   let icon = m ? (m.icon || DEFAULT_MACHINE_ICON) : DEFAULT_MACHINE_ICON;
 
-  const refreshPreview = () => preview.replaceChildren(machineSvg(72, color, status.value, icon));
+  const refreshPreview = () => preview.replaceChildren(machineSvg(72, color, status.value, icon, { seed: 'preview' }));
 
   const swatches = h('div', { class: 'color-swatches' }, MACHINE_COLORS.map((c) => {
     const btn = h('button', {
@@ -3197,13 +3911,13 @@ function editMachine(m, presetCategory) {
         refreshPreview();
       }
     }, [
-      machineSvg(40, '#4F7BE8', 'running', key),
+      machineSvg(40, '#4F7BE8', 'running', key, { still: true }), // 選圖案的小按鈕：靜態圖就好
       MACHINE_ICON_LABELS[key] || key
     ]);
     return btn;
   }));
 
-  const preview = h('div', { class: 'center', style: 'margin-bottom:14px' }, machineSvg(72, color, m ? m.status : 'running', icon));
+  const preview = h('div', { class: 'center', style: 'margin-bottom:14px' }, machineSvg(72, color, m ? m.status : 'running', icon, { seed: 'preview' }));
   status.addEventListener('change', refreshPreview);
 
   const fields = [
@@ -3258,7 +3972,7 @@ function adminPrizes(data) {
       '這裡設定的是「全局獎型」，所有機台預設都用這一組。'
       + '某台需要不一樣時，到那台的詳細頁按「🎁 活動 → ✎ 編輯 → 改成本台自訂」。'),
     h('button', { class: 'btn btn-primary btn-block', style: 'margin-bottom:14px', onclick: () => editGlobalPrize(null) }, '＋ 新增獎型'),
-    items.length ? h('div', { class: 'admin-list' }, items) : h('div', { class: 'card empty' }, '還沒有獎型'),
+    items.length ? h('div', { class: 'admin-list' }, items) : emptyState('還沒有獎型', 'card'),
     data.prizes.overrides.length
       ? h('p', { class: 'small muted', style: 'margin-top:14px' },
         '注意：' + data.prizes.overrides.map((o) => o.name).join('、')
@@ -3300,8 +4014,14 @@ function editGlobalPrize(p) {
   ]);
 }
 
-function deletePrizeFromAdmin(p) {
-  if (!confirm('確定要刪除「' + p.name + '」嗎？\n已登錄的歷史紀錄不會受影響。')) return;
+async function deletePrizeFromAdmin(p) {
+  if (!(await askConfirm({
+    title: '刪除這個獎型？',
+    message: '已登錄的歷史紀錄不會受影響。',
+    detail: p.name + '（單價 ' + money(p.amount) + '）',
+    okText: '刪除',
+    danger: true
+  }))) return;
   run(async () => {
     await api('deletePrize', { prizeId: p.prizeId });
     await collapseDeletedRow();
@@ -3315,7 +4035,7 @@ function adminPerms(data) {
   if (!perms.owners.length) {
     return h('div', {}, [
       h('div', { class: 'perm-note' }, '管理員與巡邏人員自動擁有全部機台，不需要在這裡設定。'),
-      h('div', { class: 'card empty' }, '目前沒有台主帳號。到「帳號」分頁新增角色為「台主」的帳號後，就能在這裡指定他看得到哪些機台。')
+      emptyState('目前沒有台主帳號。到「帳號」分頁新增角色為「台主」的帳號後，就能在這裡指定他看得到哪些機台。', 'card')
     ]);
   }
 
@@ -3353,7 +4073,7 @@ function adminPerms(data) {
               await loadAdmin();
             }
           }),
-          machineSvg(28, m.color, m.status, m.icon),
+          machineSvg(28, m.color, m.status, m.icon, { still: true }),
           h('span', { class: 'grow', text: m.name }),
           h('span', { class: 'small muted', text: m.location || '' })
         ]);
@@ -3522,7 +4242,9 @@ function goAdmin() {
   if (!cacheFresh('admin')) loadAdmin();
 }
 
-function doLogout() {
+async function doLogout() {
+  // 「登出」跟「改密碼」「系統管理」擠在右上角，按一下就登出很容易誤按，先問一聲
+  if (!(await askConfirm({ title: '要登出嗎？', message: '登出後要重新輸入帳號密碼。', okText: '登出' }))) return;
   const token = state.token;
   clearSession();
   state.view = 'login';
@@ -3578,8 +4300,47 @@ function openChangePasswordDialog() {
  */
 let _lastRenderKey = null;
 
+/**
+ * 畫完之後要把游標放進哪一格（例如打開入幣面板→下班表、登入頁帶好帳號→密碼）。
+ * 一定要等 render() 把新畫面放進頁面才 focus 得到；render() 是在按鈕的點擊事件裡同步跑的，
+ * 在這裡 focus 還算「使用者按下去的那一下」，手機才會直接跳出鍵盤。
+ */
+let _focusAfterRender = null;
+
 /** 上一次 render() 畫的是不是讀取中骨架——是的話，這次資料到了，清單要依序浮上來。 */
 let _lastRenderWasSkeleton = false;
+
+/** 首頁每個分頁籤（骰台／電子／加總）離開時捲到哪裡，回首頁時捲回去（見 render()）。 */
+const _homeScrollMemo = {};
+
+/** 每一頁「在第幾層」：數字大的是比較裡面的頁，用來判斷換頁是往裡走還是返回。 */
+/** 最近一次換頁轉場（方向、開始時間），給「轉場中又重畫」接著播用。 */
+let _pageAnim = null;
+
+const VIEW_DEPTH = { login: 0, home: 1, machine: 2, activity: 2, admin: 2, report: 3 };
+
+/**
+ * 換頁轉場的方向（ui_fx.css 的 .fx-page-fwd／.fx-page-back／.fx-page-fade）：
+ *   往裡走（首頁→機台→報表、首頁→系統管理…）→ 'fwd'，新頁從右邊滑進來
+ *   返回 → 'back'，從左邊滑回來
+ *   上排機台籤換機台 → 照機台順序，往後一台 'fwd'、往前一台 'back'
+ *   登入、登出 → 'fade'，淡入就好
+ * 開機第一次畫、同一頁換分頁籤（首頁的骰台／電子／加總有自己的滑動膠囊）、
+ * 沒載到 ui_fx 或手機開了減少動態效果 → null，不做轉場。
+ */
+function pageDirection(prevKey, nextKey) {
+  if (!prevKey || typeof window.fxReduced !== 'function' || window.fxReduced()) return null;
+  const [prevView, prevMachine] = prevKey.split(':');
+  const [nextView, nextMachine] = nextKey.split(':');
+  if (prevView === 'boot' || nextView === 'boot') return null;
+  if (prevView === nextView) {
+    if (nextView !== 'machine' || prevMachine === nextMachine) return null;
+    const order = (state.home && state.home.machines || []).map((m) => String(m.machineId));
+    return order.indexOf(nextMachine) < order.indexOf(prevMachine) ? 'back' : 'fwd';
+  }
+  if (prevView === 'login' || nextView === 'login') return 'fade';
+  return (VIEW_DEPTH[nextView] || 0) >= (VIEW_DEPTH[prevView] || 0) ? 'fwd' : 'back';
+}
 
 function render() {
   const app = document.getElementById('app');
@@ -3605,14 +4366,40 @@ function render() {
   _lastRenderWasSkeleton = isSkeleton;
 
   const renderKey = state.view + ':' + (state.machineId || '') + ':' + (state.homeTab || '');
-  const isNavigation = renderKey !== _lastRenderKey;
+  const prevKey = _lastRenderKey;
+  const isNavigation = renderKey !== prevKey;
   const prevScrollY = window.scrollY;
   _lastRenderKey = renderKey;
 
+  // 離開首頁（點進機台、查詢、系統管理…）時記下首頁捲到哪裡，回首頁時捲回去——
+  // 機台一多，從後面幾台返回不用再往下找一次
+  const prevView = prevKey ? prevKey.split(':')[0] : null;
+  if (isNavigation && prevView === 'home' && state.view !== 'home') _homeScrollMemo[prevKey.split(':')[2]] = prevScrollY;
+  const backToHome = isNavigation && state.view === 'home' && ['machine', 'report', 'activity', 'admin'].indexOf(prevView) >= 0;
+
+  // 換頁有方向感：往裡面走（首頁→機台→報表）新頁從右邊滑進來，返回從左邊滑回來
+  // 轉場還沒播完就又重畫同一頁（例如回首頁時先畫快取、後端資料接著回來）：接著播完剩下的，不要半路跳掉
+  const dir = isNavigation ? pageDirection(prevKey, renderKey) : null;
+  if (dir) {
+    node.classList.add('fx-page-' + dir);
+    _pageAnim = { dir: dir, at: Date.now() };
+  } else if (!isNavigation && _pageAnim && Date.now() - _pageAnim.at < 300) {
+    node.classList.add('fx-page-' + _pageAnim.dir);
+    node.style.animationDelay = -(Date.now() - _pageAnim.at) + 'ms';
+  } else if (isNavigation) {
+    _pageAnim = null;
+  }
+
   app.replaceChildren(node);
 
-  if (isNavigation) window.scrollTo(0, 0);
+  if (isNavigation) window.scrollTo(0, backToHome ? (_homeScrollMemo[state.homeTab || ''] || 0) : 0);
   else if (prevScrollY > 0) window.scrollTo(0, prevScrollY);
+
+  const focusEl = _focusAfterRender;
+  _focusAfterRender = null;
+  if (focusEl && focusEl.isConnected) {
+    try { focusEl.focus({ preventScroll: true }); } catch (err) { /* 不影響畫面 */ }
+  }
 }
 
 function viewSetupNotice() {

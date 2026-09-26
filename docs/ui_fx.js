@@ -15,6 +15,9 @@
    ・fxMoveSlider(膠囊, 目標按鈕, 上一顆)：分頁滑動膠囊定位
    ・捲動離開最上面時在 <html> 加 fx-scrolled（首頁標題列的陰影用）
    ・fxReduced()：手機是否開了「減少動態效果」
+   第三批（2026-09-26）：按下去的漣漪擴大到所有按鈕、機台卡片、機台籤、分頁（手指捲動時不播）、
+   fxSwipeToClose()：底部對話框往下滑關掉、fxShake()：整塊搖一下、fxBump()：數字彈一下、
+   下拉更新改成像素爪子、數字跳動遇到連續更新時舊的那輪自動停掉
    全部包在 try 裡，任何錯誤都不影響 App 本身運作；app.js 呼叫前也都會先確認函式存在，
    這支檔案沒載到（例如舊版快取）就維持原本的畫面。
 
@@ -35,11 +38,10 @@
   }
   window.fxReduced = fxReduced;
 
-  /* ── 主要按鈕：哪些按鈕要有漣漪。
-     styles.css 的 .btn-primary（登入、儲存、新增…）＋記帳用的 .btn-in／.btn-out／.btn-prize
-     （入幣／出幣／活動、開分／洗分、送出、出幣快捷金額）。
-     其他按鈕要加的話在標籤上寫 data-fx="ripple" 即可 */
-  var RIPPLE_SEL = '.btn-primary,.btn-in,.btn-out,.btn-prize,[data-fx~="ripple"]';
+  /* ── 哪些東西按下去要有漣漪：styles.css 的所有 .btn（登入、儲存、記帳、返回…），
+     再加上首頁的機台卡片、機台頁上排的機台籤、分頁按鈕（骰台／電子／加總、今日／本週…、系統管理分頁）。
+     其他要加的話在標籤上寫 data-fx="ripple" 即可 */
+  var RIPPLE_SEL = '.btn,.machine-card,.machine-chip,.seg button,.tabs button,[data-fx~="ripple"]';
 
   function ripple(btn, x, y) {
     if (fxReduced()) return;
@@ -72,13 +74,33 @@
     }, 700);
   }
 
+  // 手指按下去先等 90 毫秒再播：機台卡片、機台籤排得滿滿的，手指常常只是要捲動畫面——
+  // 一開始捲動瀏覽器就會送 pointercancel（或手指已經移動超過 8px），那就不播，
+  // 不然滑一下清單就一路閃過去。很快點一下（不到 90 毫秒就放開）則在放開時補播。滑鼠照舊按下就播。
+  var pend = null;
+  function cancelPend() { if (pend) { clearTimeout(pend.t); pend = null; } }
   document.addEventListener('pointerdown', function (ev) {
     try {
       if (ev.button !== undefined && ev.button !== 0) return; // 只理左鍵／手指
       var btn = ev.target && ev.target.closest && ev.target.closest(RIPPLE_SEL);
       if (!btn || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return;
-      ripple(btn, ev.clientX, ev.clientY);
+      cancelPend();
+      if (ev.pointerType !== 'touch') { ripple(btn, ev.clientX, ev.clientY); return; }
+      var p = { btn: btn, x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+      p.t = setTimeout(function () { if (pend === p) { pend = null; ripple(p.btn, p.x, p.y); } }, 90);
+      pend = p;
     } catch (e) { /* 效果失敗不影響按鈕本身 */ }
+  }, { passive: true });
+  document.addEventListener('pointermove', function (ev) {
+    if (pend && ev.pointerId === pend.id && (Math.abs(ev.clientX - pend.x) > 8 || Math.abs(ev.clientY - pend.y) > 8)) cancelPend();
+  }, { passive: true });
+  document.addEventListener('pointercancel', cancelPend, { passive: true });
+  document.addEventListener('pointerup', function (ev) {
+    try {
+      if (!pend || ev.pointerId !== pend.id) return;
+      var p = pend; pend = null; clearTimeout(p.t);
+      ripple(p.btn, p.x, p.y);
+    } catch (e) {}
   }, { passive: true });
 
   // iOS Safari 預設不觸發 :active，註冊一個空的 touchstart 就會生效（styles.css 的 .btn:active 按壓縮放靠它）
@@ -408,6 +430,79 @@
     } catch (e) {}
   };
 
+  /* ── 底部對話框往下滑就關掉（跟一般手機 App 一樣）──
+     用法：fxSwipeToClose(面板, 關掉的函式, 遮罩)。從上面的小把手／標題往下拉一定可以；
+     從面板其他地方拉，要面板本身已經捲到最上面、而且不是按在輸入框上（不然會搶走捲動／打字）。
+     拉超過三成高度（最多 140px）或往下甩就關掉，不夠就彈回去；桌機置中的對話框不理 */
+  window.fxSwipeToClose = function (sheet, close, backdrop) {
+    try {
+      if (!sheet || !('ontouchstart' in window)) return;
+      var startY = null, startX = 0, dy = 0, t0 = 0, dragging = false;
+      var dim = function (k) { if (backdrop) backdrop.style.backgroundColor = 'rgba(4,6,10,' + (0.72 * k).toFixed(3) + ')'; };
+      sheet.addEventListener('touchstart', function (e) {
+        if (e.touches.length !== 1 || window.innerWidth >= 760) return;
+        var t = e.target;
+        var onHead = t && t.closest && t.closest('.dialog-handle,.dialog > h3');
+        if (!onHead && (sheet.scrollTop > 0 || (t && t.closest && t.closest('input,textarea,select')))) return;
+        startY = e.touches[0].clientY; startX = e.touches[0].clientX; dy = 0; t0 = Date.now(); dragging = false;
+      }, { passive: true });
+      sheet.addEventListener('touchmove', function (e) {
+        if (startY === null) return;
+        var y = e.touches[0].clientY - startY, x = e.touches[0].clientX - startX;
+        if (!dragging) {
+          if (Math.abs(y) < 8 && Math.abs(x) < 8) return;
+          if (y <= 0 || Math.abs(x) > Math.abs(y)) { startY = null; return; } // 往上、橫的：不是要關
+          dragging = true;
+        }
+        dy = Math.max(0, y);
+        if (e.cancelable) e.preventDefault();   // 拉面板的時候不要同時捲動後面
+        sheet.style.transition = 'none';
+        sheet.style.transform = 'translateY(' + dy + 'px)';
+        dim(Math.max(0, 1 - dy / 420));
+      }, { passive: false });
+      var end = function () {
+        if (startY === null) return;
+        startY = null;
+        if (!dragging) return;
+        dragging = false;
+        var speed = dy / Math.max(1, Date.now() - t0);
+        if (dy > Math.min(140, sheet.offsetHeight * 0.3) || (speed > 0.6 && dy > 30)) {
+          if (fxReduced()) { close(); return; }
+          sheet.style.transition = 'transform .18s ease-in';
+          sheet.style.transform = 'translateY(' + (sheet.offsetHeight + 40) + 'px)';
+          if (backdrop) backdrop.style.transition = 'background-color .18s';
+          dim(0);
+          setTimeout(close, 170);
+        } else {
+          sheet.style.transition = fxReduced() ? 'none' : 'transform .22s cubic-bezier(.2,.9,.3,1)';
+          sheet.style.transform = '';
+          if (backdrop) { backdrop.style.transition = 'background-color .22s'; backdrop.style.backgroundColor = ''; }
+        }
+      };
+      sheet.addEventListener('touchend', end, { passive: true });
+      sheet.addEventListener('touchcancel', end, { passive: true });
+    } catch (e) {}
+  };
+
+  /* ── 數字彈一下（例如活動的數量按＋之後）：用獨立的 scale 屬性，不影響元素原本的 transform ── */
+  window.fxBump = function (el) {
+    try {
+      if (!el || !el.animate || fxReduced()) return;
+      el.animate([{ scale: '1' }, { scale: '1.18' }, { scale: '1' }], { duration: 200, easing: 'ease-out' });
+    } catch (e) {}
+  };
+
+  /* ── 整塊左右搖一下（例如登入失敗時的登入框）：用獨立的 translate 屬性，不影響元素原本的 transform ── */
+  window.fxShake = function (el) {
+    try {
+      if (!el || !el.animate) return;
+      haptic('err');
+      if (fxReduced()) return;
+      el.animate([{ translate: '0 0' }, { translate: '-8px 0' }, { translate: '8px 0' }, { translate: '-6px 0' },
+        { translate: '6px 0' }, { translate: '-3px 0' }, { translate: '0 0' }], { duration: 420, easing: 'ease-in-out' });
+    } catch (e) {}
+  };
+
   /* ── 按鈕送出中：按下去之後按鈕上轉圈＋換成「送出中…」這類字，暫時不能再按（避免連點）──
      用法：var done = fxButtonBusy(按鈕, '送出中…');  …後端回來之後  done();
      done() 會把按鈕原本的內容、能不能按都還原；按鈕在這之間被重畫掉也沒關係。
@@ -471,14 +566,23 @@
     try {
       if (!('ontouchstart' in window)) return;
       document.documentElement.style.overscrollBehaviorY = 'contain';
+      // 指示器是一支像素爪子（這個 App 是娃娃機）：從畫面最上面垂下來，纜繩跟著手指拉長；
+      // 拉到門檻變主色（放開就更新）、更新中爪子夾起來上下動。
+      // 纜繩畫得很長、往上超出 SVG，爪子往下移時上面一路接到畫面頂端
       var ind = document.createElement('div');
-      ind.className = 'fx-ptr'; ind.innerHTML = '<span>↓</span>';
+      ind.className = 'fx-ptr';
+      ind.innerHTML = '<svg viewBox="0 0 8 11" width="32" height="44" shape-rendering="crispEdges" fill="currentColor">' +
+        '<rect x="3" y="-40" width="2" height="45"/>' +
+        '<rect x="2" y="5" width="4" height="1"/><rect x="1" y="6" width="6" height="1"/>' +
+        '<g class="fx-ptr-l"><rect x="1" y="7" width="1" height="1"/><rect x="0" y="8" width="1" height="2"/><rect x="1" y="10" width="1" height="1"/></g>' +
+        '<g class="fx-ptr-r"><rect x="6" y="7" width="1" height="1"/><rect x="7" y="8" width="1" height="2"/><rect x="6" y="10" width="1" height="1"/></g>' +
+        '</svg>';
       ind.setAttribute('aria-hidden', 'true');
       document.body.appendChild(ind);
       var startY = null, dist = 0, busy = false, TH = 64;
       var set = function (d, cls) {
-        ind.style.transform = 'translate(-50%,' + (d - 52) + 'px) rotate(' + (d * 4) + 'deg)';
-        ind.style.opacity = Math.min(1, d / 40);
+        ind.style.transform = 'translate(-50%,' + (d - 50) + 'px)';
+        ind.style.opacity = Math.min(1, d / 30);
         ind.className = 'fx-ptr' + (cls ? ' ' + cls : '');
       };
       var reset = function () { startY = null; dist = 0; ind.style.transition = 'transform .25s, opacity .25s'; set(0, ''); setTimeout(function () { ind.style.transition = ''; }, 260); };
@@ -517,8 +621,13 @@
        第 4 個參數也可以直接給格式化函式，例如 fxCountTo(el, 1200, 'net', money) 會跳成「$1,200」。
      手機開了「減少動態效果」、或數字沒變時，都直接顯示結果。 */
   function countAnim(el, from, to, fmt) {
+    // 同一個元素還在跳的話，舊的那一輪直接停掉（例如活動的＋長按連加，一秒內會叫好幾次），
+    // 不然好幾輪同時寫同一格，數字會亂閃
+    var id = (el._fxCountId || 0) + 1;
+    el._fxCountId = id;
     if (from === to || fxReduced() || typeof to !== 'number' || typeof from !== 'number' || !isFinite(from)) { el.textContent = fmt(to); return; }
     var t0 = 0, step = function (t) {
+      if (el._fxCountId !== id) return;
       if (!t0) t0 = t;
       var p = Math.min(1, (t - t0) / 650), e = 1 - Math.pow(1 - p, 3);
       // 最後一格用目標值本身（可能有小數），中途的值取整數就好

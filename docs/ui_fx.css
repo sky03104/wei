@@ -121,15 +121,20 @@ html.fx-anim .dialog,html.fx-anim .toast{animation:none}
 .fx-top.fx-on{opacity:1;translate:0 0;pointer-events:auto}
 .fx-top:active{scale:.9}
 
-/* ── 下拉更新指示圈：拉的時候淡主色框、拉到門檻變實心主色（放開就更新）、更新中轉圈──
+/* ── 下拉更新：一支像素爪子從畫面最上面垂下來（ui_fx.js 的 fxPullToRefresh 畫的 SVG）──
+   拉的時候是灰色爪子、拉到門檻變主色（放開就更新）、更新中爪子夾起來一格一格上下動。
    top 加上瀏海高度：這個 App 加到主畫面後狀態列是透明的（black-translucent），不加會被瀏海蓋住 */
-.fx-ptr{position:fixed;left:50%;top:var(--safe-top);z-index:100001;width:40px;height:40px;border-radius:50%;
-  background:var(--surface-3);border:2px solid color-mix(in srgb,var(--fx-accent) 45%,transparent);color:var(--fx-accent);
-  display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:900;
-  transform:translate(-50%,-52px);opacity:0;pointer-events:none;box-shadow:0 4px 14px rgba(0,0,0,.5)}
-.fx-ptr.fx-ready{background:var(--fx-accent);border-color:var(--fx-accent);color:#fff}
-.fx-ptr.fx-busy{border-color:var(--border);border-top-color:var(--fx-accent);animation:fxSpin .7s linear infinite}
-.fx-ptr.fx-busy span{display:none}
+.fx-ptr{position:fixed;left:50%;top:var(--safe-top);z-index:100001;width:32px;height:44px;
+  color:#B8C0D0;transform:translate(-50%,-50px);opacity:0;pointer-events:none;
+  filter:drop-shadow(0 3px 6px rgba(0,0,0,.6))}
+.fx-ptr svg{display:block;overflow:visible}
+.fx-ptr .fx-ptr-l,.fx-ptr .fx-ptr-r{transition:transform .12s steps(1,end)}
+.fx-ptr.fx-ready{color:var(--fx-accent)}
+.fx-ptr.fx-busy{color:var(--fx-accent)}
+.fx-ptr.fx-busy .fx-ptr-l{transform:translateX(1px)}   /* 夾起來：兩邊的爪片往中間收一格 */
+.fx-ptr.fx-busy .fx-ptr-r{transform:translateX(-1px)}
+.fx-ptr.fx-busy svg{animation:fxPtrBob .8s steps(1,end) infinite}
+@keyframes fxPtrBob{0%{transform:translateY(0)}25%{transform:translateY(-4px)}50%{transform:translateY(-8px)}75%{transform:translateY(-4px)}}
 @keyframes fxSpin{to{rotate:360deg}}
 
 /* ── 按鈕內的小轉圈（例如「登入中…」）：顏色跟著按鈕文字（currentColor），藍底白字、綠字按鈕都適用 */
@@ -178,6 +183,61 @@ html.fx-anim .dialog,html.fx-anim .toast{animation:none}
 .home-sticky{transition:box-shadow .2s ease}
 html.fx-scrolled .home-sticky{box-shadow:0 10px 14px -10px rgba(0,0,0,.8)}
 
+/* ══ 第三批（2026-09-26，咖哩選的 23 項）══ */
+
+/* ── 營業中的綠燈慢慢呼吸（app.js 給首頁營業狀態前面的小圓點加 .fx-breath）── */
+.fx-breath{animation:fxBreath 2.4s ease-in-out infinite}
+@keyframes fxBreath{
+  0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--fx-ok) 55%,transparent);opacity:1}
+  50%{box-shadow:0 0 0 5px color-mix(in srgb,var(--fx-ok) 0%,transparent);opacity:.7}}
+
+/* ── 登入頁打開時：娃娃機從上面輕輕落下，標題、登入框、下面的小字依序浮上來（只有剛打開那一次）── */
+.fx-login-intro .login-head .pixel-machine{animation:fxDrop .62s cubic-bezier(.3,1.35,.5,1) backwards}
+.fx-login-intro .login-head h1{animation:fxRise .42s .16s cubic-bezier(.2,.8,.2,1) backwards}
+.fx-login-intro .login-card{animation:fxRise .45s .24s cubic-bezier(.2,.8,.2,1) backwards}
+.fx-login-intro .login-foot{animation:fxRise .42s .32s cubic-bezier(.2,.8,.2,1) backwards}
+@keyframes fxDrop{0%{transform:translateY(-56px);opacity:0}45%{opacity:1}}
+
+/* ── 空白提示的娃娃機在打瞌睡：z 一個接一個往右上飄走（沒有這段時 z 就靜靜排成一串，見 styles.css 的 .sleepy）── */
+.sleepy .zzz i{opacity:0;animation:fxZzz 3s linear infinite}
+.sleepy .zzz i:nth-child(2){animation-delay:1s}
+.sleepy .zzz i:nth-child(3){animation-delay:2s}
+@keyframes fxZzz{0%{opacity:0;transform:translate(0,0)}15%{opacity:.95}70%{opacity:.7}100%{opacity:0;transform:translate(16px,-26px)}}
+
+/* ── 換頁轉場（app.js 的 render() 依方向加 class，見 pageDirection()）──
+   往裡走從右邊滑進來、返回從左邊滑回來、登入登出淡入；約 0.25 秒，不拖慢操作 */
+.fx-page-fwd{animation:fxPageFwd .26s cubic-bezier(.2,.8,.2,1)}
+.fx-page-back{animation:fxPageBack .26s cubic-bezier(.2,.8,.2,1)}
+.fx-page-fade{animation:fxPageFade .3s ease-out}
+@keyframes fxPageFwd{from{opacity:0;transform:translateX(40px)}}
+@keyframes fxPageBack{from{opacity:0;transform:translateX(-40px)}}
+@keyframes fxPageFade{from{opacity:0}}
+
+/* ── 底部對話框上方的小把手：提示「可以往下滑關掉」（ui_fx.js 的 fxSwipeToClose）；桌機置中的對話框不用 ── */
+.dialog-handle{width:42px;height:5px;border-radius:999px;background:var(--surface-3);margin:-8px auto 12px}
+@media (min-width:760px){.dialog-handle{display:none}}
+
+/* ── 記帳成功：「今日淨收益」右上角飄出這筆的金額（+$500／−$50），往上飄走淡掉 ──
+   app.js 的 playMachineReaction() 加上去、1.7 秒後拿掉；顏色跟記帳按鈕一樣（入幣綠、出幣橘、活動紫） */
+.fx-delta-anchor{position:relative}
+.fx-delta{position:absolute;right:12px;top:8px;font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;
+  pointer-events:none;white-space:nowrap;text-shadow:0 2px 10px rgba(0,0,0,.7);
+  animation:fxDelta 1.6s cubic-bezier(.2,.8,.2,1) forwards}
+.fx-delta-in{color:var(--in)}
+.fx-delta-out{color:var(--out)}
+.fx-delta-prize{color:var(--prize)}
+@keyframes fxDelta{0%{opacity:0;transform:translateY(10px) scale(.85)}14%{opacity:1;transform:translateY(0) scale(1.08)}
+  24%{transform:translateY(0) scale(1)}70%{opacity:1;transform:translateY(-10px)}100%{opacity:0;transform:translateY(-28px)}}
+
+/* ── 按下登入、等後端的時候：登入頁娃娃機的爪子一直上下動（app.js 加 .fx-m-busy）──
+   包在 no-preference 裡：減少動態效果時就不蓋掉，爪子照平常的節奏動 */
+@media (prefers-reduced-motion: no-preference){
+  .pixel-machine.fx-m-busy.px-alive .px-claw.px-drop-2{animation:pxClawBusy .8s steps(1,end) infinite}
+  .pixel-machine.fx-m-busy.px-alive .px-cable.px-drop-2{animation:pxCableBusy .8s steps(1,end) infinite}
+}
+@keyframes pxClawBusy{0%{transform:translate(0px,0px)}25%{transform:translate(0px,1px)}50%{transform:translate(0px,2px)}75%{transform:translate(0px,1px)}}
+@keyframes pxCableBusy{0%{transform:scaleY(0)}25%{transform:scaleY(.5)}50%{transform:scaleY(1)}75%{transform:scaleY(.5)}}
+
 /* 手機設定「減少動態效果」：全部關掉，直接顯示結果（對長輩／容易頭暈的同事友善）。
    App 本身原有的動畫（機台狀態燈閃爍、處理中方塊、轉圈圈）是刻意的設計，不在這裡關 */
 @media (prefers-reduced-motion: reduce){
@@ -193,4 +253,14 @@ html.fx-scrolled .home-sticky{box-shadow:0 10px 14px -10px rgba(0,0,0,.8)}
   .fx-panel-in{animation:none}
   .chart.fx-grow rect{animation:none}
   .home-sticky{transition:none}
+  .fx-breath{animation:none}
+  .fx-login-intro .login-head .pixel-machine,.fx-login-intro .login-head h1,.fx-login-intro .login-card,.fx-login-intro .login-foot{animation:none}
+  .checkbox input.switch{transition:none}
+  .fx-delta{display:none}
+  .fx-page-fwd,.fx-page-back,.fx-page-fade{animation:none}
+  .fx-ptr.fx-busy svg{animation:none}
+  .sleepy .zzz i{animation:none;opacity:.8}
+  .sleepy .zzz i:nth-child(2){transform:translate(7px,-9px)}
+  .sleepy .zzz i:nth-child(3){transform:translate(14px,-19px)}
+  .fx-ptr .fx-ptr-l,.fx-ptr .fx-ptr-r{transition:none}
 }

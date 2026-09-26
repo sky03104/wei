@@ -227,6 +227,15 @@ input[type="date"] { min-width: 0; }
 .badge-chip_out { background: rgba(251, 146, 60, 0.16); color: var(--out); }
 
 .empty { padding: 28px 14px; text-align: center; color: var(--muted); }
+/* 空白提示上面那台打瞌睡的灰色娃娃機（app.js 的 emptyState()；z z z 飄起來的動畫在 ui_fx.css） */
+.empty-art { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.sleepy { position: relative; display: inline-block; opacity: 0.8; }
+.sleepy .zzz { position: absolute; right: -18px; top: -4px; width: 26px; height: 32px; pointer-events: none; }
+.sleepy .zzz i { position: absolute; left: 0; bottom: 0; font-style: normal; font-weight: 800; color: var(--muted); line-height: 1; }
+.sleepy .zzz i::before { content: "z"; }
+.sleepy .zzz i:nth-child(1) { font-size: 10px; }
+.sleepy .zzz i:nth-child(2) { font-size: 13px; transform: translate(7px, -9px); }
+.sleepy .zzz i:nth-child(3) { font-size: 16px; transform: translate(14px, -19px); }
 
 /* ── 像素娃娃機 ─────────────────────────────────────── */
 
@@ -239,6 +248,71 @@ input[type="date"] { min-width: 0; }
 }
 .pixel-machine .status-light.running { animation: blink 1.6s steps(1, end) infinite; }
 @keyframes blink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.25; } }
+/* 維修中的黃燈也會閃，但比營運中的綠燈慢，一眼分得出來；停機的灰燈不亮不閃 */
+.pixel-machine .status-light.maintenance { animation: blink-slow 2.4s steps(1, end) infinite; }
+@keyframes blink-slow { 0% { opacity: 1; } 50%, 100% { opacity: 0.2; } }
+
+/* ── 像素娃娃機會動的部分（app.js 的 machineSvg() 把爪子、娃娃、招牌燈泡拆成群組）──
+   只有營運中的機台（.px-alive）會動：招牌跑馬燈、爪子左右晃＋偶爾下去抓一下、娃娃偶爾跳一下。
+   跟上面的狀態燈一樣是 App 本身的設計，手機開了「減少動態效果」也照樣動（咖哩指定）。
+   一律用 steps(1) 一格一格跳，維持像素風；SVG 裡的 px 就是「一格」。
+   --px-t（machineSvg 算好的起點）讓同一台機台重畫時接著原本的節奏，不會跳回開頭；
+   每台機台的 --px-t 不一樣，整排不會一起動。 */
+.pixel-machine { overflow: visible; }  /* 記帳時的金幣會從機台外面掉進來、彈出去 */
+/* 捲到畫面外的機台整台停下來（app.js 的 watchMachineVisibility），回到畫面上再動 */
+.px-alive.px-off, .px-alive.px-off * { animation-play-state: paused !important; }
+.px-cable { transform-box: fill-box; transform-origin: 50% 0; transform: scaleY(0); }
+.px-bulbs { opacity: 0; }
+
+.px-alive .px-claw.px-sway-2.px-drop-2 { animation: pxClawS2D2 8s steps(1, end) infinite; animation-delay: var(--px-t, 0ms); }
+.px-alive .px-cable.px-drop-2 { animation: pxCableD2 8s steps(1, end) infinite; animation-delay: var(--px-t, 0ms); }
+.px-alive .px-claw.px-sway-1 { animation: pxClawS1 6s steps(1, end) infinite; animation-delay: var(--px-t, 0ms); }
+.px-alive .px-bulbs { animation: pxBulb 1.2s steps(1, end) infinite; }
+.px-alive .px-bulbs-0 { animation-delay: var(--px-t, 0ms); }
+.px-alive .px-bulbs-1 { animation-delay: calc(var(--px-t, 0ms) - 800ms); }
+.px-alive .px-bulbs-2 { animation-delay: calc(var(--px-t, 0ms) - 400ms); }
+.px-alive .px-prize { animation: pxHop 6s steps(1, end) infinite; animation-delay: calc(var(--px-t, 0ms) - var(--px-o, 0ms)); }
+
+/* 爪子（8 秒一輪）：往左兩格 → 回中間 → 往右兩格 → 回中間 → 往下降兩格抓一下 → 升回來 */
+@keyframes pxClawS2D2 {
+  0% { transform: translate(0px, 0px); }
+  6% { transform: translate(-1px, 0px); }
+  12% { transform: translate(-2px, 0px); }
+  18% { transform: translate(-1px, 0px); }
+  24% { transform: translate(0px, 0px); }
+  30% { transform: translate(1px, 0px); }
+  36% { transform: translate(2px, 0px); }
+  42% { transform: translate(1px, 0px); }
+  48%, 58% { transform: translate(0px, 0px); }
+  60% { transform: translate(0px, 1px); }
+  63%, 71% { transform: translate(0px, 2px); }
+  73% { transform: translate(0px, 1px); }
+  75%, 100% { transform: translate(0px, 0px); }
+}
+/* 纜繩跟著爪子往下的那幾格拉長 */
+@keyframes pxCableD2 {
+  0%, 58% { transform: scaleY(0); }
+  60% { transform: scaleY(0.5); }
+  63%, 71% { transform: scaleY(1); }
+  73% { transform: scaleY(0.5); }
+  75%, 100% { transform: scaleY(0); }
+}
+/* 雙爪款玻璃窄、底下沒空間：只左右晃一格 */
+@keyframes pxClawS1 {
+  0% { transform: translate(0px, 0px); }
+  15% { transform: translate(-1px, 0px); }
+  35% { transform: translate(0px, 0px); }
+  50% { transform: translate(1px, 0px); }
+  70%, 100% { transform: translate(0px, 0px); }
+}
+/* 跑馬燈：三組燈泡輪流亮，每組亮 0.4 秒 */
+@keyframes pxBulb { 0% { opacity: 0.95; } 33.34%, 100% { opacity: 0; } }
+/* 娃娃每 6 秒輕輕跳一下 */
+@keyframes pxHop {
+  0%, 86% { transform: translate(0px, 0px); }
+  88% { transform: translate(0px, -1px); }
+  92%, 100% { transform: translate(0px, 0px); }
+}
 
 /* ── 頁首 ───────────────────────────────────────────── */
 
@@ -274,7 +348,41 @@ input[type="date"] { min-width: 0; }
 .login-wrap { max-width: 380px; margin: 6vh auto 0; }
 .login-head { text-align: center; margin-bottom: 22px; }
 .login-head h1 { font-size: 22px; margin-top: 12px; }
-.login-head .pixel-machine { margin: 0 auto; }
+.login-head .pixel-machine { margin: 0 auto; cursor: pointer; }  /* 點一下爪子會下去抓（app.js 的 viewLogin） */
+
+/* 登入失敗的訊息：寫在登入框裡、登入按鈕正上方（顏色跟錯誤提示 .toast.error 一樣） */
+.login-error {
+  margin: -4px 0 14px; padding: 10px 12px;
+  background: #3A1B1F; border: 1px solid #6B2A32; border-radius: var(--radius-sm);
+  color: #FFD9DC; font-size: 14px; font-weight: 600;
+}
+
+/* 密碼格右邊的「👁」：疊在輸入框裡面，輸入框右邊留出位置不讓字被蓋住 */
+.pw-wrap { position: relative; }
+.pw-wrap input { padding-right: 48px; }
+.pw-toggle {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 46px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 18px; cursor: pointer; opacity: 0.45; filter: grayscale(1);
+}
+.pw-toggle.on { opacity: 1; filter: none; }
+
+/* 「記住我」開關：深色系的滑動開關，取代瀏覽器預設的白色方框。
+   圓鈕用背景圖畫、左右移動用 background-position，不靠 ::before（有些瀏覽器的 input 不支援） */
+.checkbox input.switch {
+  -webkit-appearance: none; appearance: none;
+  width: 46px; height: 28px; min-height: 0; padding: 0; margin: 0; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: 999px;
+  background-color: var(--surface-3);
+  background-image: radial-gradient(circle, #E8ECF5 0 9.5px, transparent 10px);
+  background-size: 26px 26px; background-repeat: no-repeat; background-position: 0 0;
+  transition: background-color 0.2s ease, border-color 0.2s ease, background-position 0.2s ease;
+  cursor: pointer;
+}
+.checkbox input.switch:checked { background-color: var(--accent); border-color: var(--accent); background-position: 18px 0; }
+.checkbox input.switch:focus { outline: none; }
+.checkbox input.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ── 首頁機台卡片 ───────────────────────────────────── */
 
@@ -302,10 +410,29 @@ input[type="date"] { min-width: 0; }
      寧可讓它照樣一行擠出去，也不要把負號拆到自己單獨一行看起來像錯誤。 */
   white-space: nowrap;
 }
+/* 一頁裡最重要的那個數字（例如加總分頁的「今日總淨收益」）字放大 */
+.stat.stat-hero .stat-value { font-size: 24px; }
+
+/* 手機 2 欄時，數字方塊是單數個（例如 3 個）的話，最後一個自己佔一整排，
+   不要排成「上 2 下 1」、右下角空一塊。桌機另外排成 3 欄（見最下面的 .summary-strip-3）。 */
+@media (max-width: 759px) {
+  .summary-strip > .stat:last-child:nth-child(odd),
+  .report-stats > .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
 
 .bizday-bar { margin-top: 10px; }
 .bizday-status { text-align: center; margin-bottom: 6px; }
 .bizday-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+/* 狀態前面的小圓點：還沒營業是灰點；營業中是綠燈（會呼吸的效果在 ui_fx.css 的 .fx-breath） */
+.bizday-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+  margin-right: 7px; vertical-align: 1px;
+  background: var(--muted); opacity: 0.55;
+}
+.bizday-dot.on { background: var(--in); opacity: 1; }
+/* 「現在不該按的那顆」退成外框樣式：還是按得到（不是 disabled 那種半透明），只是不搶眼 */
+.bizday-actions .btn-in.bizday-dim { background: transparent; border-color: rgba(74, 222, 128, 0.22); color: rgba(74, 222, 128, 0.62); }
+.bizday-actions .btn-out.bizday-dim { background: transparent; border-color: rgba(251, 146, 60, 0.22); color: rgba(251, 146, 60, 0.62); }
 
 .machine-list { display: grid; gap: var(--gap); }
 
@@ -449,6 +576,7 @@ input[type="date"] { min-width: 0; }
   margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
 }
 .panel-total .amount { font-size: 20px; font-weight: 800; color: var(--prize); }
+.panel-total.panel-total-in .amount { color: var(--in); }
 
 .scope-note {
   font-size: 12px; color: var(--muted);
@@ -588,6 +716,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .dialog-actions { display: flex; gap: 8px; margin-top: 18px; }
 .dialog-actions .btn { flex: 1; }
 
+/* 確認面板（app.js 的 askConfirm()，取代瀏覽器內建的 confirm()） */
+.confirm-msg { color: var(--muted); font-size: 15px; white-space: pre-line; }
+.confirm-detail {
+  margin-top: 12px; padding: 12px 14px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-weight: 700; white-space: pre-line;
+}
+.confirm-msg + .confirm-detail { margin-top: 12px; }
+.confirm-backdrop h3 + .confirm-detail { margin-top: 0; }
+/* 刪除／作廢這類「做了就沒了」的確定鈕：實心紅底，跟一般的藍色確定分得出來 */
+.btn-danger-solid { background: var(--danger); border-color: var(--danger); color: #2A0A0D; }
+
 .password-reveal {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 20px; font-weight: 700; letter-spacing: 1px;
@@ -613,6 +753,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
      改成 3 欄 2 排剛好排滿，不影響電子/加總分頁籤（各 3 張）的排法。 */
   .summary-strip-6 { grid-template-columns: repeat(3, 1fr); }
   .report-stats { grid-template-columns: repeat(4, 1fr); }
+  /* 只有 3 個數字方塊的排（電子分頁、加總分頁、活動查詢、電子機台報表）：3 欄剛好一排，不留空格 */
+  .summary-strip-3, .report-stats-3 { grid-template-columns: repeat(3, 1fr); }
   .filter-row { grid-template-columns: repeat(4, 1fr); }
   .dialog-backdrop { align-items: center; }
   .dialog { border-radius: var(--radius); padding-bottom: 18px; }
