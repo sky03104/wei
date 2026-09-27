@@ -5,7 +5,7 @@
  *   node tools/e2e-fx.js
  *
  * 在真正的 App 上驗：
- *   第一批：讀取中骨架、送出成功打勾、漏填標紅、下拉更新、刪除收合，
+ *   第一批：讀取中骨架、漏填標紅、下拉更新、刪除收合（送出成功打勾 2026-09-27 依咖哩要求拿掉），
  *           以及自動生效的按鈕漣漪、對話框／提示訊息進出場
  *   第二批：金額數字跳動、新紀錄亮一下、按鈕送出中、分頁滑動膠囊、記帳面板滑下來、
  *           報表長條長出來、首頁標題列陰影、離線提示條滑進滑出＋「已恢復連線」
@@ -181,7 +181,7 @@ async function main() {
     await p.waitForSelector('.login-wrap');
     const s = await p.evaluate(() => ({
       anim: document.documentElement.classList.contains('fx-anim'),
-      fns: ['fxSuccess', 'fxFieldError', 'fxPullToRefresh', 'fxRemoveThen', 'fxSkeletonCards', 'fxCountFrom', 'fxButtonBusy', 'fxMoveSlider']
+      fns: ['fxFieldError', 'fxPullToRefresh', 'fxRemoveThen', 'fxSkeletonCards', 'fxCountFrom', 'fxButtonBusy', 'fxMoveSlider']
         .every((f) => typeof window[f] === 'function'),
       top: !!document.querySelector('.fx-top'),
       accent: getComputedStyle(document.documentElement).getPropertyValue('--fx-accent').trim()
@@ -331,7 +331,7 @@ async function main() {
 
   // 送一筆出幣，把這一趟看到的都記下來，下面幾個 check 分開驗
   const sent = {};
-  await check('送出成功打勾：出幣送出成功，畫面中間畫出綠色打勾，提示訊息滑入', async () => {
+  await check('送出成功：不再畫打勾（咖哩要求拿掉），只有提示訊息滑入', async () => {
     sent.recordsBefore = await p.locator('.record-item').count();
     await startSampling(p, '.net-stat .stat-value');
     N.delays.addRecord = 700;
@@ -343,13 +343,9 @@ async function main() {
       return { text: b.textContent, disabled: b.disabled, spinShown: !!sp && getComputedStyle(sp).display !== 'none' };
     });
     await shot('fx-app-08-button-busy');
-    await p.waitForSelector('.fx-success svg', { timeout: 8000 });
+    await p.waitForSelector('#toast.success:not([hidden])', { timeout: 8000 });
     delete N.delays.addRecord;
-    const s = await p.evaluate(() => ({
-      draw: getComputedStyle(document.querySelector('.fx-success .fx-sc')).animationName,
-      stroke: getComputedStyle(document.querySelector('.fx-success .fx-sk2')).stroke
-    }));
-    assert(s.draw === 'fxDraw' && s.stroke === 'rgb(74, 222, 128)', '要畫出成功綠的打勾 ' + JSON.stringify(s));
+    assert(await p.evaluate(() => typeof window.fxSuccess === 'undefined' && !document.querySelector('.fx-success')), '不該再畫打勾');
     sent.flash = await p.evaluate(() => {
       const rows = Array.from(document.querySelectorAll('.record-item'));
       return {
@@ -368,7 +364,6 @@ async function main() {
     await p.waitForFunction((n) => document.querySelectorAll('.record-item').length >= n, sent.recordsBefore, { timeout: 8000 });
     await p.waitForTimeout(700);
     sent.seen = await stopSampling(p);
-    await p.waitForFunction(() => !document.querySelector('.fx-success'), null, { timeout: 3000 });
   });
 
   await check('按鈕送出中（送出）：等後端的時候送出鈕轉圈、變成「送出中…」、不能再按', async () => {
@@ -463,7 +458,8 @@ async function main() {
     delete N.delays.report;
     await p.waitForTimeout(80);
     await shot('fx-app-10-chart');
-    assert((await p.getAttribute('.chart', 'class')).includes('fx-grow'), '換區間、資料變了，長條要重新長出來');
+    // 週日時「本週」跟「今日」是同一天、資料一模一樣，長條本來就不會重長（資料沒變不重播），這天不驗
+    if (new Date().getDay() !== 0) assert((await p.getAttribute('.chart', 'class')).includes('fx-grow'), '換區間、資料變了，長條要重新長出來');
   });
 
   await check('對話框：打開有滑入動畫；漏填帳號／密碼太短會標紅、不送出；取消有淡出', async () => {
@@ -532,7 +528,7 @@ async function main() {
     await shot('fx-app-12-home-alive');
   });
 
-  await check('換頁：點進機台從右邊滑進來；返回主畫面從左邊回來，並捲回剛剛的位置', async () => {
+  await check('換頁：沒有左右滑動的轉場（咖哩要求拿掉）；返回主畫面捲回剛剛的位置', async () => {
     await p.setViewportSize({ width: 390, height: 520 });
     await p.evaluate(() => window.scrollTo(0, 200));
     await p.waitForTimeout(100);
@@ -540,14 +536,14 @@ async function main() {
     // 畫面矮時固定在上面的標題區會蓋住卡片（示範資料只有 3 台，要調矮才捲得動），直接觸發點擊
     await p.locator('.machine-card').last().evaluate((el) => el.click());
     await p.waitForSelector('.detail-hero');
-    assert(await p.evaluate(() => document.querySelector('#app > *').classList.contains('fx-page-fwd')), '進機台要從右邊滑進來');
+    assert(await p.evaluate(() => !/fx-page-/.test(document.querySelector('#app > *').className) && getComputedStyle(document.querySelector('#app > *')).animationName === 'none'), '換頁不該有轉場');
     const cls = await p.evaluate(() => { document.querySelector('.navbar button').click(); return document.querySelector('#app > *').className; });
     await p.waitForSelector('.machine-card');
     await p.waitForTimeout(400);
     const y = await p.evaluate(() => window.scrollY);
     await p.evaluate(() => window.scrollTo(0, 0));
     await p.setViewportSize({ width: 390, height: 844 });
-    assert(cls.includes('fx-page-back'), '返回要從左邊回來 ' + cls);
+    assert(!/fx-page-/.test(cls), '返回不該有轉場 ' + cls);
     assert(Math.abs(y - y0) < 4 && y0 > 0, '要捲回剛剛的位置：離開前 ' + y0 + '，回來 ' + y);
   });
 
@@ -633,6 +629,21 @@ async function main() {
     await p.fill('.pw-wrap input', 'admin123');
     await p.click('button[type="submit"]');
     await p.waitForSelector('.machine-card', { timeout: 8000 });
+  });
+
+  await check('畫面固定：viewport 不能縮放、點兩下不放大、兩指縮放被擋下', async () => {
+    const z = await p.evaluate(() => {
+      const ev = new Event('gesturestart', { cancelable: true });
+      document.dispatchEvent(ev);
+      return {
+        meta: document.querySelector('meta[name="viewport"]').content,
+        touch: getComputedStyle(document.documentElement).touchAction,
+        gestureBlocked: ev.defaultPrevented
+      };
+    });
+    assert(/maximum-scale=1/.test(z.meta) && /user-scalable=no/.test(z.meta), 'viewport 要鎖住 ' + z.meta);
+    assert(z.touch === 'manipulation', '要擋點兩下放大，實際 ' + z.touch);
+    assert(z.gestureBlocked, 'iPhone 的雙指縮放手勢要被擋下');
   });
 
   await check('空白提示：沒有紀錄的地方有一台打瞌睡的灰色娃娃機，z 會飄', async () => {

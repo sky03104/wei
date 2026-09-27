@@ -47,6 +47,9 @@ html, body {
   line-height: 1.5;
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
+  /* 畫面固定不縮放：manipulation 讓點兩下不會放大（捲動照常）；
+     雙指縮放在 iPhone 上 viewport 的 user-scalable=no 擋不住，另外由 app.js 的 lockZoom() 擋 */
+  touch-action: manipulation;
 }
 
 body {

@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v61';
+const APP_VERSION = 'v62';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -335,11 +335,6 @@ function hideToast() {
 // 還是舊版快取）就退回原本的行為，不影響功能。
 // 注意：這裡的函式名稱不能用 fx 開頭——app.js 不是 module，最外層的 function
 // 會變成 window 上的同名屬性，會把 ui_fx.js 的函式蓋掉。
-
-/** 送出／儲存成功：畫面中間畫出綠色打勾（0.9 秒自己消失，不擋操作）。 */
-function showSuccessCheck() {
-  if (typeof window.fxSuccess === 'function') window.fxSuccess();
-}
 
 /** 漏填／填錯的欄位：跳出錯誤提示，並把那一格紅框、抖一下、游標跳過去。 */
 function fieldError(input, message) {
@@ -2191,7 +2186,6 @@ function editDailyLedger(data) {
           takenByOwnerItems: takenEditor.getItems()
         });
         closeDialog();
-        showSuccessCheck();
         await loadHome();
       }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
     }, '儲存')
@@ -2263,7 +2257,6 @@ async function doStartBusinessDay(e) {
   }))) return;
   run(async () => {
     await api('startBusinessDay', {});
-    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('open');
@@ -2279,7 +2272,6 @@ async function doEndBusinessDay(e) {
   }))) return;
   run(async () => {
     await api('endBusinessDay', {});
-    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('close');
@@ -2295,7 +2287,6 @@ async function doReopenBusinessDay(e) {
   }))) return;
   run(async () => {
     await api('reopenBusinessDay', {});
-    showSuccessCheck();
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('open');
@@ -2421,7 +2412,8 @@ function viewMachine() {
     netStat,
     statNum('今日入幣', d.today.in, money, '', 'detail:' + m.machineId + ':in'),
     statNum('今日出幣', d.today.out, money, '', 'detail:' + m.machineId + ':out'),
-    statNum('今日432數量', d.today432Count || 0, countText, '', 'detail:' + m.machineId + ':432')
+    // 今日筆數＝今日 432＋441 的支數（跟首頁骰台分頁的算法一樣）；後端還沒更新、沒給 441 時就只算 432
+    statNum('今日筆數', (d.today432Count || 0) + (d.today441Count || 0), countText, '', 'detail:' + m.machineId + ':records')
   ]);
 
   const actions = canRecord()
@@ -2732,7 +2724,6 @@ function editQuickAmount(d, type, qa) {
             sortOrder: Number(order.value) || 0
           });
           closeDialog();
-          showSuccessCheck();
           await loadDetail(d.machine.machineId);
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
@@ -2766,7 +2757,6 @@ function submitAmount(machineId, type, amount, btn) {
     if (res.duplicated) toast('這筆已經記過了', 'success');
     else {
       toast(TYPE_LABELS[type] + ' ' + money(amount) + ' 已登錄', 'success');
-      showSuccessCheck();
       flashNewRecords(before);
       // 開分：金幣掉進去、盈虧變多；出幣／洗分：金幣彈出來、淨收益變少
       if (type === 'chip_in') queueMachineReaction(machineId, 'coinIn', { amount: amount, tone: 'in' });
@@ -2859,7 +2849,6 @@ function submitMeterRecord(machineId, startInput, endInput, btn) {
     if (res.duplicated) toast('這筆已經記過了', 'success');
     else {
       toast('入幣 ' + money(res.records[0].amount) + ' 已登錄', 'success');
-      showSuccessCheck();
       flashNewRecords(before);
       queueMachineReaction(machineId, 'coinIn', { amount: res.records[0].amount, tone: 'in' });
     }
@@ -2890,7 +2879,6 @@ function meterRateEditor(d) {
             machineId: rateInfo.scope === 'machine' ? d.machine.machineId : '',
             rate: Number(input.value)
           });
-          showSuccessCheck();
           await loadDetail(d.machine.machineId);
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' })
       }, '儲存')
@@ -3036,7 +3024,6 @@ function submitPrizes(machineId, prizes, btn) {
     if (res.duplicated) toast('這筆已經記過了', 'success');
     else {
       toast('活動 ' + money(res.total) + ' 已登錄', 'success');
-      showSuccessCheck();
       flashNewRecords(before);
       // 爪子下去夾一個娃娃上來；活動成本從淨收益扣掉
       queueMachineReaction(machineId, 'grab', { amount: -res.total, tone: 'prize' });
@@ -3071,7 +3058,6 @@ function editPrize(d, prize) {
             sortOrder: Number(order.value) || 0
           });
           closeDialog();
-          showSuccessCheck();
           await loadDetail(d.machine.machineId);
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
@@ -3796,9 +3782,8 @@ function editUser(u) {
             password: password.value
           });
           closeDialog();
-          // 新帳號接著會跳「請把這組密碼交給使用者」，那個視窗本身就是成功的確認，不再疊一個打勾擋住密碼
-          if (u) showSuccessCheck();
-          else showPasswordOnce(username.value.trim(), password.value);
+          // 新帳號接著會跳「請把這組密碼交給使用者」
+          if (!u) showPasswordOnce(username.value.trim(), password.value);
           await loadAdmin();
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
@@ -3949,7 +3934,6 @@ function editMachine(m, presetCategory) {
             icon: icon
           });
           closeDialog();
-          showSuccessCheck();
           await loadAdmin();
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
@@ -4006,7 +3990,6 @@ function editGlobalPrize(p) {
             sortOrder: Number(order.value) || 0
           });
           closeDialog();
-          showSuccessCheck();
           await loadAdmin();
         }, { success: '已儲存', button: e.currentTarget, busyText: '儲存中…' });
       }
@@ -4275,7 +4258,6 @@ function openChangePasswordDialog() {
         run(async () => {
           await api('changePassword', { newPassword: newPw.value });
           closeDialog();
-          showSuccessCheck();
         }, { success: '密碼改好了，下次登入請用新密碼', button: e.currentTarget, busyText: '處理中…' });
       }
     }, '確定')
@@ -4313,35 +4295,6 @@ let _lastRenderWasSkeleton = false;
 /** 首頁每個分頁籤（骰台／電子／加總）離開時捲到哪裡，回首頁時捲回去（見 render()）。 */
 const _homeScrollMemo = {};
 
-/** 每一頁「在第幾層」：數字大的是比較裡面的頁，用來判斷換頁是往裡走還是返回。 */
-/** 最近一次換頁轉場（方向、開始時間），給「轉場中又重畫」接著播用。 */
-let _pageAnim = null;
-
-const VIEW_DEPTH = { login: 0, home: 1, machine: 2, activity: 2, admin: 2, report: 3 };
-
-/**
- * 換頁轉場的方向（ui_fx.css 的 .fx-page-fwd／.fx-page-back／.fx-page-fade）：
- *   往裡走（首頁→機台→報表、首頁→系統管理…）→ 'fwd'，新頁從右邊滑進來
- *   返回 → 'back'，從左邊滑回來
- *   上排機台籤換機台 → 照機台順序，往後一台 'fwd'、往前一台 'back'
- *   登入、登出 → 'fade'，淡入就好
- * 開機第一次畫、同一頁換分頁籤（首頁的骰台／電子／加總有自己的滑動膠囊）、
- * 沒載到 ui_fx 或手機開了減少動態效果 → null，不做轉場。
- */
-function pageDirection(prevKey, nextKey) {
-  if (!prevKey || typeof window.fxReduced !== 'function' || window.fxReduced()) return null;
-  const [prevView, prevMachine] = prevKey.split(':');
-  const [nextView, nextMachine] = nextKey.split(':');
-  if (prevView === 'boot' || nextView === 'boot') return null;
-  if (prevView === nextView) {
-    if (nextView !== 'machine' || prevMachine === nextMachine) return null;
-    const order = (state.home && state.home.machines || []).map((m) => String(m.machineId));
-    return order.indexOf(nextMachine) < order.indexOf(prevMachine) ? 'back' : 'fwd';
-  }
-  if (prevView === 'login' || nextView === 'login') return 'fade';
-  return (VIEW_DEPTH[nextView] || 0) >= (VIEW_DEPTH[prevView] || 0) ? 'fwd' : 'back';
-}
-
 function render() {
   const app = document.getElementById('app');
   let node;
@@ -4376,19 +4329,6 @@ function render() {
   const prevView = prevKey ? prevKey.split(':')[0] : null;
   if (isNavigation && prevView === 'home' && state.view !== 'home') _homeScrollMemo[prevKey.split(':')[2]] = prevScrollY;
   const backToHome = isNavigation && state.view === 'home' && ['machine', 'report', 'activity', 'admin'].indexOf(prevView) >= 0;
-
-  // 換頁有方向感：往裡面走（首頁→機台→報表）新頁從右邊滑進來，返回從左邊滑回來
-  // 轉場還沒播完就又重畫同一頁（例如回首頁時先畫快取、後端資料接著回來）：接著播完剩下的，不要半路跳掉
-  const dir = isNavigation ? pageDirection(prevKey, renderKey) : null;
-  if (dir) {
-    node.classList.add('fx-page-' + dir);
-    _pageAnim = { dir: dir, at: Date.now() };
-  } else if (!isNavigation && _pageAnim && Date.now() - _pageAnim.at < 300) {
-    node.classList.add('fx-page-' + _pageAnim.dir);
-    node.style.animationDelay = -(Date.now() - _pageAnim.at) + 'ms';
-  } else if (isNavigation) {
-    _pageAnim = null;
-  }
 
   app.replaceChildren(node);
 
@@ -4535,7 +4475,22 @@ function registerServiceWorker() {
   });
 }
 
+/**
+ * 畫面固定、不能放大縮小：記帳時常常快速連點，點兩下、兩指碰到就把整頁放大，要再縮回去很麻煩。
+ * index.html 的 viewport 已經寫了 user-scalable=no、styles.css 有 touch-action:manipulation，
+ * 但 iPhone 的 Safari 為了無障礙會忽略 user-scalable=no，雙指縮放要在這裡擋：
+ *   gesturestart／gesturechange 是 Safari 專有的縮放手勢事件；兩指以上的 touchmove 一律不讓瀏覽器處理。
+ * 兩指捲動清單這種用法本來就很少，一指捲動完全不受影響。
+ */
+function lockZoom() {
+  const stop = (e) => { if (e.cancelable) e.preventDefault(); };
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach((t) => document.addEventListener(t, stop, { passive: false }));
+  document.addEventListener('touchmove', (e) => { if (e.touches && e.touches.length > 1) stop(e); }, { passive: false });
+  // 點兩下放大交給 touch-action:manipulation 擋就好，不在 touchend 攔——攔了會吃掉快速連點的第二下（例如連按兩次 $50）
+}
+
 async function boot() {
+  lockZoom();
   setupNetworkIndicators();
   registerServiceWorker();
   startPolling();

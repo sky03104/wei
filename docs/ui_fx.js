@@ -6,7 +6,6 @@
    ・對話框／提示訊息的進出場動畫（自動套用）
    ・回到頂端鈕（自動套用）
    ・fxSkeletonCards(n, 提示)：機台卡片形狀的骨架畫面 HTML
-   ・fxSuccess()：送出成功打勾
    ・fxFieldError(欄位)：漏填的欄位紅框＋抖一下＋捲過去
    ・fxPullToRefresh(fn)：下拉更新
    ・fxRemoveThen(fn)：刪除／作廢的那一列先收合淡出，再重畫
@@ -171,7 +170,7 @@
   // app.js 的 openDialog() 產生 .dialog-backdrop（裡面的 .dialog 是面板）；提示訊息是 #toast
   var MODAL_SEL = '.dialog-backdrop,[role="dialog"]';
   var TOAST_SEL = '#toast,.toast';
-  var SKIP_SEL  = '.fx-ghost,.fx-rip-wrap,.fx-slider,.fx-success,.fx-ptr,.fx-top';
+  var SKIP_SEL  = '.fx-ghost,.fx-rip-wrap,.fx-slider,.fx-ptr,.fx-top';
   var SHOW_CLS  = ['show', 'open', 'on', 'active', 'visible'];
 
   function hasShowCls(el) { for (var i = 0; i < SHOW_CLS.length; i++) if (el.classList.contains(SHOW_CLS[i])) return true; return false; }
@@ -349,21 +348,6 @@
     } catch (e) {}
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startObserver); else startObserver();
-
-  /* ── 送出成功：畫面中央畫出綠色打勾，0.9 秒後自己消失（不擋操作） ── */
-  window.fxSuccess = function () {
-    try {
-      haptic('ok');
-      if (fxReduced()) return;
-      var d = document.createElement('div');
-      d.className = 'fx-success';
-      d.setAttribute('aria-hidden', 'true');
-      d.innerHTML = '<svg viewBox="0 0 52 52" width="92" height="92"><circle class="fx-sc" cx="26" cy="26" r="23"/>' +
-                    '<path class="fx-sk2" d="M15 27 l7 7 l15 -16"/></svg>';
-      document.body.appendChild(d);
-      setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 1000);
-    } catch (e) {}
-  };
 
   /* ── 刪除收合：記住「按了刪除／作廢的那一列」，成功後先收合淡出，再重畫清單 ──
      用法（刪除成功後）：fxRemoveThen(function(){ 重新載入(); });
