@@ -809,7 +809,9 @@ async function main() {
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
     const diceStatLabels = await page.locator('.figures-panel .stat-label').allTextContents();
-    assert(diceStatLabels.some((t) => t.indexOf('432數量') >= 0), '骰台機台詳細頁也應該顯示今日432數量卡片');
+    // 機台詳細頁原本的「今日432數量」改成「今日筆數」＝今日 432＋441（2026-09-27 咖哩要求）
+    assert(diceStatLabels.some((t) => t === '今日筆數'), '骰台機台詳細頁應該顯示「今日筆數」卡片，實際 ' + JSON.stringify(diceStatLabels));
+    assert(!diceStatLabels.some((t) => t.indexOf('432數量') >= 0), '機台詳細頁不該再有「今日432數量」');
   });
 
   // ── 巡邏人員 ──

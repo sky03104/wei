@@ -1598,6 +1598,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const total = emptySummary();
   const todaySum = emptySummary();
   let today432Count = 0;
+  let today441Count = 0; // 機台詳細頁的「今日筆數」＝今日 432＋441，跟首頁同一套算法
 
   records.forEach(function (r) {
     const bd = _recordBusinessDate(r);
@@ -1607,6 +1608,9 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
       _accumulate(todaySum, r);
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME) {
         today432Count += toNumber(r.count);
+      }
+      if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME_2) {
+        today441Count += toNumber(r.count);
       }
     }
   });
@@ -1638,6 +1642,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
     },
     today: todaySum,
     today432Count: today432Count,
+    today441Count: today441Count,
     total: total,
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
@@ -4637,19 +4642,21 @@ function _selfTestBody(results) {
     _fails({ action: 'addRecord', token: adminTok, machineId: prizeMachine, type: 'chip_out', amount: 100, clientToken: newId('ct') });
   });
 
-  _t(results, '首頁與機台詳細頁的今日432數量：只算今天、只算獎型名稱為432的次數', function () {
+  _t(results, '首頁與機台詳細頁的今日432／441數量：只算今天、只算獎型名稱為432／441的次數', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '432測試台', sortOrder: 32 }).machineId;
     const prize432 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '432', amount: 50, sortOrder: 1 }).prizeId;
-    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他獎型', amount: 30, sortOrder: 2 }).prizeId;
+    const prize441 = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '441', amount: 40, sortOrder: 2 }).prizeId;
+    const otherPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '其他獎型', amount: 30, sortOrder: 3 }).prizeId;
 
     _ok({
       action: 'addPrizeRecord', token: adminTok, machineId: mid,
-      items: [{ prizeId: prize432, count: 3 }, { prizeId: otherPrize, count: 5 }],
+      items: [{ prizeId: prize432, count: 3 }, { prizeId: prize441, count: 2 }, { prizeId: otherPrize, count: 5 }],
       clientToken: newId('ct')
     });
 
     const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(detail.today432Count, 3, '機台詳細頁今日432數量只算432獎型的次數');
+    _assertEq(detail.today441Count, 2, '機台詳細頁今日441數量只算441獎型的次數（詳細頁「今日筆數」＝432＋441）');
 
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assert(dash.today432Count >= 3, '首頁今日432數量至少包含這台剛登錄的 3 次');
