@@ -24,9 +24,23 @@
  * 完全不受影響。
  */
 
-function _sbPushEnabled() {
+/**
+ * 自我測試（Test.gs 的 runSelfTest）期間設成 true：測試會真的「營業開始、記帳、設定今日數字」，
+ * 這些動作平常都會即時同步到資料庫——正式專案有設定資料庫連線資訊時，測試資料就會被送進
+ * 正式資料庫（測試的營業日會讓資料庫版以為今天又開了一次營業）。測試期間一律不送。
+ * 用執行期變數、不是指令碼屬性：測試跑到一半被砍斷，下一次執行自然恢復，不會一直卡在暫停。
+ */
+let _sbPushSuspended = false;
+
+/** 指令碼屬性有沒有設定資料庫連線資訊（要不要裝定期安全網的觸發器看這個）。 */
+function _sbPushConfigured() {
   const props = PropertiesService.getScriptProperties();
   return !!(props.getProperty('SUPABASE_URL') && props.getProperty('SUPABASE_SERVICE_ROLE_KEY'));
+}
+
+/** 現在要不要真的送到資料庫：有設定連線資訊，而且不是在跑自我測試。 */
+function _sbPushEnabled() {
+  return !_sbPushSuspended && _sbPushConfigured();
 }
 
 function _sbPushConfig() {
@@ -52,9 +66,16 @@ function _sbPushFetch(method, path, payload, extraHeaders) {
  * 試算表 user_id（文字）→ Supabase profiles.id（uuid），靠兩邊都有的
  * username 對照。查一次 Supabase 的 profiles 表要花一次網路來回，快取
  * 1 小時，避免每一次記帳都多打一次 API 拖慢使用者的操作。
+ *
+ * 同一次執行裡還會再記在 _sbPushUidMapMemo：定期安全網一次要處理幾百筆紀錄，
+ * 以前每一筆都去讀一次 CacheService，幾百次累積起來要花好幾秒到十幾秒。
+ * 每次執行都是全新的全域變數，不會拿到上一次執行留下的舊對照表。
  */
+let _sbPushUidMapMemo = null;
+
 function _sbPushUserId(sheetUserId) {
   if (!sheetUserId) return null;
+  if (_sbPushUidMapMemo) return _sbPushUidMapMemo[sheetUserId] || null;
   const cache = CacheService.getScriptCache();
   const cacheKey = 'sbPushUidMap';
   let map = null;
@@ -82,6 +103,7 @@ function _sbPushUserId(sheetUserId) {
     });
     try { cache.put(cacheKey, JSON.stringify(map), 3600); } catch (e) { /* 快取放不下就算了，這次還是能正常查完 */ }
   }
+  _sbPushUidMapMemo = map;
   return map[sheetUserId] || null;
 }
 
@@ -132,45 +154,55 @@ function pushVoidToSupabase(rec) {
   }
 }
 
+/** DailyLedger 的一列 → 資料庫 daily_ledger 的一列（即時推送跟定期安全網共用，兩邊送的內容一定一樣）。 */
+function _dailyLedgerPayload(row) {
+  return {
+    ledger_id: row.ledger_id,
+    business_date: row.business_date,
+    turnover: toNumber(row.turnover),
+    transport: toNumber(row.transport),
+    given_to_owner: 0,
+    taken_by_owner: 0,
+    given_to_owner_items: _parseLedgerItems(row.given_to_owner_items),
+    taken_by_owner_items: _parseLedgerItems(row.taken_by_owner_items),
+    returned_to_house: toNumber(row.returned_to_house),
+    updated_by: _sbPushUserId(row.updated_by),
+    updated_at: row.updated_at,
+    biz_id: row.biz_id || null,
+    manual_432: toNumber(row.manual_432),
+    manual_441: toNumber(row.manual_441),
+    manual_expense: toNumber(row.manual_expense)
+  };
+}
+
 /** 每日手動帳目（設定今日數字）。 */
 function pushDailyLedgerToSupabase(row) {
   if (!_sbPushEnabled() || !row) return;
   try {
-    _sbPushUpsert('daily_ledger', [{
-      ledger_id: row.ledger_id,
-      business_date: row.business_date,
-      turnover: toNumber(row.turnover),
-      transport: toNumber(row.transport),
-      given_to_owner: 0,
-      taken_by_owner: 0,
-      given_to_owner_items: _parseLedgerItems(row.given_to_owner_items),
-      taken_by_owner_items: _parseLedgerItems(row.taken_by_owner_items),
-      returned_to_house: toNumber(row.returned_to_house),
-      updated_by: _sbPushUserId(row.updated_by),
-      updated_at: row.updated_at,
-      biz_id: row.biz_id || null,
-      manual_432: toNumber(row.manual_432),
-      manual_441: toNumber(row.manual_441),
-      manual_expense: toNumber(row.manual_expense)
-    }], 'ledger_id');
+    _sbPushUpsert('daily_ledger', [_dailyLedgerPayload(row)], 'ledger_id');
   } catch (e) {
     Logger.log('⚠ 即時推送 Supabase 失敗（daily_ledger）：' + (e && e.message) + '——下次定期同步會補上，不影響這次試算表寫入');
   }
+}
+
+/** BizDays 的一列 → 資料庫 biz_days 的一列（即時推送跟定期安全網共用，兩邊送的內容一定一樣）。 */
+function _bizDayPayload(row) {
+  return {
+    biz_id: row.biz_id,
+    business_date: row.business_date,
+    opened_at: row.opened_at,
+    opened_by: _sbPushUserId(row.opened_by),
+    closed_at: row.closed_at || null,
+    closed_by: _sbPushUserId(row.closed_by),
+    auto_closed: !!row.auto_closed
+  };
 }
 
 /** 今日營業開始／結單。 */
 function pushBizDayToSupabase(row) {
   if (!_sbPushEnabled() || !row) return;
   try {
-    _sbPushUpsert('biz_days', [{
-      biz_id: row.biz_id,
-      business_date: row.business_date,
-      opened_at: row.opened_at,
-      opened_by: _sbPushUserId(row.opened_by),
-      closed_at: row.closed_at || null,
-      closed_by: _sbPushUserId(row.closed_by),
-      auto_closed: !!row.auto_closed
-    }], 'biz_id');
+    _sbPushUpsert('biz_days', [_bizDayPayload(row)], 'biz_id');
   } catch (e) {
     Logger.log('⚠ 即時推送 Supabase 失敗（biz_days）：' + (e && e.message) + '——下次定期同步會補上，不影響這次試算表寫入');
   }
