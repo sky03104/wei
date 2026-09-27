@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v50';
+const APP_VERSION = 'v51';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1157,7 +1157,8 @@ function viewMachine() {
     ]),
     statBox('今日入幣', money(d.today.in)),
     statBox('今日出幣', money(d.today.out)),
-    statBox('今日432數量', String(d.today432Count || 0))
+    // 今日筆數＝今日 432＋441 的支數（跟首頁骰台分頁的算法一樣）；後端還沒更新、沒給 441 時就只算 432
+    statBox('今日筆數', String((d.today432Count || 0) + (d.today441Count || 0)))
   ]);
 
   const actions = canRecord()
