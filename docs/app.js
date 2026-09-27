@@ -185,7 +185,7 @@ const POLL_MS = 300000;
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v51';
+const APP_VERSION = 'v52';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2182,57 +2182,102 @@ function exportLedgerScreenshots() {
     const data = await api('exportLedgerGrids', p);
     const rangeLabel = data.range.from + ' ~ ' + data.range.to;
 
-    const files = data.machines.map((m) => {
+    // 轉成 PNG：這裡前面已經等過一趟網路了，不用像 exportLedgerImage() 那樣為了
+    // 「同步」硬用 toDataURL＋逐字解 base64（圖一寬、張數一多，光這一步手機上就要好幾秒）；
+    // 改用瀏覽器原生的 canvas.toBlob()，全部同時轉，盡量縮短「按下去」到「叫出分享面板」的時間。
+    const files = await Promise.all(data.machines.map(async (m) => {
       const canvas = drawLedgerGridCanvas(rangeLabel, m);
       const filename = '娃娃機對帳表_' + m.machineName + '_' + data.range.from + '_' + data.range.to + '.png';
-      const blob = _dataUrlToBlob(canvas.toDataURL('image/png'));
+      const blob = await _canvasToPngBlob(canvas);
       return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
-    });
+    }));
 
     // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
     // 一次可能有好幾個檔案，先試分享面板一次全部帶走（實測：iOS 原生
     // 分享面板能正確把 17 張圖打包成一份「17 個影像」一起帶走，這條路
-    // 一旦成功是最順的），不支援 / 使用者取消才退回逐一下載。
+    // 一旦成功是最順的）。
     //
-    // canShare({files}) 過了不代表 share() 一定會成功——瀏覽器對「這批
-    // 檔案能不能分享」跟「系統分享面板實際能不能處理這個總大小」是
-    // 兩層不同的檢查，機台一多、圖檔總大小超過系統分享面板上限時，
-    // canShare() 仍然回 true，但 share() 會直接被系統拒絕。原本這裡把
-    // share() 失敗整個吞掉、直接 return，使用者會看到「按了沒反應」；
-    // 改成失敗就繼續往下走，退回逐一下載，不會真的沒反應。
+    // share() 只能在「使用者剛按下去」的有效期內叫（transient user activation，
+    // 手機大約幾秒）。前面要等一趟網路、再畫 17 張圖——自訂區間一長，每台
+    // 資料多、每張圖也更寬，準備時間很容易超過這個有效期，share() 就會被擋下
+    // （NotAllowedError），以前這時會直接退回逐一下載，使用者收到 17 個分開的檔案。
+    // 現在改成跳一個視窗讓使用者「再按一次」：那一按是新的互動，一定叫得出分享面板。
+    // 使用者自己把分享面板關掉（AbortError）就真的是取消，不再自動下載 17 個檔案。
     if (typeof File !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
       try {
         await navigator.share({ files });
-        return;
       } catch (err) {
-        // 使用者自己按取消分享也會走到這裡，同樣退回下載——不完美，
-        // 但比「按了完全沒反應」好。
+        if (!(err && err.name === 'AbortError')) offerShareScreenshots(files, rangeLabel);
       }
+      return;
     }
 
-    // 備援：逐一觸發下載。實測發現在 Safari／iOS 上，好幾個
-    // `<a download>` 在同一個 tick 裡連續 click()，只有最後一個真的會
-    // 被處理、其餘的被默默吞掉（跟「分享面板每次只接 1 個檔案」是完全
-    // 不同的另一個問題，這裡是下載本身的問題）——改成一次觸發一個、
-    // 中間等一小段時間再觸發下一個，讓瀏覽器有時間把每一次下載都真的
-    // 處理完，17 張圖大約多花 17*300ms ≈ 5 秒，換來每張都真的存得到。
-    for (const file of files) {
-      const blob = file instanceof File ? file : file.blob;
-      const filename = file instanceof File ? file.name : file.filename;
-      const url = URL.createObjectURL(blob);
-      const link = h('a', { href: url, download: filename });
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      URL.revokeObjectURL(url);
-    }
-    toast(
-      '已下載 ' + data.machines.length + ' 張截圖'
-        + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
-      'success'
-    );
+    await downloadScreenshotFiles(files);
   });
+}
+
+/** canvas 轉 PNG Blob：有原生的 toBlob() 就用它（快、不佔用畫面），沒有才退回 toDataURL。 */
+function _canvasToPngBlob(canvas) {
+  return new Promise((resolve) => {
+    if (typeof canvas.toBlob === 'function') {
+      canvas.toBlob((blob) => resolve(blob || _dataUrlToBlob(canvas.toDataURL('image/png'))), 'image/png');
+    } else {
+      resolve(_dataUrlToBlob(canvas.toDataURL('image/png')));
+    }
+  });
+}
+
+/**
+ * 截圖準備好了、但自動叫分享面板被手機擋下來時（見 exportLedgerScreenshots）：
+ * 跳一個視窗，讓使用者按「一次分享」。share() 一定要在這個按鈕的點擊裡「同步」呼叫，
+ * 中間不能有任何 await，才算是使用者剛按下去。分享失敗（例如總大小超過系統分享面板
+ * 能處理的上限）就提示改用逐一下載；使用者自己取消分享面板則留在這個視窗，可以再選一次。
+ */
+function offerShareScreenshots(files, rangeLabel) {
+  openDialog('截圖準備好了', [
+    h('p', { class: 'small muted', style: 'margin-bottom:4px' },
+      '共 ' + files.length + ' 張（' + rangeLabel + '）。區間比較長時，準備圖片要花一點時間，'
+      + '手機會擋下自動跳出的分享選單——按下面的「一次分享」就會打開，可以一次全部傳到 LINE。')
+  ], [
+    h('button', {
+      class: 'btn',
+      onclick: () => { closeDialog(); downloadScreenshotFiles(files); }
+    }, '逐一下載'),
+    h('button', {
+      class: 'btn btn-primary',
+      onclick: () => {
+        navigator.share({ files }).then(closeDialog).catch((err) => {
+          if (err && err.name === 'AbortError') return;
+          toast('手機的分享選單沒辦法一次帶走這麼多張，請改按「逐一下載」', 'error');
+        });
+      }
+    }, '📤 一次分享 ' + files.length + ' 張')
+  ]);
+}
+
+/**
+ * 備援：逐一觸發下載。實測發現在 Safari／iOS 上，好幾個 `<a download>` 在同一個
+ * tick 裡連續 click()，只有最後一個真的會被處理、其餘的被默默吞掉——改成一次觸發
+ * 一個、中間等一小段時間再觸發下一個，讓瀏覽器有時間把每一次下載都真的處理完，
+ * 17 張圖大約多花 17*300ms ≈ 5 秒，換來每張都真的存得到。
+ */
+async function downloadScreenshotFiles(files) {
+  for (const file of files) {
+    const blob = file instanceof File ? file : file.blob;
+    const filename = file instanceof File ? file.name : file.filename;
+    const url = URL.createObjectURL(blob);
+    const link = h('a', { href: url, download: filename });
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    URL.revokeObjectURL(url);
+  }
+  toast(
+    '已下載 ' + files.length + ' 張截圖'
+      + (files.length > 1 ? '，要傳到 LINE 的話請到相簿/檔案裡多選後再分享，一次分享全部張數才不會漏掉' : ''),
+    'success'
+  );
 }
 
 // ── 畫面：系統管理 ──────────────────────────────────────
