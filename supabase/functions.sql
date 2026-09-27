@@ -166,11 +166,16 @@ $$;
 -- 0），但那樣使用者分不出「這台機台今天真的是 0」還是「我根本沒有
 -- 權限看」，明確擋掉、丟出錯誤訊息，跟現有 assertMachineAccess() 的
 -- 行為一致。
+-- 2026-09-27 多回傳 today_441_count（機台詳細頁「今日筆數」＝今日 432＋441）：
+-- 回傳欄位變了，create or replace 不能改回傳型態，要先 drop 再建；
+-- 用到它的 machine_detail() 是 plpgsql，執行時才找這個函式，drop 不會連帶被刪。
+drop function if exists machine_today_and_week(text);
 create or replace function machine_today_and_week(p_machine_id text)
 returns table (
   today_in numeric, today_out numeric, today_prize numeric, today_net numeric,
   today_chip_in numeric, today_chip_out numeric, today_chip_net numeric,
   today_432_count numeric,
+  today_441_count numeric,
   week_in numeric, week_out numeric, week_prize numeric, week_net numeric,
   week_chip_in numeric, week_chip_out numeric, week_chip_net numeric,
   last_meter_reading numeric
@@ -222,6 +227,7 @@ begin
     coalesce(sum(amount) filter (where type = 'chip_in' and is_today), 0)
       - coalesce(sum(amount) filter (where type = 'chip_out' and is_today), 0),
     coalesce(sum(count) filter (where type = 'prize' and is_today and prize_name = '432'), 0),
+    coalesce(sum(count) filter (where type = 'prize' and is_today and prize_name = '441'), 0),
     coalesce(sum(amount) filter (where type = 'in' and in_week), 0),
     coalesce(sum(amount) filter (where type = 'out' and in_week), 0),
     coalesce(sum(amount) filter (where type = 'prize' and in_week), 0),
@@ -2078,6 +2084,7 @@ begin
       'chipIn', v_agg.today_chip_in, 'chipOut', v_agg.today_chip_out, 'chipNet', v_agg.today_chip_net
     ),
     'today432Count', v_agg.today_432_count,
+    'today441Count', v_agg.today_441_count,
     'total', jsonb_build_object(
       'in', v_agg.week_in, 'out', v_agg.week_out, 'prize', v_agg.week_prize, 'net', v_agg.week_net,
       'chipIn', v_agg.week_chip_in, 'chipOut', v_agg.week_chip_out, 'chipNet', v_agg.week_chip_net

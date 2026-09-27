@@ -87,19 +87,6 @@
    ui_fx.js 真的有啟動才會在 <html> 加 fx-anim，沒載到時維持原本的動畫 */
 html.fx-anim .dialog,html.fx-anim .toast{animation:none}
 
-/* ── 送出成功打勾（ui_fx.js 的 fxSuccess() 產生）── */
-.fx-success{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:99999;pointer-events:none;
-  animation:fxSucBg 1s ease forwards}
-.fx-success svg{filter:drop-shadow(0 0 18px color-mix(in srgb,var(--fx-ok) 45%,transparent));
-  animation:fxSucPop 1s cubic-bezier(.2,1.4,.4,1) forwards}
-.fx-success .fx-sc{fill:var(--bg);fill-opacity:.85;stroke:var(--fx-ok);stroke-width:2.5;stroke-dasharray:145;stroke-dashoffset:145;
-  animation:fxDraw .45s ease-out forwards}
-.fx-success .fx-sk2{fill:none;stroke:var(--fx-ok);stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;
-  animation:fxDraw .3s .35s ease-out forwards}
-@keyframes fxDraw{to{stroke-dashoffset:0}}
-@keyframes fxSucPop{0%{transform:scale(.6);opacity:0}20%{transform:scale(1.05);opacity:1}80%{transform:scale(1);opacity:1}100%{transform:scale(.9);opacity:0}}
-@keyframes fxSucBg{0%,80%{background:rgba(0,0,0,.18)}100%{background:rgba(0,0,0,0)}}
-
 /* ── 提醒紅點呼吸（給紅點元素加 class="fx-pulse"）── */
 .fx-pulse{animation:fxPulse 1.8s ease-in-out infinite}
 @keyframes fxPulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--fx-err) 60%,transparent)}
@@ -204,15 +191,6 @@ html.fx-scrolled .home-sticky{box-shadow:0 10px 14px -10px rgba(0,0,0,.8)}
 .sleepy .zzz i:nth-child(3){animation-delay:2s}
 @keyframes fxZzz{0%{opacity:0;transform:translate(0,0)}15%{opacity:.95}70%{opacity:.7}100%{opacity:0;transform:translate(16px,-26px)}}
 
-/* ── 換頁轉場（app.js 的 render() 依方向加 class，見 pageDirection()）──
-   往裡走從右邊滑進來、返回從左邊滑回來、登入登出淡入；約 0.25 秒，不拖慢操作 */
-.fx-page-fwd{animation:fxPageFwd .26s cubic-bezier(.2,.8,.2,1)}
-.fx-page-back{animation:fxPageBack .26s cubic-bezier(.2,.8,.2,1)}
-.fx-page-fade{animation:fxPageFade .3s ease-out}
-@keyframes fxPageFwd{from{opacity:0;transform:translateX(40px)}}
-@keyframes fxPageBack{from{opacity:0;transform:translateX(-40px)}}
-@keyframes fxPageFade{from{opacity:0}}
-
 /* ── 底部對話框上方的小把手：提示「可以往下滑關掉」（ui_fx.js 的 fxSwipeToClose）；桌機置中的對話框不用 ── */
 .dialog-handle{width:42px;height:5px;border-radius:999px;background:var(--surface-3);margin:-8px auto 12px}
 @media (min-width:760px){.dialog-handle{display:none}}
@@ -257,7 +235,6 @@ html.fx-scrolled .home-sticky{box-shadow:0 10px 14px -10px rgba(0,0,0,.8)}
   .fx-login-intro .login-head .pixel-machine,.fx-login-intro .login-head h1,.fx-login-intro .login-card,.fx-login-intro .login-foot{animation:none}
   .checkbox input.switch{transition:none}
   .fx-delta{display:none}
-  .fx-page-fwd,.fx-page-back,.fx-page-fade{animation:none}
   .fx-ptr.fx-busy svg{animation:none}
   .sleepy .zzz i{animation:none;opacity:.8}
   .sleepy .zzz i:nth-child(2){transform:translate(7px,-9px)}
