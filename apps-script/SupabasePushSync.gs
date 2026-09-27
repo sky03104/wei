@@ -34,6 +34,7 @@
  */
 
 function pushAllToSupabase() {
+  if (_sbPushSuspended) return null; // 自我測試中（見 SupabasePush.gs），不送
   if (!_sbPushEnabled()) {
     Logger.log('尚未設定 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY，略過定期安全網。');
     return null;
@@ -101,16 +102,48 @@ function _dedupeByKey(rows, keyField) {
   return Object.keys(byKey).map(function (k) { return byKey[k]; });
 }
 
+/**
+ * 營業日、每日帳目：整張表一次送（一次網路來回），不是一列打一次。
+ *
+ * 以前是一列打一次網路：營業日 42 列＋每日帳目 35 列＝每 15 分鐘要連 77 次，
+ * 一次要跑 1 分多鐘，而且全程握著鎖——這段時間試算表版的記帳、作廢、開始／結單
+ * 會等 20 秒後跳「系統忙碌中」；每天加起來超過免費帳號排程每天 90 分鐘的上限；
+ * 這兩張表每天各多一列，還會越跑越久。整批送之後幾秒就跑完。
+ * 範圍照舊是整張表（不像 records 只送最近 7 天）：這兩張表一天才一列，整批送很快，
+ * 保留「任何一列有差異都會被補上」的安全網效果。
+ */
 function _pushAllBizDaysToSupabase() {
   const rows = _dedupeByKey(dbReadAll('BizDays'), 'biz_id');
-  rows.forEach(function (row) { pushBizDayToSupabase(row); });
-  return rows.length;
+  return _pushTableInBatch('biz_days', 'biz_id', rows, _bizDayPayload);
 }
 
 function _pushAllDailyLedgerToSupabase() {
   const rows = _dedupeByKey(dbReadAll('DailyLedger'), 'ledger_id');
-  rows.forEach(function (row) { pushDailyLedgerToSupabase(row); });
-  return rows.length;
+  return _pushTableInBatch('daily_ledger', 'ledger_id', rows, _dailyLedgerPayload);
+}
+
+/**
+ * 整批一次 upsert；整批被資料庫擋下時（例如其中一列資料有問題），才退回一列一列送，
+ * 讓其他正常的列照樣送得到，不會因為一列壞掉整張表都補不上。回傳實際送成功的列數。
+ */
+function _pushTableInBatch(table, keyField, rows, toPayload) {
+  if (!rows.length) return 0;
+  try {
+    _sbPushUpsert(table, rows.map(toPayload), keyField);
+    return rows.length;
+  } catch (e) {
+    Logger.log('⚠ 定期安全網整批推送失敗（' + table + '），改成一列一列送：' + (e && e.message));
+  }
+  let ok = 0;
+  rows.forEach(function (row) {
+    try {
+      _sbPushUpsert(table, [toPayload(row)], keyField);
+      ok++;
+    } catch (e) {
+      Logger.log('⚠ 定期安全網推送失敗（' + table + ' ' + row[keyField] + '，下次再試）：' + (e && e.message));
+    }
+  });
+  return ok;
 }
 
 /**
@@ -167,7 +200,7 @@ function _pushAllRecordsToSupabase() {
  * 沒設定的環境（例如還沒接 Supabase 的測試專案）不受影響。
  */
 function _ensureSupabasePushSyncTrigger() {
-  if (!_sbPushEnabled()) return false;
+  if (!_sbPushConfigured()) return false;
   const already = ScriptApp.getProjectTriggers().some(function (t) {
     return t.getHandlerFunction() === 'pushAllToSupabase';
   });

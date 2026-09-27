@@ -250,7 +250,7 @@ function setup() {
   const pushSyncTriggerInstalled = _ensureSupabasePushSyncTrigger();
   if (pushSyncTriggerInstalled) {
     out.push('已設定「試算表→資料庫」定期安全網（每 15 分鐘跑一次，補即時推送萬一失敗漏掉的資料）');
-  } else if (_sbPushEnabled()) {
+  } else if (_sbPushConfigured()) {
     out.push('「試算表→資料庫」定期安全網已經設定過，略過');
   }
 
