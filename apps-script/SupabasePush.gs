@@ -75,6 +75,11 @@ function _sbPushGetJson(path) {
   return data;
 }
 
+/** 刪掉符合條件的列（filter 例如 'qa_id=eq.qa_xxx'；PostgREST 規定 DELETE 一定要帶條件，不會整張刪掉）。 */
+function _sbPushDelete(table, filter) {
+  _sbPushFetch('DELETE', '/rest/v1/' + table + '?' + filter, undefined, { Prefer: 'return=minimal' });
+}
+
 /**
  * 試算表 user_id（文字）→ Supabase profiles.id（uuid），靠兩邊都有的
  * username 對照。查一次 Supabase 的 profiles 表要花一次網路來回，快取
