@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v62';
+const APP_VERSION = 'v63';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2412,8 +2412,8 @@ function viewMachine() {
     netStat,
     statNum('今日入幣', d.today.in, money, '', 'detail:' + m.machineId + ':in'),
     statNum('今日出幣', d.today.out, money, '', 'detail:' + m.machineId + ':out'),
-    // 今日筆數＝今日 432＋441 的支數（跟首頁骰台分頁的算法一樣）；後端還沒更新、沒給 441 時就只算 432
-    statNum('今日筆數', (d.today432Count || 0) + (d.today441Count || 0), countText, '', 'detail:' + m.machineId + ':records')
+    // 今日筆數＝今日出幣筆數＋432＋441 的支數（跟首頁「今日總筆數」同一套算法）；後端還沒更新、沒給的欄位當 0
+    statNum('今日筆數', (d.todayOutCount || 0) + (d.today432Count || 0) + (d.today441Count || 0), countText, '', 'detail:' + m.machineId + ':records')
   ]);
 
   const actions = canRecord()

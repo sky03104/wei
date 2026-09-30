@@ -42,6 +42,9 @@
  *   記帳，機台/獎型等設定維持在試算表端管理、由 MigrateToSupabase.gs
  *   單向帶去資料庫。如果之後也需要在資料庫端改這些設定並同步回試算表，
  *   要另外擴充。
+ *   例外：machines 在 2026-09-30 改成雙向同步了（資料庫版「系統管理」改的
+ *   機台設定會寫回試算表），由 apps-script/SupabasePushSync.gs 的
+ *   _syncMachinesWithSupabase() 負責，不是這支。
  */
 
 function syncFromSupabase() {

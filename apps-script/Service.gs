@@ -709,7 +709,9 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const total = emptySummary();
   const todaySum = emptySummary();
   let today432Count = 0;
-  let today441Count = 0; // 機台詳細頁的「今日筆數」＝今日 432＋441，跟首頁同一套算法
+  let today441Count = 0;
+  // 機台詳細頁的「今日筆數」＝今日出幣筆數＋432＋441，跟首頁「今日總筆數」同一套算法
+  let todayOutCount = 0;
 
   records.forEach(function (r) {
     const bd = _recordBusinessDate(r);
@@ -723,6 +725,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME_2) {
         today441Count += toNumber(r.count);
       }
+      if (r.type === RECORD_OUT) todayOutCount += 1;
     }
   });
 
@@ -754,6 +757,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
     today: todaySum,
     today432Count: today432Count,
     today441Count: today441Count,
+    todayOutCount: todayOutCount,
     total: total,
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
