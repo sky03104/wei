@@ -127,8 +127,34 @@ function _sbPushUserId(sheetUserId) {
 
 function _sbPushUpsert(table, rows, onConflict) {
   if (!rows.length) return;
-  _sbPushFetch('POST', '/rest/v1/' + table + '?on_conflict=' + encodeURIComponent(onConflict), rows,
-    { Prefer: 'resolution=merge-duplicates,return=minimal' });
+  // PostgREST 一次送多列時，每一列的欄位要一模一樣；有些列少了「誰」的欄位
+  // （對不到帳號就不送，見 _sbOmitMissingPeople），就照欄位組合分成幾批送，通常只有一批。
+  const groups = {};
+  const order = [];
+  rows.forEach(function (r) {
+    const sig = Object.keys(r).sort().join(',');
+    if (!groups[sig]) { groups[sig] = []; order.push(sig); }
+    groups[sig].push(r);
+  });
+  order.forEach(function (sig) {
+    _sbPushFetch('POST', '/rest/v1/' + table + '?on_conflict=' + encodeURIComponent(onConflict), groups[sig],
+      { Prefer: 'resolution=merge-duplicates,return=minimal' });
+  });
+}
+
+/**
+ * 「誰」的欄位（營業日開始人／結單人、每日帳目修改人、作廢人）對不到資料庫的帳號時
+ * （試算表這格是空白，或這個帳號已經從試算表刪掉），整個欄位不送，資料庫原本記的人
+ * 維持不動——同步只能把人補上，不能把人清成空白。這幾個欄位在這個系統裡本來就不會
+ * 被「清空」（開過的營業日不會變成沒人開），所以「送不出來就不動」不會漏掉任何正常的修改。
+ * 真實發生過：2026-09-30 在試算表刪掉非管理員的帳號後，同步把資料庫裡 8/23～9/13 的
+ * 開始人、結單人、帳目修改人整批清成空白。
+ */
+function _sbOmitMissingPeople(payload, fields) {
+  fields.forEach(function (f) {
+    if (payload[f] === null || payload[f] === undefined || payload[f] === '') delete payload[f];
+  });
+  return payload;
 }
 
 /** 入幣／出幣／碼表入幣／開獎：一次可能好幾筆（開獎一次登錄多個獎型）。 */
@@ -161,12 +187,12 @@ function pushRecordsToSupabase(recs) {
 function pushVoidToSupabase(rec) {
   if (!_sbPushEnabled() || !rec) return;
   try {
-    _sbPushUpsert('records', [{
+    _sbPushUpsert('records', [_sbOmitMissingPeople({
       record_id: rec.record_id,
       voided: true,
       voided_by: _sbPushUserId(rec.voided_by),
       voided_at: rec.voided_at
-    }], 'record_id');
+    }, ['voided_by'])], 'record_id');
   } catch (e) {
     Logger.log('⚠ 即時推送 Supabase 失敗（voidRecord）：' + (e && e.message) + '——下次定期同步會補上，不影響這次試算表寫入');
   }
@@ -174,7 +200,7 @@ function pushVoidToSupabase(rec) {
 
 /** DailyLedger 的一列 → 資料庫 daily_ledger 的一列（即時推送跟定期安全網共用，兩邊送的內容一定一樣）。 */
 function _dailyLedgerPayload(row) {
-  return {
+  return _sbOmitMissingPeople({
     ledger_id: row.ledger_id,
     business_date: row.business_date,
     turnover: toNumber(row.turnover),
@@ -190,7 +216,7 @@ function _dailyLedgerPayload(row) {
     manual_432: toNumber(row.manual_432),
     manual_441: toNumber(row.manual_441),
     manual_expense: toNumber(row.manual_expense)
-  };
+  }, ['updated_by']);
 }
 
 /** 每日手動帳目（設定今日數字）。 */
@@ -205,7 +231,7 @@ function pushDailyLedgerToSupabase(row) {
 
 /** BizDays 的一列 → 資料庫 biz_days 的一列（即時推送跟定期安全網共用，兩邊送的內容一定一樣）。 */
 function _bizDayPayload(row) {
-  return {
+  return _sbOmitMissingPeople({
     biz_id: row.biz_id,
     business_date: row.business_date,
     opened_at: row.opened_at,
@@ -213,7 +239,7 @@ function _bizDayPayload(row) {
     closed_at: row.closed_at || null,
     closed_by: _sbPushUserId(row.closed_by),
     auto_closed: !!row.auto_closed
-  };
+  }, ['opened_by', 'closed_by']);
 }
 
 /** 今日營業開始／結單。 */
