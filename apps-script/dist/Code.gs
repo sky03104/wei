@@ -1598,7 +1598,9 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
   const total = emptySummary();
   const todaySum = emptySummary();
   let today432Count = 0;
-  let today441Count = 0; // 機台詳細頁的「今日筆數」＝今日 432＋441，跟首頁同一套算法
+  let today441Count = 0;
+  // 機台詳細頁的「今日筆數」＝今日出幣筆數＋432＋441，跟首頁「今日總筆數」同一套算法
+  let todayOutCount = 0;
 
   records.forEach(function (r) {
     const bd = _recordBusinessDate(r);
@@ -1612,6 +1614,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
       if (r.type === RECORD_PRIZE && r.prize_name === TRACKED_PRIZE_NAME_2) {
         today441Count += toNumber(r.count);
       }
+      if (r.type === RECORD_OUT) todayOutCount += 1;
     }
   });
 
@@ -1643,6 +1646,7 @@ function _buildMachineDetail(m, records, recordLimit, openBiz) {
     today: todaySum,
     today432Count: today432Count,
     today441Count: today441Count,
+    todayOutCount: todayOutCount,
     total: total,
     records: mine.slice(0, limit).map(_publicRecord),
     hasMore: mine.length > limit,
@@ -2552,6 +2556,19 @@ function _sbPushFetch(method, path, payload, extraHeaders) {
   if (code >= 300) throw new Error('(' + code + ') ' + method + ' ' + path + '：' + resp.getContentText());
 }
 
+/** GET 一張表（PostgREST 查詢），回傳陣列；連不上、格式不對一律丟錯，讓呼叫端決定要不要略過。 */
+function _sbPushGetJson(path) {
+  const cfg = _sbPushConfig();
+  const headers = { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key };
+  const resp = UrlFetchApp.fetch(cfg.url + path, { method: 'GET', headers: headers, muteHttpExceptions: true });
+  const code = resp.getResponseCode();
+  const text = resp.getContentText();
+  if (code >= 300) throw new Error('(' + code + ') GET ' + path + '：' + text);
+  const data = JSON.parse(text || '[]');
+  if (!Array.isArray(data)) throw new Error('GET ' + path + ' 回應格式不是陣列：' + text);
+  return data;
+}
+
 /**
  * 試算表 user_id（文字）→ Supabase profiles.id（uuid），靠兩邊都有的
  * username 對照。查一次 Supabase 的 profiles 表要花一次網路來回，快取
@@ -2710,6 +2727,9 @@ function pushBizDayToSupabase(row) {
  * SupabasePush.gs 開頭說明），萬一剛好網路不通、Supabase 一時打不通，
  * 那一筆就會漏掉——這支就是補漏用的定期保險網。
  *
+ * 例外：機台設定是雙向同步（資料庫版「系統管理」也能改機台），不是單純
+ * 用試算表蓋過去，見 _syncMachinesWithSupabase()。
+ *
  * ── 跟 MigrateToSupabase.gs 不一樣、也是那支不能拿來定期跑的原因 ──
  *
  * 1. 送出前一定先用 key（record_id／biz_id／ledger_id）去重，同一批
@@ -2746,9 +2766,10 @@ function pushAllToSupabase() {
     // machines 一定要排第一個：records 有外鍵指到 machine_id，機台如果還沒
     // 存在於 Supabase，records 那批 upsert 會直接被 Postgres 擋下來
     // （真實發生過：23503 外鍵違反，整批 500 筆全部失敗）。機台本身
-    // 不像 records/void 有即時推送涵蓋，只有這裡會定期把它們同步過去。
+    // 不像 records/void 有即時推送涵蓋，只有這裡會定期同步（而且是雙向，
+    // 見 _syncMachinesWithSupabase()）。
     const summary = {
-      machines: _pushAllMachinesToSupabase(),
+      machines: _syncMachinesWithSupabase(),
       bizDays: _pushAllBizDaysToSupabase(),
       dailyLedger: _pushAllDailyLedgerToSupabase(),
       records: _pushAllRecordsToSupabase()
@@ -2758,23 +2779,174 @@ function pushAllToSupabase() {
   });
 }
 
-/** 機台不像 records/biz_days/daily_ledger 有即時推送，只有這支定期安全網會同步——沒這段的話，新增/改過的機台在 Supabase 會一直是舊的（甚至完全不存在），造成 records 外鍵失敗、匯出查詢用機台分類篩選時篩到過期資料。 */
-function _pushAllMachinesToSupabase() {
-  const rows = _dedupeByKey(dbReadAll('Machines'), 'machine_id');
+/**
+ * 機台設定（名稱、位置、狀態、顏色、排序、圖案…）的雙向同步。
+ *
+ * 機台不像 records/biz_days/daily_ledger 有即時推送，只有這裡會同步——沒這段的話，
+ * 試算表版新增/改過的機台在資料庫會一直是舊的（甚至完全不存在），造成 records
+ * 外鍵失敗、匯出查詢用機台分類篩選時篩到過期資料。
+ *
+ * 以前這裡是「試算表整張蓋過資料庫」：資料庫版「系統管理」改的機台設定只存在資料庫，
+ * 試算表還是舊的，最多 15 分鐘就被這裡用試算表的舊資料蓋回去（真實發生過：
+ * 2026-09-28 18:04 在資料庫版改了機台，18:08 就被蓋回舊的）。
+ *
+ * 現在跟「上次同步完的樣子」比對，誰有改就以誰為準：
+ * - 兩邊一樣：不動。
+ * - 只有試算表改了（試算表版改的、或直接改試算表）：送到資料庫。
+ * - 只有資料庫改了（資料庫版改的）：寫回試算表，試算表版也看得到。
+ * - 兩邊都改了、或第一次跑還沒有「上次的樣子」：以試算表為準（跟以前一樣）。
+ * - 資料庫版新增、試算表還沒有的機台：加進試算表（不然這台的紀錄同步不回試算表）；
+ *   上次同步時還在、後來從試算表刪掉的，不會再加回去。
+ *
+ * 「上次同步完的樣子」每台只存一小段指紋（_machineSyncHash），放在指令碼屬性。
+ * 讀不到資料庫的機台清單就整段略過、下次再比，絕不在不知道資料庫現況時蓋過去。
+ * 送不成功／寫不成功的機台保留舊指紋，下次再試——不能記成已同步，否則下次會
+ * 誤判成「另一邊改了」，反過來把這次的修改蓋掉。
+ */
+function _syncMachinesWithSupabase() {
+  let dbRows;
   try {
-    const payload = rows.map(function (m) {
-      return {
-        machine_id: m.machine_id, name: m.name, location: m.location || '', status: m.status || 'running',
-        color: m.color || '#4F7BE8', sort_order: m.sort_order === '' ? 0 : m.sort_order, note: m.note || '',
-        created_at: m.created_at || new Date().toISOString(), category: m.category || 'dice', icon: m.icon || 'classic'
-      };
-    });
-    _sbPushUpsert('machines', payload, 'machine_id');
-    return payload.length;
+    dbRows = _sbPushFetchMachines();
   } catch (e) {
-    Logger.log('⚠ 定期安全網推送失敗（machines）：' + (e && e.message));
-    return 0;
+    Logger.log('⚠ 讀不到資料庫的機台清單，這次先不同步機台（下次再試）：' + (e && e.message));
+    return { toDb: 0, toSheet: 0 };
   }
+  // 讀試算表現在真正的樣子，不吃跨執行快取（有人直接改試算表時快取還是舊的）
+  _invalidateSheetCache('Machines');
+  const sheetRows = _dedupeByKey(dbReadAll('Machines'), 'machine_id');
+  const base = _machineSyncBaseLoad();
+  const plan = _planMachinesSync(sheetRows, dbRows, base);
+
+  const failed = [];
+  const toDb = _pushTableInBatch('machines', 'machine_id', plan.toDb, _machinePayload, failed);
+  let toSheet = 0;
+  plan.toSheet.forEach(function (item) {
+    try {
+      _writeMachineFromDb(item.sheet, item.db);
+      toSheet++;
+    } catch (e) {
+      failed.push(String(item.db.machine_id));
+      Logger.log('⚠ 資料庫的機台設定寫回試算表失敗（' + item.db.machine_id + '，下次再試）：' + (e && e.message));
+    }
+  });
+
+  const next = plan.nextBase;
+  failed.forEach(function (id) {
+    if (base && base[id] !== undefined) next[id] = base[id];
+    else delete next[id];
+  });
+  _machineSyncBaseSave(next);
+  return { toDb: toDb, toSheet: toSheet };
+}
+
+/**
+ * 算出這次要怎麼同步（不碰網路、不寫試算表，方便測試）。
+ * base：上次同步完每台的指紋（{ machine_id: 指紋 }），第一次跑是 null。
+ * 回傳 { toDb: 要送到資料庫的試算表列, toSheet: [{ sheet: 試算表列或 null, db: 資料庫列 }], nextBase }。
+ */
+function _planMachinesSync(sheetRows, dbRows, base) {
+  const sheetById = {};
+  sheetRows.forEach(function (r) { if (r.machine_id !== '' && r.machine_id != null) sheetById[String(r.machine_id)] = r; });
+  const dbById = {};
+  dbRows.forEach(function (r) { if (r.machine_id) dbById[String(r.machine_id)] = r; });
+
+  const plan = { toDb: [], toSheet: [], nextBase: {} };
+  Object.keys(sheetById).forEach(function (id) {
+    const s = sheetById[id];
+    const d = dbById[id];
+    const sh = _machineSyncHash(s);
+    if (!d) { plan.toDb.push(s); plan.nextBase[id] = sh; return; } // 資料庫還沒有這台
+    const dh = _machineSyncHash(d);
+    if (sh === dh) { plan.nextBase[id] = sh; return; } // 兩邊一樣
+    if (base && base[id] === sh) { // 試算表沒動過、資料庫改了 → 寫回試算表
+      plan.toSheet.push({ sheet: s, db: d });
+      plan.nextBase[id] = dh;
+      return;
+    }
+    plan.toDb.push(s); // 試算表改了／兩邊都改了／第一次跑 → 以試算表為準
+    plan.nextBase[id] = sh;
+  });
+  Object.keys(dbById).forEach(function (id) {
+    if (sheetById[id]) return;
+    if (base && base[id] !== undefined) { plan.nextBase[id] = base[id]; return; } // 從試算表刪掉的，不加回去
+    plan.toSheet.push({ sheet: null, db: dbById[id] }); // 資料庫版新增的機台
+    plan.nextBase[id] = _machineSyncHash(dbById[id]);
+  });
+  return plan;
+}
+
+/** 兩邊共用、拿來比對的機台欄位——試算表跟資料庫存法不同的地方（排序 '' 跟 0、'3' 跟 3）統一成同一個樣子。 */
+function _machineSyncFields(m) {
+  const order = Number(m.sort_order);
+  return {
+    name: String(m.name == null ? '' : m.name),
+    location: String(m.location || ''),
+    status: String(m.status || 'running'),
+    color: String(m.color || '#4F7BE8'),
+    sort_order: isFinite(order) ? order : 0,
+    note: String(m.note || ''),
+    category: String(m.category || 'dice'),
+    icon: String(m.icon || 'classic')
+  };
+}
+
+/** 機台設定的指紋（FNV-1a 32 位元），只拿來判斷「有沒有變」。建立時間不算：兩邊時間格式不一樣，而且不會改。 */
+function _machineSyncHash(m) {
+  const f = _machineSyncFields(m);
+  const s = JSON.stringify([f.name, f.location, f.status, f.color, f.sort_order, f.note, f.category, f.icon]);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/** 試算表的一列機台 → 資料庫 machines 的一列。 */
+function _machinePayload(m) {
+  const p = _machineSyncFields(m);
+  p.machine_id = String(m.machine_id);
+  p.created_at = m.created_at || new Date().toISOString();
+  return p;
+}
+
+/** 把資料庫那邊改過／新增的機台設定寫進試算表（sheetRow 是 null 就是新增一列）。 */
+function _writeMachineFromDb(sheetRow, d) {
+  const f = _machineSyncFields(d);
+  if (sheetRow) {
+    dbUpdate('Machines', sheetRow._row, f);
+    return;
+  }
+  const created = new Date(d.created_at);
+  f.machine_id = String(d.machine_id);
+  f.created_at = isNaN(created.getTime()) ? nowIso() : created.toISOString();
+  dbInsert('Machines', f);
+}
+
+const MACHINE_SYNC_BASE_PROP = 'SB_MACHINE_SYNC_BASE';
+
+function _machineSyncBaseLoad() {
+  const raw = PropertiesService.getScriptProperties().getProperty(MACHINE_SYNC_BASE_PROP);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return (v && typeof v === 'object') ? v : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _machineSyncBaseSave(map) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(MACHINE_SYNC_BASE_PROP, JSON.stringify(map));
+  } catch (e) {
+    // 存不進去就當作沒同步過：下次兩邊不一樣時以試算表為準（跟以前一樣），不會出錯
+    Logger.log('⚠ 記不住這次機台同步完的樣子：' + (e && e.message));
+  }
+}
+
+function _sbPushFetchMachines() {
+  return _sbPushGetJson('/rest/v1/machines?select=machine_id,name,location,status,color,sort_order,note,created_at,category,icon');
 }
 
 /** ISO 時間字串是不是在最近 days 天內。 */
@@ -2827,9 +2999,10 @@ function _pushAllDailyLedgerToSupabase() {
 
 /**
  * 整批一次 upsert；整批被資料庫擋下時（例如其中一列資料有問題），才退回一列一列送，
- * 讓其他正常的列照樣送得到，不會因為一列壞掉整張表都補不上。回傳實際送成功的列數。
+ * 讓其他正常的列照樣送得到，不會因為一列壞掉整張表都補不上。回傳實際送成功的列數；
+ * 有給 failedKeys（陣列）的話，送不成功的那幾列的 key 會放進去。
  */
-function _pushTableInBatch(table, keyField, rows, toPayload) {
+function _pushTableInBatch(table, keyField, rows, toPayload, failedKeys) {
   if (!rows.length) return 0;
   try {
     _sbPushUpsert(table, rows.map(toPayload), keyField);
@@ -2843,6 +3016,7 @@ function _pushTableInBatch(table, keyField, rows, toPayload) {
       _sbPushUpsert(table, [toPayload(row)], keyField);
       ok++;
     } catch (e) {
+      if (failedKeys) failedKeys.push(String(row[keyField]));
       Logger.log('⚠ 定期安全網推送失敗（' + table + ' ' + row[keyField] + '，下次再試）：' + (e && e.message));
     }
   });
@@ -4723,9 +4897,18 @@ function _selfTestBody(results) {
       clientToken: newId('ct')
     });
 
+    // 出幣兩筆、作廢其中一筆：「今日筆數」只算還有效的出幣筆數（一筆算 1，不管金額）
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 200, clientToken: newId('ct') });
+    const voidedOut = _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'out', amount: 50, clientToken: newId('ct') });
+    _ok({ action: 'voidRecord', token: adminTok, recordId: voidedOut.records[0].recordId });
+    _ok({ action: 'addRecord', token: adminTok, machineId: mid, type: 'in', amount: 500, clientToken: newId('ct') });
+
     const detail = _ok({ action: 'machineDetail', token: adminTok, machineId: mid });
     _assertEq(detail.today432Count, 3, '機台詳細頁今日432數量只算432獎型的次數');
-    _assertEq(detail.today441Count, 2, '機台詳細頁今日441數量只算441獎型的次數（詳細頁「今日筆數」＝432＋441）');
+    _assertEq(detail.today441Count, 2, '機台詳細頁今日441數量只算441獎型的次數');
+    _assertEq(detail.todayOutCount, 1, '機台詳細頁今日出幣筆數只算還有效的出幣（詳細頁「今日筆數」＝出幣筆數＋432＋441）');
+    const all = _ok({ action: 'allMachineDetails', token: adminTok });
+    _assertEq(all[mid] && all[mid].todayOutCount, 1, '一次抓全部機台（切機台預取）也要有今日出幣筆數');
 
     const dash = _ok({ action: 'dashboard', token: adminTok });
     _assert(dash.today432Count >= 3, '首頁今日432數量至少包含這台剛登錄的 3 次');
@@ -5878,6 +6061,114 @@ function _selfTestBody(results) {
     } finally {
       _sbPushUpsert = realUpsert;
       _sbPushUserId = realUserId;
+    }
+  });
+
+  _t(results, '定期安全網：機台設定雙向同步——誰改了就以誰為準，不再一律用試算表蓋掉資料庫版改的', function () {
+    const mk = function (id, name, extra) {
+      const m = { machine_id: id, name: name, location: '', status: 'running', color: '#4F7BE8', sort_order: 1, note: '', category: 'dice', icon: 'classic' };
+      Object.keys(extra || {}).forEach(function (k) { m[k] = extra[k]; });
+      return m;
+    };
+    const ids = function (list) { return list.map(function (x) { return String((x.db || x).machine_id); }).sort().join(','); };
+    const base = {};
+    [mk('A', '甲'), mk('B', '乙'), mk('C', '丙'), mk('D', '丁'), mk('E', '戊')].forEach(function (m) { base[m.machine_id] = _machineSyncHash(m); });
+
+    // 試算表存法跟資料庫不一樣（排序 '1' 跟 1、備註空白跟 null、建立時間格式）不算有改
+    _assertEq(_machineSyncHash(mk('A', '甲', { sort_order: '1', note: null, created_at: '2026-08-19T13:13:30.911Z' })),
+      _machineSyncHash(mk('A', '甲', { created_at: '2026-08-19 13:13:30.911+00' })), '存法不同但內容一樣，指紋要一樣');
+    _assertEq(_machineSyncHash(mk('A', '甲', { sort_order: '' })), _machineSyncHash(mk('A', '甲', { sort_order: 0 })), '排序空白等於 0');
+
+    const sheet = [mk('A', '甲', { sort_order: '1' }), mk('B', '乙試算表改'), mk('C', '丙'), mk('D', '丁試算表改'), mk('F', '試算表新增台')];
+    const db = [mk('A', '甲'), mk('B', '乙'), mk('C', '丙資料庫改'), mk('D', '丁資料庫改'), mk('E', '戊'), mk('G', '資料庫新增台')];
+    const plan = _planMachinesSync(sheet, db, base);
+    _assertEq(ids(plan.toDb), 'B,D,F', '試算表改的（B）、兩邊都改的（D，以試算表為準）、資料庫還沒有的（F）送到資料庫');
+    _assertEq(ids(plan.toSheet), 'C,G', '只有資料庫改的（C）、資料庫版新增的（G）寫回試算表；從試算表刪掉的（E）不加回去');
+    _assertEq(plan.nextBase.C, _machineSyncHash(db[2]), '寫回試算表的那台，同步完的樣子是資料庫的版本');
+    _assertEq(plan.nextBase.E, base.E, '從試算表刪掉的那台要記得，下次也不加回去');
+
+    // 第一次跑（還沒有「上次的樣子」）：兩邊不一樣時以試算表為準，跟以前一樣
+    const first = _planMachinesSync(sheet, db, null);
+    _assertEq(ids(first.toDb), 'B,C,D,F', '第一次跑，不一樣的都以試算表為準');
+    _assertEq(ids(first.toSheet), 'E,G', '第一次跑，資料庫有、試算表沒有的都加進試算表');
+  });
+
+  _t(results, '定期安全網：資料庫版改的機台名稱不會被試算表的舊名稱蓋回去，還會寫回試算表；送不出去的下次再送', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '同步測試台', sortOrder: 88 }).machineId;
+    // 不真的連資料庫：用一個假的資料庫（物件）代替，「上次同步完的樣子」也存在記憶體，不動真的指令碼屬性
+    const real = { fetch: _sbPushFetchMachines, upsert: _sbPushUpsert, load: _machineSyncBaseLoad, save: _machineSyncBaseSave };
+    const fakeDb = {};
+    let savedBase = null;
+    let failUpsert = false;
+    let fetchFails = false;
+    const pushed = [];
+    const copy = function (o) { return JSON.parse(JSON.stringify(o)); };
+    _sbPushFetchMachines = function () {
+      if (fetchFails) throw new Error('模擬資料庫連不上');
+      return Object.keys(fakeDb).map(function (k) { return copy(fakeDb[k]); });
+    };
+    _sbPushUpsert = function (table, rows, key) {
+      _assertEq(table + '/' + key, 'machines/machine_id', '只該送機台');
+      if (failUpsert) throw new Error('模擬資料庫連不上');
+      rows.forEach(function (r) { pushed.push(r.machine_id); fakeDb[r.machine_id] = copy(r); });
+    };
+    _machineSyncBaseLoad = function () { return savedBase ? copy(savedBase) : null; };
+    _machineSyncBaseSave = function (m) { savedBase = copy(m); };
+    const sheetName = function () { _clearSheetCache(); return dbFind('Machines', 'machine_id', mid).name; };
+    try {
+      _syncMachinesWithSupabase();
+      _assertEq(fakeDb[mid] && fakeDb[mid].name, '同步測試台', '第一次同步要把試算表的機台送到資料庫');
+
+      // 在資料庫版改名（只改到資料庫）→ 同步：不能被試算表的舊名稱蓋回去，還要寫回試算表
+      fakeDb[mid].name = '資料庫版改的名字';
+      pushed.length = 0;
+      let r = _syncMachinesWithSupabase();
+      _assertEq(fakeDb[mid].name, '資料庫版改的名字', '資料庫版改的名字不能被試算表的舊名字蓋回去');
+      _assertEq(pushed.indexOf(mid), -1, '這台不該再被送回資料庫');
+      _assertEq(r.toSheet, 1, '只有這一台要寫回試算表');
+      _assertEq(sheetName(), '資料庫版改的名字', '資料庫版改的名字要寫回試算表');
+      _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: mid }).machine.name, '資料庫版改的名字', '試算表版也要看到新名字');
+
+      // 兩邊一樣之後再跑：什麼都不做
+      r = _syncMachinesWithSupabase();
+      _assertEq(r.toDb + '/' + r.toSheet, '0/0', '兩邊一樣時不該再送或寫');
+
+      // 試算表版改名，剛好資料庫連不上：資料庫維持原樣；下次要再送，不能誤判成「資料庫改了」把試算表改回去
+      _ok({ action: 'adminSaveMachine', token: adminTok, machineId: mid, name: '試算表版改的名字', sortOrder: 88 });
+      failUpsert = true;
+      _syncMachinesWithSupabase();
+      _assertEq(fakeDb[mid].name, '資料庫版改的名字', '送不出去時資料庫維持原樣');
+      _assertEq(sheetName(), '試算表版改的名字', '送不出去也不能把試算表改回去');
+      failUpsert = false;
+      _syncMachinesWithSupabase();
+      _assertEq(fakeDb[mid].name, '試算表版改的名字', '下次同步要把試算表版改的名字送到資料庫');
+      _assertEq(sheetName(), '試算表版改的名字', '試算表版改的名字不能被資料庫的舊名字蓋掉');
+
+      // 資料庫版新增的機台 → 加進試算表（時間統一存成跟試算表一樣的格式）
+      fakeDb.mch_dbonly_sync = {
+        machine_id: 'mch_dbonly_sync', name: '資料庫版新增台', location: '', status: 'running', color: '#4F7BE8',
+        sort_order: 99, note: '', created_at: '2026-09-28T10:04:40.438+00:00', category: 'dice', icon: 'classic'
+      };
+      _syncMachinesWithSupabase();
+      _clearSheetCache();
+      const added = dbFind('Machines', 'machine_id', 'mch_dbonly_sync');
+      _assert(added && added.name === '資料庫版新增台', '資料庫版新增的機台要加進試算表');
+      _assertEq(String(added.created_at), '2026-09-28T10:04:40.438Z', '建立時間要換成試算表的時間格式');
+
+      // 讀不到資料庫的機台清單：整段略過，不送也不寫
+      fetchFails = true;
+      pushed.length = 0;
+      _ok({ action: 'adminSaveMachine', token: adminTok, machineId: mid, name: '連不上時改的', sortOrder: 88 });
+      r = _syncMachinesWithSupabase();
+      _assertEq(r.toDb + '/' + r.toSheet + '/' + pushed.length, '0/0/0', '讀不到資料庫時什麼都不做');
+      fetchFails = false;
+      _syncMachinesWithSupabase();
+      _assertEq(fakeDb[mid].name, '連不上時改的', '恢復連線後照樣送出');
+    } finally {
+      _sbPushFetchMachines = real.fetch;
+      _sbPushUpsert = real.upsert;
+      _machineSyncBaseLoad = real.load;
+      _machineSyncBaseSave = real.save;
     }
   });
 

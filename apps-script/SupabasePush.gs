@@ -62,6 +62,19 @@ function _sbPushFetch(method, path, payload, extraHeaders) {
   if (code >= 300) throw new Error('(' + code + ') ' + method + ' ' + path + '：' + resp.getContentText());
 }
 
+/** GET 一張表（PostgREST 查詢），回傳陣列；連不上、格式不對一律丟錯，讓呼叫端決定要不要略過。 */
+function _sbPushGetJson(path) {
+  const cfg = _sbPushConfig();
+  const headers = { apikey: cfg.key, Authorization: 'Bearer ' + cfg.key };
+  const resp = UrlFetchApp.fetch(cfg.url + path, { method: 'GET', headers: headers, muteHttpExceptions: true });
+  const code = resp.getResponseCode();
+  const text = resp.getContentText();
+  if (code >= 300) throw new Error('(' + code + ') GET ' + path + '：' + text);
+  const data = JSON.parse(text || '[]');
+  if (!Array.isArray(data)) throw new Error('GET ' + path + ' 回應格式不是陣列：' + text);
+  return data;
+}
+
 /**
  * 試算表 user_id（文字）→ Supabase profiles.id（uuid），靠兩邊都有的
  * username 對照。查一次 Supabase 的 profiles 表要花一次網路來回，快取
