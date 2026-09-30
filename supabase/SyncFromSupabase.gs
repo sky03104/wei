@@ -97,6 +97,17 @@ function _sbMapUser(uidMap, supabaseUuid) {
   return uidMap[supabaseUuid] || '';
 }
 
+/**
+ * 「誰」的欄位對不到試算表的帳號（帳號已經從試算表刪掉），或資料庫這格本來就是空白時，
+ * 整個欄位不寫——_fullTableUpsert 只比對、只寫有給的欄位，試算表原本記的人維持不動。
+ * 同步只能把人補上，不能把人清成空白（真實發生過：2026-09-30 刪掉試算表的帳號後，
+ * 這裡每 5 分鐘把試算表的開始人、結單人、帳目修改人清成空白，再被推回資料庫）。
+ */
+function _syncKeepPeople(obj, fields) {
+  fields.forEach(function (f) { if (obj[f] === '') delete obj[f]; });
+  return obj;
+}
+
 // ── 整表 upsert（有就更新、沒有就新增）──────────────────────
 //
 // 只在一開始呼叫一次 dbReadAll（讀整張表、建 key→_row 對照表），迴圈裡
@@ -151,7 +162,7 @@ function _fullTableUpsert(sheetName, keyField, objs, freshnessOf) {
 function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
   const rows = _sbFetch(SUPABASE_URL, KEY, 'GET', '/rest/v1/biz_days?select=*&order=seq.asc', undefined) || [];
   const objs = rows.map(function (b) {
-    return {
+    return _syncKeepPeople({
       biz_id: b.biz_id,
       business_date: b.business_date,
       opened_at: b.opened_at,
@@ -159,7 +170,7 @@ function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
       closed_at: b.closed_at || '',
       closed_by: _sbMapUser(uidMap, b.closed_by),
       auto_closed: !!b.auto_closed
-    };
+    }, ['opened_by', 'closed_by']);
   });
   // 沒有現成的 updated_at 欄位，用「結單時間，沒結單就用開始時間」當
   // 比較用的時間戳記——已經結單的列，開始時間一定比結單時間舊，不會
@@ -173,7 +184,7 @@ function _syncBizDaysFromSupabase(SUPABASE_URL, KEY, uidMap) {
 function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
   const rows = _sbFetch(SUPABASE_URL, KEY, 'GET', '/rest/v1/daily_ledger?select=*&order=seq.asc', undefined) || [];
   const objs = rows.map(function (l) {
-    return {
+    return _syncKeepPeople({
       ledger_id: l.ledger_id,
       business_date: l.business_date,
       turnover: l.turnover,
@@ -189,7 +200,7 @@ function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
       given_to_owner_items: JSON.stringify(l.given_to_owner_items || []),
       taken_by_owner_items: JSON.stringify(l.taken_by_owner_items || []),
       manual_expense: l.manual_expense
-    };
+    }, ['updated_by']);
   });
   const result = _fullTableUpsert('DailyLedger', 'ledger_id', objs, function (o) { return o.updated_at; });
   Logger.log('✓ daily_ledger：新增 ' + result.inserted + ' 筆、更新 ' + result.updated + ' 筆、內容沒變跳過 ' + result.unchanged + ' 筆、資料比較舊跳過 ' + result.skippedStale + ' 筆');

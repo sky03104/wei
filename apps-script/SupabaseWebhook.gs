@@ -84,6 +84,17 @@ function _applySupabaseWebhookEvent(body) {
 }
 
 /**
+ * 「誰」的欄位（記帳人、作廢人、帳目修改人、營業日開始人／結單人）對不到試算表的帳號
+ * （這個帳號已經從試算表刪掉），或資料庫這格本來就是空白時，整個欄位不寫，試算表原本記的人
+ * 維持不動——同步只能把人補上，不能把人清成空白（跟 SupabasePush.gs 的 _sbOmitMissingPeople
+ * 同一條規則，方向相反）。新增的列少了這欄就是空白，跟以前一樣。
+ */
+function _webhookKeepPeople(obj, fields) {
+  fields.forEach(function (f) { if (obj[f] === '' || obj[f] === null || obj[f] === undefined) delete obj[f]; });
+  return obj;
+}
+
+/**
  * Supabase uuid → 試算表文字 user_id，跟 SupabasePush.gs 的
  * _sbPushUserId() 方向相反（那支是查「這個試算表帳號在 Supabase 是誰」，
  * 這支是查「Supabase 這個 uuid 在試算表是誰」），但都是靠 username 對照，
@@ -163,7 +174,7 @@ function _webhookUpsertRecord(r) {
     Logger.log('✓ webhook records：跳過（已經是作廢狀態，不接受較舊的未作廢事件）（' + r.record_id + '）');
     return;
   }
-  const result = _sheetUpsertRow('Records', 'record_id', {
+  const result = _sheetUpsertRow('Records', 'record_id', _webhookKeepPeople({
     record_id: r.record_id,
     machine_id: r.machine_id,
     type: r.type,
@@ -182,12 +193,12 @@ function _webhookUpsertRecord(r) {
     meter_start: (r.meter_start === null || r.meter_start === undefined) ? '' : r.meter_start,
     meter_end: (r.meter_end === null || r.meter_end === undefined) ? '' : r.meter_end,
     business_date: r.business_date
-  });
+  }, ['user_id', 'voided_by']));
   Logger.log('✓ webhook records：' + result + '（' + r.record_id + '）');
 }
 
 function _webhookUpsertDailyLedger(l) {
-  const result = _sheetUpsertRow('DailyLedger', 'ledger_id', {
+  const result = _sheetUpsertRow('DailyLedger', 'ledger_id', _webhookKeepPeople({
     ledger_id: l.ledger_id,
     business_date: l.business_date,
     turnover: l.turnover,
@@ -203,12 +214,12 @@ function _webhookUpsertDailyLedger(l) {
     manual_432: l.manual_432,
     manual_441: l.manual_441,
     manual_expense: l.manual_expense
-  }, function (o) { return o.updated_at; });
+  }, ['updated_by']), function (o) { return o.updated_at; });
   Logger.log('✓ webhook daily_ledger：' + result + '（' + l.ledger_id + '）');
 }
 
 function _webhookUpsertBizDay(b) {
-  const result = _sheetUpsertRow('BizDays', 'biz_id', {
+  const result = _sheetUpsertRow('BizDays', 'biz_id', _webhookKeepPeople({
     biz_id: b.biz_id,
     business_date: b.business_date,
     opened_at: b.opened_at,
@@ -216,6 +227,6 @@ function _webhookUpsertBizDay(b) {
     closed_at: b.closed_at || '',
     closed_by: _webhookUserId(b.closed_by),
     auto_closed: !!b.auto_closed
-  }, function (o) { return o.closed_at || o.opened_at; });
+  }, ['opened_by', 'closed_by']), function (o) { return o.closed_at || o.opened_at; });
   Logger.log('✓ webhook biz_days：' + result + '（' + b.biz_id + '）');
 }
