@@ -1769,47 +1769,64 @@ function _selfTestBody(results) {
     }
   });
 
-  _t(results, '定期安全網：機台設定雙向同步——誰改了就以誰為準，不再一律用試算表蓋掉資料庫版改的', function () {
-    const mk = function (id, name, extra) {
-      const m = { machine_id: id, name: name, location: '', status: 'running', color: '#4F7BE8', sort_order: 1, note: '', category: 'dice', icon: 'classic' };
-      Object.keys(extra || {}).forEach(function (k) { m[k] = extra[k]; });
-      return m;
+  _t(results, '定期安全網：設定雙向同步的判斷——只有一邊改就照那一邊（新增、修改、刪除都算）；兩邊都改、或第一次同步以資料庫為準', function () {
+    const specOf = function (id) { return _settingsSyncSpecs().filter(function (s) { return s.id === id; })[0]; };
+    const spec = specOf('quick_amounts');
+    const qa = function (id, amount, extra) {
+      const r = { qa_id: id, machine_id: '', type: 'out', amount: amount, label: '$' + amount, sort_order: 1 };
+      Object.keys(extra || {}).forEach(function (k) { r[k] = extra[k]; });
+      return r;
     };
-    const ids = function (list) { return list.map(function (x) { return String((x.db || x).machine_id); }).sort().join(','); };
+    const h = function (r) { return _settingsSyncHash(spec.fields(r)); };
+    const keys = function (list) { return list.map(function (x) { return x.key; }).sort().join(','); };
+
+    // 試算表跟資料庫存法不同（'12500.00' 跟 12500、排序空白跟 0）不算有改
+    _assertEq(h(qa('X', '12500.00', { label: '$12500', sort_order: '' })), h(qa('X', 12500, { label: '$12500', sort_order: 0 })), '存法不同但內容一樣，指紋要一樣');
+
     const base = {};
-    [mk('A', '甲'), mk('B', '乙'), mk('C', '丙'), mk('D', '丁'), mk('E', '戊')].forEach(function (m) { base[m.machine_id] = _machineSyncHash(m); });
+    ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'K'].forEach(function (k) { base[k] = h(qa(k, 100)); });
+    const sheet = [qa('A', 100), qa('B', 200), qa('C', 100), qa('D', 300), qa('E', 100), qa('H', 500), qa('I', 700)];
+    const db = [qa('A', 100), qa('B', 100), qa('C', 150), qa('D', 400), qa('F', 100), qa('G', 600), qa('J', 800)];
+    const plan = _planSettingsSync(spec, sheet, db, base, null);
+    _assertEq(keys(plan.toDb), 'B,I', '只有試算表改的（B）、試算表新增的（I）送到資料庫');
+    _assertEq(keys(plan.dbDelete), 'F', '試算表刪掉、資料庫沒動過的（F）資料庫也刪');
+    _assertEq(keys(plan.sheetUpdate), 'C,D', '只有資料庫改的（C）、兩邊都改的（D，以資料庫為準）寫回試算表');
+    _assertEq(keys(plan.sheetInsert), 'G,J', '試算表刪掉但資料庫後來又改過的（G，以資料庫為準）、資料庫新增的（J）加進試算表');
+    _assertEq(keys(plan.sheetDelete), 'E,H', '資料庫刪掉的（E）、資料庫刪掉但試算表又改過的（H，以資料庫為準）試算表也刪');
+    _assertEq(Object.keys(plan.nextBase).sort().join(','), 'A,B,C,D,G,I,J', '同步完還在的才記指紋；兩邊都刪掉的（K）不再記');
+    _assertEq(plan.nextBase.D, h(db[3]), '以資料庫為準的那筆，同步完的樣子是資料庫的版本');
 
-    // 試算表存法跟資料庫不一樣（排序 '1' 跟 1、備註空白跟 null、建立時間格式）不算有改
-    _assertEq(_machineSyncHash(mk('A', '甲', { sort_order: '1', note: null, created_at: '2026-08-19T13:13:30.911Z' })),
-      _machineSyncHash(mk('A', '甲', { created_at: '2026-08-19 13:13:30.911+00' })), '存法不同但內容一樣，指紋要一樣');
-    _assertEq(_machineSyncHash(mk('A', '甲', { sort_order: '' })), _machineSyncHash(mk('A', '甲', { sort_order: 0 })), '排序空白等於 0');
+    // 第一次同步（還沒有「上次的樣子」）：兩邊不一樣的地方全部照資料庫
+    const first = _planSettingsSync(spec, sheet, db, null, null);
+    _assertEq(keys(first.toDb) + '|' + keys(first.dbDelete), '|', '第一次同步不改資料庫');
+    _assertEq(keys(first.sheetUpdate), 'B,C,D', '第一次同步：不一樣的照資料庫改試算表');
+    _assertEq(keys(first.sheetInsert), 'F,G,J', '第一次同步：只有資料庫有的加進試算表');
+    _assertEq(keys(first.sheetDelete), 'E,H,I', '第一次同步：只有試算表有的從試算表刪掉');
 
-    const sheet = [mk('A', '甲', { sort_order: '1' }), mk('B', '乙試算表改'), mk('C', '丙'), mk('D', '丁試算表改'), mk('F', '試算表新增台')];
-    const db = [mk('A', '甲'), mk('B', '乙'), mk('C', '丙資料庫改'), mk('D', '丁資料庫改'), mk('E', '戊'), mk('G', '資料庫新增台')];
-    const plan = _planMachinesSync(sheet, db, base);
-    _assertEq(ids(plan.toDb), 'B,D,F', '試算表改的（B）、兩邊都改的（D，以試算表為準）、資料庫還沒有的（F）送到資料庫');
-    _assertEq(ids(plan.toSheet), 'C,G', '只有資料庫改的（C）、資料庫版新增的（G）寫回試算表；從試算表刪掉的（E）不加回去');
-    _assertEq(plan.nextBase.C, _machineSyncHash(db[2]), '寫回試算表的那台，同步完的樣子是資料庫的版本');
-    _assertEq(plan.nextBase.E, base.E, '從試算表刪掉的那台要記得，下次也不加回去');
-
-    // 第一次跑（還沒有「上次的樣子」）：兩邊不一樣時以試算表為準，跟以前一樣
-    const first = _planMachinesSync(sheet, db, null);
-    _assertEq(ids(first.toDb), 'B,C,D,F', '第一次跑，不一樣的都以試算表為準');
-    _assertEq(ids(first.toSheet), 'E,G', '第一次跑，資料庫有、試算表沒有的都加進試算表');
+    // 機台不會被刪：只有試算表有的一律送到資料庫；從試算表刪掉的不加回去、也不刪資料庫
+    const mspec = specOf('machines');
+    const m = function (id, name) { return { machine_id: id, name: name, category: 'dice' }; };
+    const mbase = { M1: _settingsSyncHash(mspec.fields(m('M1', '一號'))) };
+    const mplan = _planSettingsSync(mspec, [m('M2', '二號')], [m('M1', '一號')], mbase, null);
+    _assertEq(keys(mplan.toDb) + '|' + keys(mplan.sheetInsert) + '|' + keys(mplan.dbDelete), 'M2||', '從試算表刪掉的機台不加回去也不刪資料庫');
+    _assertEq(mplan.nextBase.M1, mbase.M1, '從試算表刪掉的機台要記得，下次也不加回去');
+    _assertEq(keys(_planSettingsSync(mspec, [m('M2', '二號')], [], null, null).toDb), 'M2', '第一次同步：資料庫沒有的機台照樣送過去，不會從試算表刪掉');
   });
 
   _t(results, '定期安全網：資料庫版改的機台名稱不會被試算表的舊名稱蓋回去，還會寫回試算表；送不出去的下次再送', function () {
     const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '同步測試台', sortOrder: 88 }).machineId;
-    // 不真的連資料庫：用一個假的資料庫（物件）代替，「上次同步完的樣子」也存在記憶體，不動真的指令碼屬性
-    const real = { fetch: _sbPushFetchMachines, upsert: _sbPushUpsert, load: _machineSyncBaseLoad, save: _machineSyncBaseSave };
+    const spec = _settingsSyncSpecs().filter(function (s) { return s.id === 'machines'; })[0];
+    // 不真的連資料庫：用一個假的資料庫代替，「上次同步完的樣子」也存在記憶體，不動真的指令碼屬性
+    const real = { get: _sbPushGetJson, upsert: _sbPushUpsert, del: _sbPushDelete, load: _settingsSyncBaseLoad, save: _settingsSyncBaseSave };
+    const copy = function (o) { return JSON.parse(JSON.stringify(o)); };
     const fakeDb = {};
-    let savedBase = null;
+    const bases = {};
     let failUpsert = false;
     let fetchFails = false;
     const pushed = [];
-    const copy = function (o) { return JSON.parse(JSON.stringify(o)); };
-    _sbPushFetchMachines = function () {
+    _sbPushGetJson = function (path) {
       if (fetchFails) throw new Error('模擬資料庫連不上');
+      _assert(path.indexOf('/rest/v1/machines?') === 0, '只該讀機台，實際 ' + path);
       return Object.keys(fakeDb).map(function (k) { return copy(fakeDb[k]); });
     };
     _sbPushUpsert = function (table, rows, key) {
@@ -1817,17 +1834,25 @@ function _selfTestBody(results) {
       if (failUpsert) throw new Error('模擬資料庫連不上');
       rows.forEach(function (r) { pushed.push(r.machine_id); fakeDb[r.machine_id] = copy(r); });
     };
-    _machineSyncBaseLoad = function () { return savedBase ? copy(savedBase) : null; };
-    _machineSyncBaseSave = function (m) { savedBase = copy(m); };
+    _sbPushDelete = function () { throw new Error('機台不該被刪'); };
+    _settingsSyncBaseLoad = function (id) { return bases[id] ? copy(bases[id]) : null; };
+    _settingsSyncBaseSave = function (id, map) { bases[id] = copy(map); };
     const sheetName = function () { _clearSheetCache(); return dbFind('Machines', 'machine_id', mid).name; };
+    const sync = function () { return _syncSettingsTable(spec, null); };
     try {
-      _syncMachinesWithSupabase();
-      _assertEq(fakeDb[mid] && fakeDb[mid].name, '同步測試台', '第一次同步要把試算表的機台送到資料庫');
+      // 第一次同步前剛好在資料庫版改了名字（更新程式後馬上去改）：第一次同步以資料庫為準，不能被蓋回去
+      _clearSheetCache();
+      dbReadAll('Machines').forEach(function (r) { fakeDb[r.machine_id] = spec.toDb(r); });
+      fakeDb[mid].name = '更新後馬上改的名字';
+      let r = sync();
+      _assertEq(fakeDb[mid].name, '更新後馬上改的名字', '第一次同步：資料庫版剛改的名字不能被蓋回去');
+      _assertEq(sheetName(), '更新後馬上改的名字', '第一次同步：資料庫版剛改的名字要寫回試算表');
+      _assertEq(r.toDb, 0, '兩邊本來一樣的機台不用再送');
 
       // 在資料庫版改名（只改到資料庫）→ 同步：不能被試算表的舊名稱蓋回去，還要寫回試算表
       fakeDb[mid].name = '資料庫版改的名字';
       pushed.length = 0;
-      let r = _syncMachinesWithSupabase();
+      r = sync();
       _assertEq(fakeDb[mid].name, '資料庫版改的名字', '資料庫版改的名字不能被試算表的舊名字蓋回去');
       _assertEq(pushed.indexOf(mid), -1, '這台不該再被送回資料庫');
       _assertEq(r.toSheet, 1, '只有這一台要寫回試算表');
@@ -1835,17 +1860,17 @@ function _selfTestBody(results) {
       _assertEq(_ok({ action: 'machineDetail', token: adminTok, machineId: mid }).machine.name, '資料庫版改的名字', '試算表版也要看到新名字');
 
       // 兩邊一樣之後再跑：什麼都不做
-      r = _syncMachinesWithSupabase();
+      r = sync();
       _assertEq(r.toDb + '/' + r.toSheet, '0/0', '兩邊一樣時不該再送或寫');
 
       // 試算表版改名，剛好資料庫連不上：資料庫維持原樣；下次要再送，不能誤判成「資料庫改了」把試算表改回去
       _ok({ action: 'adminSaveMachine', token: adminTok, machineId: mid, name: '試算表版改的名字', sortOrder: 88 });
       failUpsert = true;
-      _syncMachinesWithSupabase();
+      sync();
       _assertEq(fakeDb[mid].name, '資料庫版改的名字', '送不出去時資料庫維持原樣');
       _assertEq(sheetName(), '試算表版改的名字', '送不出去也不能把試算表改回去');
       failUpsert = false;
-      _syncMachinesWithSupabase();
+      sync();
       _assertEq(fakeDb[mid].name, '試算表版改的名字', '下次同步要把試算表版改的名字送到資料庫');
       _assertEq(sheetName(), '試算表版改的名字', '試算表版改的名字不能被資料庫的舊名字蓋掉');
 
@@ -1854,26 +1879,159 @@ function _selfTestBody(results) {
         machine_id: 'mch_dbonly_sync', name: '資料庫版新增台', location: '', status: 'running', color: '#4F7BE8',
         sort_order: 99, note: '', created_at: '2026-09-28T10:04:40.438+00:00', category: 'dice', icon: 'classic'
       };
-      _syncMachinesWithSupabase();
+      sync();
       _clearSheetCache();
       const added = dbFind('Machines', 'machine_id', 'mch_dbonly_sync');
       _assert(added && added.name === '資料庫版新增台', '資料庫版新增的機台要加進試算表');
       _assertEq(String(added.created_at), '2026-09-28T10:04:40.438Z', '建立時間要換成試算表的時間格式');
 
-      // 讀不到資料庫的機台清單：整段略過，不送也不寫
+      // 讀不到資料庫：整段略過，不送也不寫（所有設定表都一樣）
       fetchFails = true;
       pushed.length = 0;
       _ok({ action: 'adminSaveMachine', token: adminTok, machineId: mid, name: '連不上時改的', sortOrder: 88 });
-      r = _syncMachinesWithSupabase();
-      _assertEq(r.toDb + '/' + r.toSheet + '/' + pushed.length, '0/0/0', '讀不到資料庫時什麼都不做');
+      const all = _syncSettingsWithSupabase();
+      _assertEq(all.machines + '/' + all.prizes + '/' + all.permissions, 'skipped/skipped/skipped', '讀不到資料庫時每張表都略過');
+      _assertEq(pushed.length, 0, '讀不到資料庫時什麼都不送');
       fetchFails = false;
-      _syncMachinesWithSupabase();
+      sync();
       _assertEq(fakeDb[mid].name, '連不上時改的', '恢復連線後照樣送出');
     } finally {
-      _sbPushFetchMachines = real.fetch;
+      _sbPushGetJson = real.get;
       _sbPushUpsert = real.upsert;
-      _machineSyncBaseLoad = real.load;
-      _machineSyncBaseSave = real.save;
+      _sbPushDelete = real.del;
+      _settingsSyncBaseLoad = real.load;
+      _settingsSyncBaseSave = real.save;
+    }
+  });
+
+  _t(results, '定期安全網：獎型、快捷金額、入幣費率、台主授權雙向同步——兩個版本的新增、修改、刪除都會跟過去', function () {
+    const mid = _ok({ action: 'adminSaveMachine', token: adminTok, name: '設定同步測試台', sortOrder: 87 }).machineId;
+    _ok({ action: 'forkScope', token: adminTok, sheet: 'QuickAmounts', machineId: mid });
+    const myPrize = _ok({ action: 'savePrize', token: adminTok, machineId: mid, name: '同步獎', amount: 300, sortOrder: 1 }).prizeId;
+    _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 50 });
+
+    const specs = {};
+    _settingsSyncSpecs().forEach(function (s) { specs[s.id] = s; });
+    const ids = ['prizes', 'quick_amounts', 'meter_rates', 'permissions'];
+    const real = { get: _sbPushGetJson, upsert: _sbPushUpsert, del: _sbPushDelete, load: _settingsSyncBaseLoad, save: _settingsSyncBaseSave };
+    const copy = function (o) { return JSON.parse(JSON.stringify(o)); };
+    // 假的資料庫：帳號只對得到 t_owner／t_admin，另外一個台主只存在資料庫
+    const fake = { profiles: [{ id: 'uuid-owner', username: 't_owner' }, { id: 'uuid-admin', username: 't_admin' }, { id: 'uuid-dbonly', username: '只在資料庫的台主' }] };
+    const bases = {};
+    const same = function (a, b, keys) { return keys.every(function (k) { return String(a[k]) === String(b[k]); }); };
+    _sbPushGetJson = function (path) { return copy(fake[/^\/rest\/v1\/([a-z_]+)\?/.exec(path)[1]] || []); };
+    _sbPushUpsert = function (table, rows, conflict) {
+      const keys = conflict.split(',');
+      rows.forEach(function (r) {
+        const i = fake[table].findIndex(function (x) { return same(x, r, keys); });
+        if (i >= 0) fake[table][i] = copy(r); else fake[table].push(copy(r));
+      });
+    };
+    _sbPushDelete = function (table, filter) {
+      const cond = {};
+      filter.split('&').forEach(function (p) { const kv = p.split('=eq.'); cond[kv[0]] = decodeURIComponent(kv[1]); });
+      fake[table] = fake[table].filter(function (x) { return !same(x, cond, Object.keys(cond)); });
+    };
+    _settingsSyncBaseLoad = function (id) { return bases[id] ? copy(bases[id]) : null; };
+    _settingsSyncBaseSave = function (id, map) { bases[id] = copy(map); };
+    const sync = function () {
+      _clearSheetCache();
+      const ctx = _settingsSyncUserContext();
+      ids.forEach(function (id) { _syncSettingsTable(specs[id], ctx); });
+      _clearSheetCache();
+    };
+    const qas = function () { const q = _ok({ action: 'listQuickAmounts', token: adminTok, machineId: mid }); return q.in.concat(q.out); };
+    const amounts = function () { return qas().map(function (x) { return x.amount; }).sort(function (a, b) { return a - b; }).join(','); };
+    const grantsOf = function () { return _ok({ action: 'adminListPermissions', token: adminTok }).grants; };
+    try {
+      // 資料庫一開始跟試算表一樣（模擬之前已經搬過去），只有這台測試機台的設定不一樣
+      _clearSheetCache();
+      const ctx0 = _settingsSyncUserContext();
+      ids.forEach(function (id) {
+        fake[id] = dbReadAll(specs[id].sheet)
+          .filter(function (r) { return id !== 'permissions' || specs[id].sheetKey(r, ctx0); })
+          .map(function (r) { return specs[id].toDb(r, ctx0); });
+      });
+      const myQas = fake.quick_amounts.filter(function (q) { return q.machine_id === mid; });
+      _assert(myQas.length >= 2, '先複製一份全局快捷金額給這台');
+      const dropped = myQas[0];
+      fake.quick_amounts = fake.quick_amounts.filter(function (q) { return q.qa_id !== dropped.qa_id; });
+      fake.quick_amounts.push({ qa_id: 'qa_dbonly_sync', machine_id: mid, type: 'out', amount: 25000, label: '$25000', sort_order: 9 });
+      fake.prizes.filter(function (p) { return p.prize_id === myPrize; })[0].amount = 350;
+      fake.meter_rates.filter(function (m) { return m.machine_id === mid; })[0].rate = 60;
+      const otherBefore = _ok({ action: 'listQuickAmounts', token: adminTok, machineId: machineA });
+
+      // 第一次同步：不一樣的地方全部照資料庫版
+      sync();
+      _assert(qas().every(function (q) { return q.qaId !== dropped.qa_id; }), '第一次同步：資料庫版刪掉的快捷金額，試算表也刪');
+      _assert(qas().some(function (q) { return q.qaId === 'qa_dbonly_sync' && q.amount === 25000; }), '第一次同步：資料庫版新增的快捷金額加進試算表');
+      _assertEq(_ok({ action: 'listPrizes', token: adminTok, machineId: mid }).prizes[0].amount, 350, '第一次同步：獎型金額照資料庫版');
+      _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: mid }).rate, 60, '第一次同步：入幣費率照資料庫版');
+      _assertEq(JSON.stringify(_ok({ action: 'listQuickAmounts', token: adminTok, machineId: machineA })), JSON.stringify(otherBefore), '兩邊本來就一樣的設定不能被動到');
+      _assert((grantsOf()[owner.user_id] || []).indexOf(machineA) >= 0, '兩邊本來就有的台主授權不能被動到');
+
+      // 試算表版的新增、修改、刪除 → 資料庫跟著改
+      _ok({ action: 'saveQuickAmount', token: adminTok, machineId: mid, type: 'out', amount: 4321, label: '$4321', sortOrder: 20 });
+      const gone = qas().filter(function (q) { return q.qaId !== 'qa_dbonly_sync'; })[0];
+      _ok({ action: 'deleteQuickAmount', token: adminTok, qaId: gone.qaId });
+      _ok({ action: 'savePrize', token: adminTok, prizeId: myPrize, name: '同步獎', amount: 400, sortOrder: 1 });
+      _ok({ action: 'saveMeterRate', token: adminTok, machineId: mid, rate: 80 });
+      _ok({ action: 'adminSetPermission', token: adminTok, userId: owner.user_id, machineId: mid, granted: true });
+      sync();
+      _assert(fake.quick_amounts.some(function (q) { return q.machine_id === mid && Number(q.amount) === 4321; }), '試算表版新增的快捷金額要送到資料庫');
+      _assert(fake.quick_amounts.every(function (q) { return q.qa_id !== gone.qaId; }), '試算表版刪掉的快捷金額，資料庫也刪');
+      _assertEq(fake.prizes.filter(function (p) { return p.prize_id === myPrize; })[0].amount, 400, '試算表版改的獎型金額要送到資料庫');
+      _assertEq(fake.meter_rates.filter(function (m) { return m.machine_id === mid; })[0].rate, 80, '試算表版改的入幣費率要送到資料庫');
+      const perm = fake.permissions.filter(function (p) { return p.machine_id === mid; })[0];
+      _assert(perm && perm.user_id === 'uuid-owner' && perm.granted_by === 'uuid-admin', '試算表版的台主授權要換成資料庫的帳號編號送過去');
+
+      // 資料庫版的新增、修改、刪除 → 試算表跟著改
+      fake.prizes = fake.prizes.filter(function (p) { return p.machine_id !== mid; }); // 改回沿用全局
+      fake.meter_rates.filter(function (m) { return m.machine_id === mid; })[0].rate = 120;
+      fake.permissions = fake.permissions.filter(function (p) { return p.machine_id !== mid; }); // 取消授權
+      fake.permissions.push({ user_id: 'uuid-dbonly', machine_id: mid, granted_by: 'uuid-admin', granted_at: '2026-09-30T01:00:00+00:00' });
+      sync();
+      _assertEq(_ok({ action: 'listPrizes', token: adminTok, machineId: mid }).scope, 'global', '資料庫版改回沿用全局獎型，試算表版也要改回來');
+      _assertEq(_ok({ action: 'listMeterRate', token: adminTok, machineId: mid }).rate, 120, '資料庫版改的入幣費率要寫回試算表');
+      _assert((grantsOf()[owner.user_id] || []).indexOf(mid) < 0, '資料庫版取消的台主授權，試算表版也要取消');
+      _assert(fake.permissions.some(function (p) { return p.user_id === 'uuid-dbonly'; }), '對不到帳號的授權留在資料庫，不能被刪');
+      _assertEq(dbReadAll('Permissions').filter(function (p) { return p.machine_id === mid; }).length, 0, '對不到帳號的授權不能加進試算表');
+
+      fake.permissions.push({ user_id: 'uuid-owner', machine_id: mid, granted_by: 'uuid-admin', granted_at: '2026-09-30T02:00:00+00:00' });
+      sync();
+      _assert((grantsOf()[owner.user_id] || []).indexOf(mid) >= 0, '資料庫版新增的台主授權要換成試算表的帳號編號加進試算表');
+
+      // 兩邊同時改同一筆快捷金額：以資料庫版為準
+      const both = qas().filter(function (q) { return q.amount === 4321; })[0];
+      _ok({ action: 'saveQuickAmount', token: adminTok, qaId: both.qaId, machineId: mid, type: 'out', amount: 4000, label: '$4000', sortOrder: 20 });
+      fake.quick_amounts.filter(function (q) { return q.qa_id === both.qaId; })[0].amount = 4500;
+      sync();
+      _assertEq(qas().filter(function (q) { return q.qaId === both.qaId; })[0].amount, 4500, '兩邊同時改同一筆，以資料庫版為準');
+
+      // 再跑一次：兩邊已經一樣，什麼都不做
+      const before = JSON.stringify(fake);
+      const amountsBefore = amounts();
+      sync();
+      _assertEq(JSON.stringify(fake), before, '兩邊一樣時不該再動資料庫');
+      _assertEq(amounts(), amountsBefore, '兩邊一樣時試算表也不變');
+
+      // 防呆：資料庫整張快捷金額空掉（被清空、連錯專案）→ 這次不同步，不能把試算表的也全部刪掉
+      const saved = fake.quick_amounts;
+      fake.quick_amounts = [];
+      _clearSheetCache();
+      const res = _syncSettingsTable(specs.quick_amounts, _settingsSyncUserContext());
+      _assertEq(res, 'skipped (one side empty)', '有一邊整張空掉時要略過');
+      _clearSheetCache();
+      _assertEq(amounts(), amountsBefore, '資料庫整張空掉時，試算表的快捷金額不能被刪');
+      _assertEq(fake.quick_amounts.length, 0, '也不能反過來整批送過去（等人確認）');
+      fake.quick_amounts = saved;
+    } finally {
+      _sbPushGetJson = real.get;
+      _sbPushUpsert = real.upsert;
+      _sbPushDelete = real.del;
+      _settingsSyncBaseLoad = real.load;
+      _settingsSyncBaseSave = real.save;
+      _ok({ action: 'adminSetPermission', token: adminTok, userId: owner.user_id, machineId: mid, granted: false });
     }
   });
 
