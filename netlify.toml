@@ -1,0 +1,11 @@
+# Netlify（資料庫版網頁 wei2）的設定。
+#
+# 網頁只有 docs/ 這個資料夾。只改 GAS（apps-script/）、資料庫（supabase/）、測試工具的
+# 合併，網頁內容根本沒變，以前卻一樣觸發一次正式部署、扣 15 點——免費方案一個月只有
+# 300 點，2026-09 就因為這樣用完，正式部署被暫停。
+#
+# 這條規則：從「上次成功部署」到「這次」之間，docs/ 跟這個檔案都沒改 → 直接跳過
+# （跳過的部署不扣點）。同一個 commit 重新部署、清快取重新部署（兩個編號一樣）、
+# 找不到上次部署的 commit 時，都照常部署，不會卡住。
+[build]
+  ignore = '[ "$CACHED_COMMIT_REF" != "$COMMIT_REF" ] && git diff --quiet "$CACHED_COMMIT_REF" "$COMMIT_REF" -- :/docs :/netlify.toml'
