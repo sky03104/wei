@@ -145,3 +145,20 @@ npm run icons        # 重新產生 App 圖示
 - **記帳帶 clientToken 做冪等**，連點兩下或網路重試都只會寫入一筆。
 - 前端原始碼是公開的（GitHub Pages 需要 public repo），裡面只有 GAS 的網址——
   沒有帳號密碼就拿不到任何資料。試算表 ID 與 pepper 都只存在 GAS 端。
+
+---
+
+## 同一個 Supabase 專案裡的第二個場地（wei3）
+
+2026-09-30 起，Supabase 專案 `gwwuzmspgvpzlstvafov` 裡除了這個場地（`public` schema），
+還有第二個場地的 `wei3` schema，前端在另一個 repo：[sky03104/wei3](https://github.com/sky03104/wei3)。
+
+- 兩個場地的資料表、函式、帳號名單完全分開。wei3 的函式都把 `search_path` 固定成 `wei3`，
+  讀寫不到 `public`；這個場地的帳號在 `wei3.profiles` 查不到，登入 wei3 也什麼都看不到。
+- **改這個 repo 的 `supabase/*.sql`、套用到資料庫時，只會改到 `public`，不會自動套到 wei3**；
+  要不要跟著改 wei3，另外在 wei3 repo 處理。
+- Supabase Auth（`auth.users`）兩個場地共用：這邊帳號的內部 email 是 `@migrated.local`，
+  wei3 是 `@wei3.local`，所以兩邊可以有同名帳號。`admin-users` 重設密碼前會先確認對象在
+  `public.profiles` 裡，不會動到 wei3 的帳號（wei3 用自己的 `admin-users-wei3`）。
+- 試算表同步（`SupabasePushSync.gs`、`SyncFromSupabase.gs`、webhook）只接 `public`，跟 wei3 無關。
+- 免費方案的額度（資料庫 500 MB、每月流量 5 GB…）兩個場地一起算。

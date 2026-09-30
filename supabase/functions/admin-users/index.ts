@@ -139,6 +139,17 @@ Deno.serve(async (req: Request) => {
       const password = String(body.password || '');
       assertPasswordStrength(password);
 
+      // 只能改這個場地（public.profiles）帳號名單裡的人。Supabase Auth 的帳號表
+      // 是整個專案共用的，同一個專案裡還有第二個場地 wei3（wei3.profiles，見
+      // README.md）；沒有這道檢查，這裡的管理員只要知道 wei3 某個帳號的內部 ID，
+      // 就能改掉那個帳號的密碼。
+      const { data: target } = await admin
+        .from('profiles')
+        .select('id')
+        .eq('id', userId)
+        .maybeSingle();
+      if (!target) return json({ error: '找不到這個帳號' }, 404);
+
       const { error } = await admin.auth.admin.updateUserById(userId, { password });
       if (error) return json({ error: error.message }, 400);
 
