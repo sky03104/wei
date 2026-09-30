@@ -7,6 +7,9 @@
  * SupabasePush.gs 開頭說明），萬一剛好網路不通、Supabase 一時打不通，
  * 那一筆就會漏掉——這支就是補漏用的定期保險網。
  *
+ * 例外：機台、獎型、快捷金額、入幣費率、台主授權這幾種設定是雙向同步
+ * （資料庫版也能改），不是單純用試算表蓋過去，見 _syncSettingsWithSupabase()。
+ *
  * ── 跟 MigrateToSupabase.gs 不一樣、也是那支不能拿來定期跑的原因 ──
  *
  * 1. 送出前一定先用 key（record_id／biz_id／ledger_id）去重，同一批
@@ -43,9 +46,10 @@ function pushAllToSupabase() {
     // machines 一定要排第一個：records 有外鍵指到 machine_id，機台如果還沒
     // 存在於 Supabase，records 那批 upsert 會直接被 Postgres 擋下來
     // （真實發生過：23503 外鍵違反，整批 500 筆全部失敗）。機台本身
-    // 不像 records/void 有即時推送涵蓋，只有這裡會定期把它們同步過去。
+    // 不像 records/void 有即時推送涵蓋，只有這裡會定期同步（而且是雙向，
+    // 見 _syncSettingsWithSupabase()，機台是裡面第一張）。
     const summary = {
-      machines: _pushAllMachinesToSupabase(),
+      settings: _syncSettingsWithSupabase(),
       bizDays: _pushAllBizDaysToSupabase(),
       dailyLedger: _pushAllDailyLedgerToSupabase(),
       records: _pushAllRecordsToSupabase()
@@ -55,22 +59,377 @@ function pushAllToSupabase() {
   });
 }
 
-/** 機台不像 records/biz_days/daily_ledger 有即時推送，只有這支定期安全網會同步——沒這段的話，新增/改過的機台在 Supabase 會一直是舊的（甚至完全不存在），造成 records 外鍵失敗、匯出查詢用機台分類篩選時篩到過期資料。 */
-function _pushAllMachinesToSupabase() {
-  const rows = _dedupeByKey(dbReadAll('Machines'), 'machine_id');
+/**
+ * 設定類資料表的雙向同步：機台、獎型、快捷金額、入幣費率、台主授權。
+ *
+ * 這幾張表兩個版本都能改（試算表版、資料庫版的「系統管理」／機台頁的設定），
+ * 以前卻沒有好好同步：機台是「試算表整張蓋過資料庫」，資料庫版改的最多 15 分鐘
+ * 就被蓋回去（真實發生過：2026-09-28 18:04 在資料庫版改了機台，18:08 就被蓋回
+ * 舊的）；獎型、快捷金額、入幣費率、台主授權則完全不同步，兩邊各改各的。
+ *
+ * 現在每張表都跟「上次同步完的樣子」比對，誰有改就以誰為準：
+ * - 兩邊一樣：不動。
+ * - 只有一邊改了（新增、修改、刪除都算）：照那一邊，另一邊跟著改。
+ * - 兩邊都改了同一筆、或第一次同步還沒有「上次的樣子」：以資料庫版為準。
+ *   （第一次同步時，兩邊不一樣的地方全部照資料庫版——2026-09-30 查過資料庫的
+ *   修改紀錄，這幾種設定最近都是在資料庫版改的；獎型金額、入幣費率兩個版本
+ *   實際記帳用的也一模一樣。）
+ * - 機台不會被刪（紀錄都掛在機台上）：從試算表刪掉的機台不會加回去，也不會
+ *   去刪資料庫那一台。
+ * - 台主授權用「帳號」對照兩邊的使用者（試算表是文字編號、資料庫是 uuid）；
+ *   帳號只存在其中一邊的，那筆授權不動、也不同步（帳號本身不會同步）。
+ *
+ * 「上次同步完的樣子」每筆只存一小段指紋（_settingsSyncHash），每張表一個指令碼屬性。
+ * 讀不到資料庫那張表就整張略過、下次再比，絕不在不知道資料庫現況時蓋過去或刪掉。
+ * 送不成功／寫不成功的那筆記住「下次該怎麼做」，下次再試——不能記成已同步，
+ * 否則下次會誤判成「另一邊改了」，反過來把這次的修改蓋掉。
+ */
+function _syncSettingsWithSupabase() {
+  const out = {};
+  let ctx = null;
+  _settingsSyncSpecs().forEach(function (spec) {
+    try {
+      if (spec.needsUsers && !ctx) ctx = _settingsSyncUserContext();
+      out[spec.id] = _syncSettingsTable(spec, ctx);
+    } catch (e) {
+      out[spec.id] = 'skipped';
+      Logger.log('⚠ ' + spec.label + '這次先不同步（下次再試）：' + (e && e.message));
+    }
+  });
+  return out;
+}
+
+/** 同步一張設定表：讀兩邊 → 算出要怎麼做 → 做 → 記下同步完的樣子。 */
+function _syncSettingsTable(spec, ctx) {
+  const dbRows = _sbPushGetJson('/rest/v1/' + spec.table + '?select=' + spec.select);
+  // 讀試算表現在真正的樣子，不吃跨執行快取（有人直接改試算表時快取還是舊的）
+  _invalidateSheetCache(spec.sheet);
+  const sheetRows = dbReadAll(spec.sheet);
+  // 防呆：一邊整張空掉、另一邊還有好幾筆，不像正常的刪除，比較像資料庫被清空或
+  // SPREADSHEET_ID 指錯試算表（真的發生過）——雙向同步會把另一邊也全部刪掉，這次先不動
+  const sheetCount = sheetRows.filter(function (r) { return spec.sheetKey(r, ctx); }).length;
+  const dbCount = dbRows.filter(function (r) { return spec.dbKey(r, ctx); }).length;
+  if ((sheetCount === 0 && dbCount >= 3) || (dbCount === 0 && sheetCount >= 3)) {
+    Logger.log('⚠ ' + spec.label + '有一邊整張是空的（試算表 ' + sheetCount + ' 筆、資料庫 ' + dbCount +
+      ' 筆），不像正常的修改，這次先不同步；請確認試算表跟資料庫的設定是不是正確');
+    return 'skipped (one side empty)';
+  }
+  const base = _settingsSyncBaseLoad(spec.id);
+  const plan = _planSettingsSync(spec, sheetRows, dbRows, base, ctx);
+  const failed = [];
+  const fail = function (item, what, e) {
+    failed.push(item);
+    Logger.log('⚠ ' + spec.label + '同步失敗（' + what + ' ' + item.key + '，下次再試）：' + (e && e.message));
+  };
+  const done = { toDb: 0, dbDeleted: 0, toSheet: 0, sheetDeleted: 0 };
+
+  // 1) 送到資料庫：整批一次，被擋下才一筆一筆送，正常的照樣送得到
+  if (plan.toDb.length) {
+    const payloads = plan.toDb.map(function (x) { return spec.toDb(x.sheet, ctx); });
+    try {
+      _sbPushUpsert(spec.table, payloads, spec.conflict);
+      done.toDb = payloads.length;
+    } catch (e) {
+      Logger.log('⚠ ' + spec.label + '整批送出失敗，改成一筆一筆送：' + (e && e.message));
+      plan.toDb.forEach(function (x, i) {
+        try {
+          _sbPushUpsert(spec.table, [payloads[i]], spec.conflict);
+          done.toDb++;
+        } catch (e2) { fail(x, '送出', e2); }
+      });
+    }
+  }
+  // 2) 資料庫那邊跟著刪（一天頂多幾筆，一筆一筆刪就好）
+  plan.dbDelete.forEach(function (x) {
+    try {
+      _sbPushDelete(spec.table, spec.dbFilter(x.db));
+      done.dbDeleted++;
+    } catch (e) { fail(x, '刪除', e); }
+  });
+  // 3) 寫回試算表：先改、再加（加在最後面，不會讓前面的列號跑掉）、最後才刪
+  plan.sheetUpdate.forEach(function (x) {
+    try {
+      const patch = spec.fields(x.db, ctx);
+      x.rows.forEach(function (r) { dbUpdate(spec.sheet, r._row, patch); });
+      done.toSheet++;
+    } catch (e) { fail(x, '寫回試算表', e); }
+  });
+  if (plan.sheetInsert.length) {
+    try {
+      dbInsertMany(spec.sheet, plan.sheetInsert.map(function (x) { return spec.toSheet(x.db, ctx); }));
+      done.toSheet += plan.sheetInsert.length;
+    } catch (e) { plan.sheetInsert.forEach(function (x) { fail(x, '加進試算表', e); }); }
+  }
+  if (plan.sheetDelete.length) {
+    try {
+      const rowIndexes = [];
+      plan.sheetDelete.forEach(function (x) { x.rows.forEach(function (r) { rowIndexes.push(r._row); }); });
+      dbDeleteRows(spec.sheet, rowIndexes);
+      done.sheetDeleted = plan.sheetDelete.length;
+    } catch (e) { plan.sheetDelete.forEach(function (x) { fail(x, '從試算表刪除', e); }); }
+  }
+
+  const next = plan.nextBase;
+  failed.forEach(function (x) {
+    if (x.onFail === undefined) delete next[x.key];
+    else next[x.key] = x.onFail;
+  });
+  _settingsSyncBaseSave(spec.id, next);
+  return done;
+}
+
+/**
+ * 算出這張表這次要怎麼同步（不碰網路、不寫試算表，方便測試）。
+ * base：上次同步完每筆的指紋（{ key: 指紋 }），這張表第一次同步是 null。
+ * 每個動作都帶 onFail：做失敗時這筆要記成什麼指紋，下次才會再做同一件事。
+ */
+function _planSettingsSync(spec, sheetRows, dbRows, base, ctx) {
+  const keys = [];
+  const sheetByKey = {};
+  sheetRows.forEach(function (r) {
+    const k = spec.sheetKey(r, ctx);
+    if (!k) return;
+    if (!sheetByKey[k]) { sheetByKey[k] = { row: r, rows: [] }; keys.push(k); }
+    sheetByKey[k].rows.push(r); // 試算表有重複列時全部一起改／刪，比對用第一列（跟 dbFind 一樣）
+  });
+  const dbByKey = {};
+  dbRows.forEach(function (r) {
+    const k = spec.dbKey(r, ctx);
+    if (!k) return;
+    if (!sheetByKey[k] && !dbByKey[k]) keys.push(k);
+    dbByKey[k] = r;
+  });
+
+  const first = !base;
+  const plan = { toDb: [], dbDelete: [], sheetUpdate: [], sheetInsert: [], sheetDelete: [], nextBase: {} };
+  keys.forEach(function (k) {
+    const s = sheetByKey[k];
+    const d = dbByKey[k];
+    const b = base ? base[k] : undefined;
+    const sh = s ? _settingsSyncHash(spec.fields(s.row, ctx)) : undefined;
+    const dh = d ? _settingsSyncHash(spec.fields(d, ctx)) : undefined;
+
+    if (s && d) {
+      if (sh === dh) { plan.nextBase[k] = sh; return; } // 兩邊一樣
+      if (b !== undefined && b === dh) { // 只有試算表改了 → 送到資料庫
+        plan.toDb.push({ key: k, sheet: s.row, onFail: b });
+        plan.nextBase[k] = sh;
+        return;
+      }
+      // 只有資料庫改了／兩邊都改了／第一次同步 → 以資料庫為準
+      plan.sheetUpdate.push({ key: k, rows: s.rows, db: d, onFail: b });
+      plan.nextBase[k] = dh;
+      return;
+    }
+
+    if (s) { // 只有試算表有
+      if (!spec.canDelete || (!first && b === undefined)) { // 試算表新增的（機台一律當新增）→ 送到資料庫
+        plan.toDb.push({ key: k, sheet: s.row, onFail: undefined });
+        plan.nextBase[k] = sh;
+        return;
+      }
+      // 資料庫那邊刪掉了（或第一次同步、以資料庫為準）→ 試算表也刪
+      plan.sheetDelete.push({ key: k, rows: s.rows, onFail: sh });
+      return;
+    }
+
+    // 只有資料庫有
+    if (b === undefined) { // 資料庫版新增的（或第一次同步、以資料庫為準）→ 加進試算表
+      plan.sheetInsert.push({ key: k, db: d, onFail: undefined });
+      plan.nextBase[k] = dh;
+      return;
+    }
+    // 上次還在、後來從試算表刪掉了
+    if (!spec.canDelete) { plan.nextBase[k] = b; return; } // 機台：不加回去，也不刪資料庫
+    if (dh === b) { // 資料庫沒動過 → 資料庫也刪
+      plan.dbDelete.push({ key: k, db: d, onFail: b });
+      return;
+    }
+    plan.sheetInsert.push({ key: k, db: d, onFail: b }); // 資料庫版後來又改過 → 以資料庫為準，加回試算表
+    plan.nextBase[k] = dh;
+  });
+  return plan;
+}
+
+/** 設定的指紋（FNV-1a 32 位元），只拿來判斷「有沒有變」，不用加密等級。 */
+function _settingsSyncHash(fields) {
+  const s = JSON.stringify(fields);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16);
+}
+
+/** 數字欄位：試算表跟資料庫存法不同（'' 跟 0、'3' 跟 3、'12500.00' 跟 12500）統一成數字；空白用預設值。 */
+function _syncNum(v, dflt) {
+  if (v === '' || v === null || v === undefined) return dflt;
+  const n = Number(v);
+  return isFinite(n) ? n : dflt;
+}
+
+function _syncStr(v) {
+  return (v === null || v === undefined) ? '' : String(v);
+}
+
+function _syncIso(v) {
+  const t = new Date(v);
+  return (v && !isNaN(t.getTime())) ? t.toISOString() : nowIso();
+}
+
+/** 機台兩邊共用、拿來比對的欄位（建立時間不算：兩邊時間格式不一樣，而且不會改）。 */
+function _machineSyncFields(m) {
+  return {
+    name: _syncStr(m.name),
+    location: _syncStr(m.location),
+    status: _syncStr(m.status) || 'running',
+    color: _syncStr(m.color) || '#4F7BE8',
+    sort_order: _syncNum(m.sort_order, 0),
+    note: _syncStr(m.note),
+    category: _syncStr(m.category) || 'dice',
+    icon: _syncStr(m.icon) || 'classic'
+  };
+}
+
+/**
+ * 每張設定表的同步方式。fields() 的欄位名稱就是試算表的欄位名稱（寫回試算表直接用），
+ * key 是兩邊共用、用來配對的編號。用函式包起來回傳，不在載入時就建好（各檔案載入順序不影響）。
+ */
+function _settingsSyncSpecs() {
+  const byId = function (field) {
+    return function (r) { return _syncStr(r[field]); };
+  };
+  const withId = function (fields, field) {
+    return function (r) {
+      const o = fields(r);
+      o[field] = String(r[field]);
+      return o;
+    };
+  };
+  const eqFilter = function (field) {
+    return function (d) { return field + '=eq.' + encodeURIComponent(d[field]); };
+  };
+
+  const prizeFields = function (r) {
+    return { machine_id: _syncStr(r.machine_id), name: _syncStr(r.name), amount: _syncNum(r.amount, 0), sort_order: _syncNum(r.sort_order, 0), active: toBool(r.active) };
+  };
+  const quickAmountFields = function (r) {
+    return { machine_id: _syncStr(r.machine_id), type: _syncStr(r.type), amount: _syncNum(r.amount, 0), label: _syncStr(r.label), sort_order: _syncNum(r.sort_order, 0) };
+  };
+  const meterRateFields = function (r) {
+    return { machine_id: _syncStr(r.machine_id), rate: _syncNum(r.rate, 100) };
+  };
+
+  return [
+    {
+      id: 'machines', label: '機台', sheet: 'Machines', table: 'machines', conflict: 'machine_id', canDelete: false,
+      select: 'machine_id,name,location,status,color,sort_order,note,created_at,category,icon',
+      sheetKey: byId('machine_id'), dbKey: byId('machine_id'), fields: _machineSyncFields,
+      toDb: function (s) {
+        const p = withId(_machineSyncFields, 'machine_id')(s);
+        p.created_at = _syncIso(s.created_at);
+        return p;
+      },
+      toSheet: function (d) {
+        const f = withId(_machineSyncFields, 'machine_id')(d);
+        f.created_at = _syncIso(d.created_at);
+        return f;
+      }
+    },
+    {
+      id: 'prizes', label: '獎型', sheet: 'Prizes', table: 'prizes', conflict: 'prize_id', canDelete: true,
+      select: 'prize_id,machine_id,name,amount,sort_order,active',
+      sheetKey: byId('prize_id'), dbKey: byId('prize_id'), fields: prizeFields,
+      toDb: withId(prizeFields, 'prize_id'), toSheet: withId(prizeFields, 'prize_id'), dbFilter: eqFilter('prize_id')
+    },
+    {
+      id: 'quick_amounts', label: '快捷金額', sheet: 'QuickAmounts', table: 'quick_amounts', conflict: 'qa_id', canDelete: true,
+      select: 'qa_id,machine_id,type,amount,label,sort_order',
+      sheetKey: byId('qa_id'), dbKey: byId('qa_id'), fields: quickAmountFields,
+      toDb: withId(quickAmountFields, 'qa_id'), toSheet: withId(quickAmountFields, 'qa_id'), dbFilter: eqFilter('qa_id')
+    },
+    {
+      id: 'meter_rates', label: '入幣費率', sheet: 'MeterRates', table: 'meter_rates', conflict: 'rate_id', canDelete: true,
+      select: 'rate_id,machine_id,rate',
+      sheetKey: byId('rate_id'), dbKey: byId('rate_id'), fields: meterRateFields,
+      toDb: withId(meterRateFields, 'rate_id'), toSheet: withId(meterRateFields, 'rate_id'), dbFilter: eqFilter('rate_id')
+    },
+    {
+      // 授權只有「有／沒有」，沒有內容可改：指紋固定，只會新增或刪除
+      id: 'permissions', label: '台主授權', sheet: 'Permissions', table: 'permissions', conflict: 'user_id,machine_id',
+      canDelete: true, needsUsers: true, select: 'user_id,machine_id,granted_by,granted_at',
+      sheetKey: function (r, ctx) {
+        const name = ctx.sheetIdToName[_syncStr(r.user_id)];
+        return (name && ctx.dbNameToId[name] && r.machine_id) ? name + '|' + r.machine_id : '';
+      },
+      dbKey: function (r, ctx) {
+        const name = ctx.dbIdToName[_syncStr(r.user_id)];
+        return (name && ctx.sheetNameToId[name] && r.machine_id) ? name + '|' + r.machine_id : '';
+      },
+      fields: function () { return {}; },
+      toDb: function (s, ctx) {
+        const by = ctx.sheetIdToName[_syncStr(s.granted_by)];
+        return {
+          user_id: ctx.dbNameToId[ctx.sheetIdToName[_syncStr(s.user_id)]],
+          machine_id: String(s.machine_id),
+          granted_by: (by && ctx.dbNameToId[by]) || null,
+          granted_at: _syncIso(s.granted_at)
+        };
+      },
+      toSheet: function (d, ctx) {
+        const by = ctx.dbIdToName[_syncStr(d.granted_by)];
+        return {
+          user_id: ctx.sheetNameToId[ctx.dbIdToName[_syncStr(d.user_id)]],
+          machine_id: String(d.machine_id),
+          granted_by: (by && ctx.sheetNameToId[by]) || '',
+          granted_at: _syncIso(d.granted_at)
+        };
+      },
+      dbFilter: function (d) {
+        return 'user_id=eq.' + encodeURIComponent(d.user_id) + '&machine_id=eq.' + encodeURIComponent(d.machine_id);
+      }
+    }
+  ];
+}
+
+/** 兩邊帳號的對照（靠 username）：台主授權要把試算表的文字編號跟資料庫的 uuid 對起來。 */
+function _settingsSyncUserContext() {
+  const ctx = { sheetIdToName: {}, sheetNameToId: {}, dbIdToName: {}, dbNameToId: {} };
+  dbReadAll('Users').forEach(function (u) {
+    if (!u.user_id || !u.username) return;
+    ctx.sheetIdToName[String(u.user_id)] = String(u.username);
+    ctx.sheetNameToId[String(u.username)] = String(u.user_id);
+  });
+  _sbPushGetJson('/rest/v1/profiles?select=id,username').forEach(function (p) {
+    if (!p.id || !p.username) return;
+    ctx.dbIdToName[String(p.id)] = String(p.username);
+    ctx.dbNameToId[String(p.username)] = String(p.id);
+  });
+  return ctx;
+}
+
+function _settingsSyncBaseKey(id) {
+  return 'SB_SYNC_BASE_' + id;
+}
+
+function _settingsSyncBaseLoad(id) {
+  const raw = PropertiesService.getScriptProperties().getProperty(_settingsSyncBaseKey(id));
+  if (!raw) return null;
   try {
-    const payload = rows.map(function (m) {
-      return {
-        machine_id: m.machine_id, name: m.name, location: m.location || '', status: m.status || 'running',
-        color: m.color || '#4F7BE8', sort_order: m.sort_order === '' ? 0 : m.sort_order, note: m.note || '',
-        created_at: m.created_at || new Date().toISOString(), category: m.category || 'dice', icon: m.icon || 'classic'
-      };
-    });
-    _sbPushUpsert('machines', payload, 'machine_id');
-    return payload.length;
+    const v = JSON.parse(raw);
+    return (v && typeof v === 'object') ? v : null;
   } catch (e) {
-    Logger.log('⚠ 定期安全網推送失敗（machines）：' + (e && e.message));
-    return 0;
+    return null;
+  }
+}
+
+function _settingsSyncBaseSave(id, map) {
+  try {
+    PropertiesService.getScriptProperties().setProperty(_settingsSyncBaseKey(id), JSON.stringify(map));
+  } catch (e) {
+    // 存不進去的話下次會當成第一次同步（以資料庫為準），不會出錯，但試算表這段時間改的可能被蓋掉
+    Logger.log('⚠ 記不住這次同步完的樣子（' + id + '）：' + (e && e.message));
   }
 }
 

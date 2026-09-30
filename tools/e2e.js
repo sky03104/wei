@@ -340,6 +340,9 @@ async function main() {
     const statsBefore = await page.locator('.figures-panel .stat').allTextContents();
     const outBefore = statsBefore.find((t) => t.indexOf('今日出幣') >= 0);
     assert(outBefore && num2(outBefore) >= 321, '記帳後「今日出幣」應該看得到剛剛那 321，實際「' + outBefore + '」');
+    // 今日筆數＝出幣筆數＋432＋441（2026-09-30 咖哩要求把出幣也算進去）：剛開始營業只記了這一筆出幣
+    const countBefore = statsBefore.find((t) => t.indexOf('今日筆數') >= 0);
+    assert(countBefore && num2(countBefore) === 1, '剛開始營業只記了一筆出幣，「今日筆數」應該是 1，實際「' + countBefore + '」');
 
     // 再按一次「今日營業開始」（等於重新開一個 session）：這台機台的「今日」
     // 數字應該歸零，就算日期還是同一天、剛剛那筆紀錄沒有被刪掉。
@@ -352,6 +355,8 @@ async function main() {
     const statsAfter = await page.locator('.figures-panel .stat').allTextContents();
     const outAfter = statsAfter.find((t) => t.indexOf('今日出幣') >= 0);
     assert(outAfter && num2(outAfter) === 0, '按下「今日營業開始」之後，這台機台的今日出幣應該歸零，實際「' + outAfter + '」');
+    const countAfter = statsAfter.find((t) => t.indexOf('今日筆數') >= 0);
+    assert(countAfter && num2(countAfter) === 0, '按下「今日營業開始」之後，今日筆數也要歸零，實際「' + countAfter + '」');
 
     await page.click('button:has-text("← 返回主畫面")');
     await page.waitForSelector('.machine-card');
@@ -836,7 +841,7 @@ async function main() {
     await page.locator('.machine-card').first().click();
     await page.waitForSelector('.detail-hero');
     const diceStatLabels = await page.locator('.figures-panel .stat-label').allTextContents();
-    // 機台詳細頁原本的「今日432數量」改成「今日筆數」＝今日 432＋441（2026-09-27 咖哩要求）
+    // 機台詳細頁原本的「今日432數量」改成「今日筆數」＝今日出幣筆數＋432＋441（2026-09-27、09-30 咖哩要求）
     assert(diceStatLabels.some((t) => t === '今日筆數'), '骰台機台詳細頁應該顯示「今日筆數」卡片，實際 ' + JSON.stringify(diceStatLabels));
     assert(!diceStatLabels.some((t) => t.indexOf('432數量') >= 0), '機台詳細頁不該再有「今日432數量」');
   });
