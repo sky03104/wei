@@ -528,7 +528,7 @@ function _pushAllRecordsToSupabase() {
       const payload = chunk.map(function (r) {
         const uid = _sbPushUserId(r.user_id);
         if (!uid) throw new Error('user_id=' + r.user_id + ' 在 Supabase 找不到對應帳號');
-        return {
+        return _sbOmitMissingPeople({
           record_id: r.record_id, machine_id: r.machine_id, type: r.type, amount: r.amount,
           prize_id: r.prize_id || null, prize_name: r.prize_name || '',
           unit_amount: r.unit_amount === '' ? null : r.unit_amount,
@@ -541,7 +541,7 @@ function _pushAllRecordsToSupabase() {
           meter_start: r.meter_start === '' ? null : r.meter_start,
           meter_end: r.meter_end === '' ? null : r.meter_end,
           business_date: r.business_date
-        };
+        }, ['voided_by']);
       });
       _sbPushUpsert('records', payload, 'record_id');
       pushed += payload.length;

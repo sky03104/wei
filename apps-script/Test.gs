@@ -1769,6 +1769,77 @@ function _selfTestBody(results) {
     }
   });
 
+  _t(results, '定期安全網：對不到帳號的「誰」整個欄位不送，資料庫原本記的人不會被清成空白（帳號從試算表刪掉也一樣）', function () {
+    // 模擬：usr_known 對得到資料庫的帳號；usr_deleted 已經從試算表刪掉（對不到）
+    const real = { userId: _sbPushUserId, fetch: _sbPushFetch, enabled: _sbPushEnabled };
+    const sent = [];
+    _sbPushUserId = function (id) { return id === 'usr_known' ? 'uuid-known' : null; };
+    _sbPushFetch = function (method, path, payload) { sent.push({ path: path, rows: JSON.parse(JSON.stringify(payload)) }); };
+    const ids = function (rows) { return rows.map(function (r) { return r.biz_id; }).join(','); };
+    try {
+      const biz = _bizDayPayload({ biz_id: 'biz_a', business_date: '2026-09-01', opened_at: 'o', opened_by: 'usr_deleted', closed_at: 'c', closed_by: 'usr_known' });
+      _assert(!('opened_by' in biz), '對不到的開始人不能送空白過去（資料庫原本記的人要留著）');
+      _assertEq(biz.closed_by, 'uuid-known', '對得到的結單人照常送');
+      const open = _bizDayPayload({ biz_id: 'biz_b', business_date: '2026-09-02', opened_at: 'o', opened_by: 'usr_known', closed_at: '', closed_by: '' });
+      _assert(!('closed_by' in open), '還沒結單（結單人空白）也不送，不會動到資料庫的結單人');
+      const ledger = _dailyLedgerPayload({ ledger_id: 'ldg_a', business_date: '2026-09-01', updated_by: 'usr_deleted' });
+      _assert(!('updated_by' in ledger), '對不到的帳目修改人不能送空白過去');
+      _assertEq(_dailyLedgerPayload({ ledger_id: 'ldg_b', business_date: '2026-09-01', updated_by: 'usr_known' }).updated_by, 'uuid-known', '對得到的帳目修改人照常送');
+
+      // PostgREST 一次送多列時每列欄位要一樣：欄位不同的分批送，同一批照原本順序
+      const third = _bizDayPayload({ biz_id: 'biz_c', business_date: '2026-09-03', opened_at: 'o', opened_by: 'usr_known', closed_at: '', closed_by: '' });
+      _sbPushUpsert('biz_days', [open, biz, third], 'biz_id');
+      _assertEq(sent.length, 2, '兩種欄位組合要分兩批送');
+      _assertEq(ids(sent[0].rows) + '|' + ids(sent[1].rows), 'biz_b,biz_c|biz_a', '同樣欄位的一起送，少了開始人的另外送');
+      _assert(sent.every(function (s) { return s.path.indexOf('/rest/v1/biz_days?on_conflict=biz_id') === 0; }), '都送到營業日');
+
+      // 作廢：作廢人對不到也不送（假裝有設定資料庫，但網路已經換成假的，不會真的送出去）
+      sent.length = 0;
+      _sbPushEnabled = function () { return true; };
+      pushVoidToSupabase({ record_id: 'rec_a', voided_by: 'usr_deleted', voided_at: '2026-09-01T00:00:00Z' });
+      _assertEq(sent.length, 1, '作廢照樣要送');
+      _assert(!('voided_by' in sent[0].rows[0]) && sent[0].rows[0].voided === true, '作廢人對不到時只送「已作廢」，不送空白的作廢人');
+    } finally {
+      _sbPushUserId = real.userId;
+      _sbPushFetch = real.fetch;
+      _sbPushEnabled = real.enabled;
+    }
+  });
+
+  _t(results, '資料庫→試算表：對不到試算表帳號、或資料庫這格是空白的「誰」不寫，試算表原本記的人不會被清成空白', function () {
+    if (typeof _webhookUpsertBizDay !== 'function') return; // 試算表版沒有「資料庫→試算表」的 webhook，資料庫版才有
+    const realMap = _webhookUserId;
+    _webhookUserId = function (uuid) { return uuid === 'uuid-admin' ? 'usr_admin' : ''; };
+    try {
+      const bizId = newId('biz');
+      dbInsert('BizDays', { biz_id: bizId, business_date: '2026-09-01', opened_at: '2026-09-01T12:00:00.000Z', opened_by: 'usr_feng', closed_at: '2026-09-01T20:00:00.000Z', closed_by: 'usr_feng', auto_closed: false });
+      _webhookUpsertBizDay({ biz_id: bizId, business_date: '2026-09-01', opened_at: '2026-09-01T12:00:00.000Z', opened_by: 'uuid-feng', closed_at: '2026-09-01T20:00:00.000Z', closed_by: null, auto_closed: false });
+      _clearSheetCache();
+      let row = dbFind('BizDays', 'biz_id', bizId);
+      _assertEq(row.opened_by + '/' + row.closed_by, 'usr_feng/usr_feng', '對不到的開始人、資料庫是空白的結單人，都不能把試算表清成空白');
+      _webhookUpsertBizDay({ biz_id: bizId, business_date: '2026-09-01', opened_at: '2026-09-01T12:00:00.000Z', opened_by: 'uuid-feng', closed_at: '2026-09-01T21:00:00.000Z', closed_by: 'uuid-admin', auto_closed: false });
+      _clearSheetCache();
+      row = dbFind('BizDays', 'biz_id', bizId);
+      _assertEq(row.opened_by + '/' + row.closed_by, 'usr_feng/usr_admin', '對得到的人照常寫');
+
+      const ledgerId = newId('ldg');
+      dbInsert('DailyLedger', { ledger_id: ledgerId, business_date: '2026-09-01', updated_by: 'usr_feng', updated_at: '2026-09-01T20:00:00.000Z' });
+      _webhookUpsertDailyLedger({ ledger_id: ledgerId, business_date: '2026-09-01', turnover: 0, transport: 0, returned_to_house: 0, updated_by: 'uuid-feng', updated_at: '2026-09-01T20:00:00.000Z', manual_432: 0, manual_441: 0, manual_expense: 0 });
+      _clearSheetCache();
+      _assertEq(dbFind('DailyLedger', 'ledger_id', ledgerId).updated_by, 'usr_feng', '對不到的帳目修改人不能把試算表清成空白');
+
+      const machine = dbReadAll('Machines')[0];
+      const recId = newId('rec');
+      dbInsert('Records', { record_id: recId, machine_id: machine.machine_id, type: 'out', amount: 10, user_id: 'usr_feng', created_at: '2026-09-01T13:00:00.000Z', voided: true, voided_by: 'usr_feng', voided_at: '2026-09-01T14:00:00.000Z', business_date: '2026-09-01' });
+      _webhookUpsertRecord({ record_id: recId, machine_id: machine.machine_id, type: 'out', amount: 10, user_id: 'uuid-feng', created_at: '2026-09-01T13:00:00.000Z', voided: true, voided_by: 'uuid-feng', voided_at: '2026-09-01T14:00:00.000Z', business_date: '2026-09-01' });
+      _clearSheetCache();
+      const rec = dbFind('Records', 'record_id', recId);
+      _assertEq(rec.user_id + '/' + rec.voided_by, 'usr_feng/usr_feng', '對不到的記帳人、作廢人不能把試算表清成空白');
+    } finally {
+      _webhookUserId = realMap;
+    }
+  });
+
   _t(results, '定期安全網：設定雙向同步的判斷——只有一邊改就照那一邊（新增、修改、刪除都算）；兩邊都改、或第一次同步以資料庫為準', function () {
     const specOf = function (id) { return _settingsSyncSpecs().filter(function (s) { return s.id === id; })[0]; };
     const spec = specOf('quick_amounts');
