@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v64';
+const APP_VERSION = 'v65';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1142,7 +1142,7 @@ async function _exportLedgerGridsSupabase(sb, p) {
 // 前期、租金。每台的逐日表在「總出幣…+/-」那組標籤/數字欄右邊再多兩欄，
 // 剛好對齊五列小計：
 //   本期     = 該台 +/- 總計（照原數字，負的就是負的）
-//   前期     = 該台上一期存下的總額（wei3.settlements，沒勾就空白、不算）
+//   前期     = 該台上一期存下的總額（settlements；只帶有勾的那幾台，其他台空白、不算）
 //   租金     = -租金金額（名稱＋金額填一次，只扣有勾的那幾台；其他台空白）
 //   入幣*5%  = -round(總入幣 × 5%)
 //   總額     = 本期 + 前期 - 租金 - 入幣*5%
@@ -1153,10 +1153,11 @@ const SETTLEMENT_FEE_RATE = 0.05;
 /** 純計算：從一台的 summaryRows 算出結算區五項，不碰資料庫（方便單獨測）。 */
 function _computeSettlement(summaryRows, prevTotal, opts, machineId) {
   const rent = opts.rent && (opts.rent.machineIds || []).indexOf(machineId) >= 0 ? opts.rent : null;
+  const hasPrev = !!opts.prev && (opts.prev.machineIds || []).indexOf(machineId) >= 0;
   const last = (row) => Number(row[row.length - 1]) || 0;
   const net = last(summaryRows[4]);     // +/- 那列的總計
   const inTotal = last(summaryRows[3]); // 總入幣
-  const prev = opts.prev ? (Number(prevTotal) || 0) : 0;
+  const prev = hasPrev ? (Number(prevTotal) || 0) : 0;
   const rentAmt = rent ? (Number(rent.amount) || 0) : 0;
   const fee = Math.round(inTotal * SETTLEMENT_FEE_RATE);
   return {
@@ -1164,7 +1165,7 @@ function _computeSettlement(summaryRows, prevTotal, opts, machineId) {
     total: net + prev - rentAmt - fee,
     cells: [
       ['本期', net],
-      ['前期', opts.prev ? prev : ''],
+      ['前期', hasPrev ? prev : ''],
       [rent ? rent.name : '租金', rent ? -rentAmt : ''],
       ['入幣*5%', -fee],
       ['總額', net + prev - rentAmt - fee]
@@ -1191,7 +1192,8 @@ async function _fetchPrevSettlements(sb, machineIds, fromDate) {
  * grids 的每一筆要有 machineId；range 是 {from, to}。
  */
 async function _applySettlement(sb, grids, range, opts) {
-  const prevMap = opts.prev ? await _fetchPrevSettlements(sb, grids.map((g) => g.machineId), range.from) : {};
+  const prevIds = opts.prev ? grids.map((g) => g.machineId).filter((id) => opts.prev.machineIds.indexOf(id) >= 0) : [];
+  const prevMap = prevIds.length ? await _fetchPrevSettlements(sb, prevIds, range.from) : {};
   const saveRows = grids.map((g) => {
     const s = _computeSettlement(g.summaryRows, prevMap[g.machineId], opts, g.machineId);
     g.headerRow = g.headerRow.concat(['', '']);
@@ -1214,6 +1216,33 @@ async function _applySettlement(sb, grids, range, opts) {
   }
 }
 
+/** 匯出視窗裡的機台勾選清單（前期、租金各一份）：標題＋全選／全不選＋每台一個勾選框，預設都不勾。 */
+function _machinePicker(machines, title) {
+  const boxes = machines.map((m) => ({ id: m.machine_id, box: h('input', { type: 'checkbox', value: m.machine_id }) }));
+  const allBtn = h('button', { type: 'button', class: 'btn btn-sm btn-ghost' }, '全選');
+  const syncAllBtn = () => {
+    allBtn.textContent = boxes.every((x) => x.box.checked) ? '全不選' : '全選';
+  };
+  boxes.forEach((x) => x.box.addEventListener('change', syncAllBtn));
+  allBtn.addEventListener('click', () => {
+    const check = !boxes.every((x) => x.box.checked);
+    boxes.forEach((x) => { x.box.checked = check; });
+    syncAllBtn();
+  });
+  const el = h('div', {}, [
+    h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px' }, [
+      h('span', { class: 'small muted', style: 'font-weight:600', text: title }),
+      allBtn
+    ]),
+    h('div', {
+      style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px 10px;max-height:36vh;overflow:auto;margin-bottom:14px'
+    }, boxes.map((x, i) => h('label', {
+      style: 'display:flex;align-items:center;gap:6px;cursor:pointer'
+    }, [x.box, h('span', { text: machines[i].name })])))
+  ]);
+  return { el: el, selectedIds: () => boxes.filter((x) => x.box.checked).map((x) => x.id) };
+}
+
 /** 預設租金名稱：本月，例如「租金9/1-9/30」。 */
 function _defaultRentName() {
   const now = new Date();
@@ -1225,7 +1254,7 @@ function _defaultRentName() {
 /**
  * 匯出前的「總額／前期／租金」視窗。回傳 Promise：
  *   沒勾總額按匯出 → { total: false }（照原本匯出，不加結算區）
- *   有勾總額按匯出 → { total: true, prev: bool, rent: {name, amount, machineIds} | null }
+ *   有勾總額按匯出 → { total: true, prev: {machineIds} | null, rent: {name, amount, machineIds} | null }
  * machines：這次要匯出的骰台（_listCategoryMachines() 的結果），給租金勾選要扣哪幾台。
  *   取消／點外面／往下滑關掉 → null（不匯出）
  */
@@ -1245,34 +1274,15 @@ function askSettlementOptions(kindLabel, machines) {
     const rentName = h('input', { type: 'text', value: _defaultRentName() });
     const rentAmt = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1', placeholder: '例：4500' });
     const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
-    const machineBoxes = machines.map((m) => ({
-      id: m.machine_id,
-      box: h('input', { type: 'checkbox', value: m.machine_id })
-    }));
-    const allBtn = h('button', { type: 'button', class: 'btn btn-sm btn-ghost' }, '全選');
-    const syncAllBtn = () => {
-      allBtn.textContent = machineBoxes.every((x) => x.box.checked) ? '全不選' : '全選';
-    };
-    machineBoxes.forEach((x) => x.box.addEventListener('change', syncAllBtn));
-    allBtn.addEventListener('click', () => {
-      const check = !machineBoxes.every((x) => x.box.checked);
-      machineBoxes.forEach((x) => { x.box.checked = check; });
-      syncAllBtn();
-    });
-    const machineList = h('div', {
-      style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px 10px;max-height:36vh;overflow:auto;margin-bottom:14px'
-    }, machineBoxes.map((x, i) => h('label', {
-      style: 'display:flex;align-items:center;gap:6px;cursor:pointer'
-    }, [x.box, h('span', { text: machines[i].name })])));
+    const prevPicker = _machinePicker(machines, '要帶前期的機台');
+    const rentPicker = _machinePicker(machines, '要扣租金的機台');
+    const prevFields = h('div', { hidden: true }, [prevPicker.el]);
+    prevBox.addEventListener('change', () => { prevFields.hidden = !prevBox.checked; });
 
     const rentFields = h('div', { hidden: true }, [
       dialogField('租金名稱', rentName),
       dialogField('租金金額', rentAmt),
-      h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px' }, [
-        h('span', { class: 'small muted', style: 'font-weight:600', text: '要扣租金的機台' }),
-        allBtn
-      ]),
-      machineList
+      rentPicker.el
     ]);
     rentBox.addEventListener('change', () => {
       rentFields.hidden = !rentBox.checked;
@@ -1291,7 +1301,8 @@ function askSettlementOptions(kindLabel, machines) {
       hidden: true,
       style: 'padding-left:14px;border-left:2px solid var(--border);margin-bottom:12px'
     }, [
-      toggleRow(prevBox, '加入前期', '自動帶入每台上一期匯出時的總額'),
+      toggleRow(prevBox, '加入前期', '勾要帶的機台，自動帶入該台上一期匯出時的總額'),
+      prevFields,
       toggleRow(rentBox, '加入租金', '填一次名稱和金額，再勾要扣的機台'),
       rentFields
     ]);
@@ -1307,7 +1318,18 @@ function askSettlementOptions(kindLabel, machines) {
     ];
 
     const submit = () => {
+      errorEl.hidden = true;
       if (!totalBox.checked) { finish({ total: false }); return; }
+      let prev = null;
+      if (prevBox.checked) {
+        const prevIds = prevPicker.selectedIds();
+        if (!prevIds.length) {
+          errorEl.textContent = '請勾選要帶前期的機台';
+          errorEl.hidden = false;
+          return;
+        }
+        prev = { machineIds: prevIds };
+      }
       let rent = null;
       if (rentBox.checked) {
         const name = rentName.value.trim() || '租金';
@@ -1318,7 +1340,7 @@ function askSettlementOptions(kindLabel, machines) {
           rentAmt.focus();
           return;
         }
-        const machineIds = machineBoxes.filter((x) => x.box.checked).map((x) => x.id);
+        const machineIds = rentPicker.selectedIds();
         if (!machineIds.length) {
           errorEl.textContent = '請勾選要扣租金的機台';
           errorEl.hidden = false;
@@ -1326,7 +1348,7 @@ function askSettlementOptions(kindLabel, machines) {
         }
         rent = { name: name, amount: Math.round(amount), machineIds: machineIds };
       }
-      finish({ total: true, prev: prevBox.checked, rent: rent });
+      finish({ total: true, prev: prev, rent: rent });
     };
 
     const backdrop = openDialog('匯出' + kindLabel, body, [
