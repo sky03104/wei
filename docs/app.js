@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v63';
+const APP_VERSION = 'v64';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1085,6 +1085,18 @@ async function _meAndDashboard(sb) {
 /** forkScope/resetScope 的 sheet 名稱（GAS 分頁名）→ Postgres 資料表名稱。 */
 const SCOPE_SHEET_TO_TABLE = { QuickAmounts: 'quick_amounts', Prizes: 'prizes', MeterRates: 'meter_rates' };
 
+/** 這個分類看得到的機台（RLS 已篩過），依 sort_order、名稱排序；一台都沒有就報錯。 */
+async function _listCategoryMachines(sb, category) {
+  const { data: machines, error: mErr } = await sb.from('machines').select('machine_id, name, sort_order').eq('category', category);
+  if (mErr) throw _pgError(mErr);
+  if (!machines || !machines.length) {
+    const label = category === 'electronic' ? '電子機台' : '骰台';
+    throw ApiError('目前沒有看得到的' + label + '，無法匯出', 'ERROR');
+  }
+  machines.sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+  return machines;
+}
+
 /**
  * 對照 GAS 的 exportLedgerGrids()：不指定機台、只指定分類，一台一台
  * 各自呼叫 ledger_grid()，組成跟 GAS 版本一樣的 {range, machines[]} 形狀。
@@ -1094,13 +1106,7 @@ async function _exportLedgerGridsSupabase(sb, p) {
   if (p.machineId || !p.category) {
     throw ApiError('這個功能只支援「全部骰台」／「全部電子機台」這種分類查詢', 'ERROR');
   }
-  const { data: machines, error: mErr } = await sb.from('machines').select('machine_id, name, sort_order').eq('category', p.category);
-  if (mErr) throw _pgError(mErr);
-  if (!machines || !machines.length) {
-    const label = p.category === 'electronic' ? '電子機台' : '骰台';
-    throw ApiError('目前沒有看得到的' + label + '，無法匯出', 'ERROR');
-  }
-  machines.sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+  const machines = await _listCategoryMachines(sb, p.category);
 
   const rangeRows = await _rpc(sb, 'resolve_range', { p_preset: p.preset || 'day', p_from: p.from || null, p_to: p.to || null });
   const rangeRow = Array.isArray(rangeRows) ? rangeRows[0] : rangeRows;
@@ -1126,7 +1132,214 @@ async function _exportLedgerGridsSupabase(sb, p) {
       colCount: grid.colCount, rowCount: grid.rowCount
     };
   }));
+  if (p.settlement) await _applySettlement(sb, grids, range, p.settlement);
   return { range: range, machines: grids };
+}
+
+// ── 骰台結算區（本期／前期／租金／入幣*5%／總額）───────────
+//
+// 「全部骰台」匯出截圖／Excel 前，askSettlementOptions() 會先問要不要加
+// 前期、租金。每台的逐日表在「總出幣…+/-」那組標籤/數字欄右邊再多兩欄，
+// 剛好對齊五列小計：
+//   本期     = 該台 +/- 總計（照原數字，負的就是負的）
+//   前期     = 該台上一期存下的總額（wei3.settlements，沒勾就空白、不算）
+//   租金     = -租金金額（名稱＋金額填一次，只扣有勾的那幾台；其他台空白）
+//   入幣*5%  = -round(總入幣 × 5%)
+//   總額     = 本期 + 前期 - 租金 - 入幣*5%
+// 算完把每台的總額 upsert 回 settlements（同台同區間覆寫），下一期的前期就抓得到。
+
+const SETTLEMENT_FEE_RATE = 0.05;
+
+/** 純計算：從一台的 summaryRows 算出結算區五項，不碰資料庫（方便單獨測）。 */
+function _computeSettlement(summaryRows, prevTotal, opts, machineId) {
+  const rent = opts.rent && (opts.rent.machineIds || []).indexOf(machineId) >= 0 ? opts.rent : null;
+  const last = (row) => Number(row[row.length - 1]) || 0;
+  const net = last(summaryRows[4]);     // +/- 那列的總計
+  const inTotal = last(summaryRows[3]); // 總入幣
+  const prev = opts.prev ? (Number(prevTotal) || 0) : 0;
+  const rentAmt = rent ? (Number(rent.amount) || 0) : 0;
+  const fee = Math.round(inTotal * SETTLEMENT_FEE_RATE);
+  return {
+    net: net, prev: prev, rentName: rent ? rent.name : null, rentAmt: rentAmt, fee: fee,
+    total: net + prev - rentAmt - fee,
+    cells: [
+      ['本期', net],
+      ['前期', opts.prev ? prev : ''],
+      [rent ? rent.name : '租金', rent ? -rentAmt : ''],
+      ['入幣*5%', -fee],
+      ['總額', net + prev - rentAmt - fee]
+    ]
+  };
+}
+
+/** 抓每台「range_to 早於 fromDate」的最新一筆總額，回傳 {machineId: total}。 */
+async function _fetchPrevSettlements(sb, machineIds, fromDate) {
+  const { data, error } = await sb.from('settlements')
+    .select('machine_id, range_to, total')
+    .in('machine_id', machineIds)
+    .lt('range_to', fromDate)
+    .order('range_to', { ascending: false });
+  if (error) throw _pgError(error);
+  const map = {};
+  (data || []).forEach((r) => { if (!(r.machine_id in map)) map[r.machine_id] = Number(r.total) || 0; });
+  return map;
+}
+
+/**
+ * 把結算區接到每台 grid 的右邊（就地修改 grids：每列多兩格、colCount += 2、
+ * 標記 settlement），並把總額存回 settlements。
+ * grids 的每一筆要有 machineId；range 是 {from, to}。
+ */
+async function _applySettlement(sb, grids, range, opts) {
+  const prevMap = opts.prev ? await _fetchPrevSettlements(sb, grids.map((g) => g.machineId), range.from) : {};
+  const saveRows = grids.map((g) => {
+    const s = _computeSettlement(g.summaryRows, prevMap[g.machineId], opts, g.machineId);
+    g.headerRow = g.headerRow.concat(['', '']);
+    g.outRows = g.outRows.map((row) => row.concat(['', '']));
+    g.summaryRows = g.summaryRows.map((row, i) => row.concat(s.cells[i]));
+    g.colCount += 2;
+    g.settlement = true;
+    return {
+      machine_id: g.machineId, range_from: range.from, range_to: range.to,
+      current_amt: s.net, prev_amt: s.prev,
+      rent_name: s.rentName, rent_amt: s.rentAmt,
+      fee_amt: s.fee, total: s.total
+    };
+  });
+  // 台主只能看、不能寫（RLS 也會擋），就只算不存
+  if (canRecord() && saveRows.length) {
+    const { error } = await sb.from('settlements')
+      .upsert(saveRows, { onConflict: 'machine_id,range_from,range_to' });
+    if (error) throw _pgError(error);
+  }
+}
+
+/** 預設租金名稱：本月，例如「租金9/1-9/30」。 */
+function _defaultRentName() {
+  const now = new Date();
+  const m = now.getMonth() + 1;
+  const lastDay = new Date(now.getFullYear(), m, 0).getDate();
+  return '租金' + m + '/1-' + m + '/' + lastDay;
+}
+
+/**
+ * 匯出前的「總額／前期／租金」視窗。回傳 Promise：
+ *   沒勾總額按匯出 → { total: false }（照原本匯出，不加結算區）
+ *   有勾總額按匯出 → { total: true, prev: bool, rent: {name, amount, machineIds} | null }
+ * machines：這次要匯出的骰台（_listCategoryMachines() 的結果），給租金勾選要扣哪幾台。
+ *   取消／點外面／往下滑關掉 → null（不匯出）
+ */
+function askSettlementOptions(kindLabel, machines) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      closeDialog();
+      resolve(val);
+    };
+
+    const totalBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
+    const prevBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
+    const rentBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
+    const rentName = h('input', { type: 'text', value: _defaultRentName() });
+    const rentAmt = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1', placeholder: '例：4500' });
+    const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
+    const machineBoxes = machines.map((m) => ({
+      id: m.machine_id,
+      box: h('input', { type: 'checkbox', value: m.machine_id })
+    }));
+    const allBtn = h('button', { type: 'button', class: 'btn btn-sm btn-ghost' }, '全選');
+    const syncAllBtn = () => {
+      allBtn.textContent = machineBoxes.every((x) => x.box.checked) ? '全不選' : '全選';
+    };
+    machineBoxes.forEach((x) => x.box.addEventListener('change', syncAllBtn));
+    allBtn.addEventListener('click', () => {
+      const check = !machineBoxes.every((x) => x.box.checked);
+      machineBoxes.forEach((x) => { x.box.checked = check; });
+      syncAllBtn();
+    });
+    const machineList = h('div', {
+      style: 'display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px 10px;max-height:36vh;overflow:auto;margin-bottom:14px'
+    }, machineBoxes.map((x, i) => h('label', {
+      style: 'display:flex;align-items:center;gap:6px;cursor:pointer'
+    }, [x.box, h('span', { text: machines[i].name })])));
+
+    const rentFields = h('div', { hidden: true }, [
+      dialogField('租金名稱', rentName),
+      dialogField('租金金額', rentAmt),
+      h('div', { style: 'display:flex;align-items:center;justify-content:space-between;margin-bottom:6px' }, [
+        h('span', { class: 'small muted', style: 'font-weight:600', text: '要扣租金的機台' }),
+        allBtn
+      ]),
+      machineList
+    ]);
+    rentBox.addEventListener('change', () => {
+      rentFields.hidden = !rentBox.checked;
+      if (rentBox.checked) rentAmt.focus();
+    });
+
+    const toggleRow = (box, label, hint) => h('label', {
+      style: 'display:flex;align-items:center;gap:10px;margin-bottom:12px;cursor:pointer'
+    }, [box, h('div', {}, [
+      h('div', { text: label, style: 'font-weight:600' }),
+      h('div', { class: 'small muted', text: hint })
+    ])]);
+
+    // 前期／租金只有勾了「總額」才有意義，收在一起、沒勾總額就藏起來
+    const totalOptions = h('div', {
+      hidden: true,
+      style: 'padding-left:14px;border-left:2px solid var(--border);margin-bottom:12px'
+    }, [
+      toggleRow(prevBox, '加入前期', '自動帶入每台上一期匯出時的總額'),
+      toggleRow(rentBox, '加入租金', '填一次名稱和金額，再勾要扣的機台'),
+      rentFields
+    ]);
+    totalBox.addEventListener('change', () => {
+      totalOptions.hidden = !totalBox.checked;
+      errorEl.hidden = true;
+    });
+
+    const body = [
+      toggleRow(totalBox, '總額', '在總出幣右邊加上 本期／前期／租金／入幣*5%／總額'),
+      totalOptions,
+      errorEl
+    ];
+
+    const submit = () => {
+      if (!totalBox.checked) { finish({ total: false }); return; }
+      let rent = null;
+      if (rentBox.checked) {
+        const name = rentName.value.trim() || '租金';
+        const amount = Number(rentAmt.value);
+        if (!rentAmt.value || !isFinite(amount) || amount < 0) {
+          errorEl.textContent = '請輸入租金金額';
+          errorEl.hidden = false;
+          rentAmt.focus();
+          return;
+        }
+        const machineIds = machineBoxes.filter((x) => x.box.checked).map((x) => x.id);
+        if (!machineIds.length) {
+          errorEl.textContent = '請勾選要扣租金的機台';
+          errorEl.hidden = false;
+          return;
+        }
+        rent = { name: name, amount: Math.round(amount), machineIds: machineIds };
+      }
+      finish({ total: true, prev: prevBox.checked, rent: rent });
+    };
+
+    const backdrop = openDialog('匯出' + kindLabel, body, [
+      h('button', { class: 'btn', onclick: () => finish(null) }, '取消'),
+      h('button', { class: 'btn btn-primary', onclick: submit }, '匯出')
+    ]);
+    backdrop._onClose = () => finish(null);
+  });
+}
+
+/** 「全部骰台」匯出才跳總額視窗；電子機台、單一機台維持原本的匯出。 */
+function _wantsSettlement(p) {
+  return !p.machineId && p.category === 'dice';
 }
 
 // ── 匯出 Excel（Supabase 後端）─────────────────────────────
@@ -1200,7 +1413,8 @@ function _writeLedgerWorksheet(workbook, sheetName, grid) {
   grid.summaryRows.forEach((row) => {
     const r = ws.addRow(row);
     r.alignment = { horizontal: 'center' };
-    r.getCell(numCols - 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8CBCB' } };
+    const labelCols = grid.settlement ? [numCols - 3, numCols - 1] : [numCols - 1];
+    labelCols.forEach((c) => { r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8CBCB' } }; });
     if (row[0] === '+/-') {
       r.eachCell({ includeEmpty: true }, (cell) => { cell.font = { color: { argb: 'FFC00000' } }; });
     }
@@ -1228,28 +1442,30 @@ async function _exportLedgerXlsxSupabase(sb, p) {
     totalRowCount = grid.rowCount;
     _writeLedgerWorksheet(workbook, '對帳表', grid);
   } else {
-    const { data: machines, error: mErr } = await sb.from('machines').select('machine_id, name, sort_order').eq('category', p.category);
-    if (mErr) throw _pgError(mErr);
-    if (!machines || !machines.length) {
-      const label = p.category === 'electronic' ? '電子機台' : '骰台';
-      throw ApiError('目前沒有看得到的' + label + '，無法匯出', 'ERROR');
-    }
-    machines.sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+    const machines = await _listCategoryMachines(sb, p.category);
 
     const rangeRows = await _rpc(sb, 'resolve_range', { p_preset: p.preset || 'day', p_from: p.from || null, p_to: p.to || null });
     const rangeRow = Array.isArray(rangeRows) ? rangeRows[0] : rangeRows;
     const categoryLabel = p.category === 'electronic' ? '全部電子機台' : '全部骰台';
     filenameBase = '娃娃機對帳表_' + categoryLabel + '_' + rangeRow.range_from + '_' + rangeRow.range_to;
 
-    const usedNames = {};
+    const grids = [];
     for (const m of machines) {
       const grid = await _rpc(sb, 'ledger_grid', {
         p_machine_id: m.machine_id, p_category: null, p_preset: p.preset || 'day',
         p_from: p.from || null, p_to: p.to || null, p_type: p.type || null, p_user_id: p.userId || null
       });
-      totalRowCount += grid.rowCount;
-      _writeLedgerWorksheet(workbook, _uniqueSheetName(usedNames, m.name), grid);
+      grid.machineId = m.machine_id;
+      grid.machineName = m.name;
+      grids.push(grid);
     }
+    if (p.settlement) await _applySettlement(sb, grids, { from: rangeRow.range_from, to: rangeRow.range_to }, p.settlement);
+
+    const usedNames = {};
+    grids.forEach((grid) => {
+      totalRowCount += grid.rowCount;
+      _writeLedgerWorksheet(workbook, _uniqueSheetName(usedNames, grid.machineName), grid);
+    });
   }
 
   const buffer = await workbook.xlsx.writeBuffer();
@@ -3466,10 +3682,19 @@ function recordsTableCard(rep) {
 /**
  * 匯出對帳表 .xlsx（後端回 base64，這裡解碼成二進位再包成 Blob 下載）。
  */
-function downloadLedgerXlsx(e) {
+async function downloadLedgerXlsx(e) {
+  const button = e && e.currentTarget; // await 之後 currentTarget 就變 null，先存起來
+  const p = state.reportParams;
+  let settlement = null;
+  if (_wantsSettlement(p)) {
+    const machines = await run(() => _listCategoryMachines(supabaseClient(), p.category), { button: button, busyText: '讀取中…' });
+    if (!machines) return;
+    settlement = await askSettlementOptions(' Excel', machines);
+    if (!settlement) return;
+    if (!settlement.total) settlement = null; // 沒勾總額：照原本匯出
+  }
   run(async () => {
-    const p = state.reportParams;
-    const xlsx = await api('exportLedgerXlsx', p);
+    const xlsx = await api('exportLedgerXlsx', Object.assign({}, p, { settlement: settlement }));
     const binary = atob(xlsx.base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -3489,7 +3714,7 @@ function downloadLedgerXlsx(e) {
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast('已匯出 ' + xlsx.rowCount + ' 筆', 'success');
-  }, { button: e && e.currentTarget, busyText: '匯出中…' });
+  }, { button: button, busyText: '匯出中…' });
 }
 
 /**
@@ -3501,9 +3726,10 @@ function downloadLedgerXlsx(e) {
  * 一張長圖，現場對帳習慣一台一台分開傳，疊在一起反而要自己裁切。
  * 手繪 canvas、不叫外部套件，同一個理由見 exportLedgerImage() 的說明。
  */
-function _gridCellText(cell) {
+function _gridCellText(cell, isCount) {
   if (cell === '' || cell === null || cell === undefined) return '';
-  return typeof cell === 'number' ? money(cell) : String(cell);
+  if (typeof cell !== 'number') return String(cell);
+  return isCount ? cell.toLocaleString('zh-TW') : money(cell);
 }
 
 function drawLedgerGridCanvas(rangeLabel, m) {
@@ -3522,7 +3748,8 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   const dividerH = 5;
   const firstColW = 56;
   const dayColW = 62;
-  const tailColWidths = [70, 78]; // 每列小計最右邊的「標籤欄／數字欄」
+  // 每列小計最右邊的「標籤欄／數字欄」；有結算區（本期…總額）再多一組
+  const tailColWidths = m.settlement ? [70, 78, 104, 78] : [70, 78];
 
   const days = m.colCount - 1 - tailColWidths.length;
   const widths = [firstColW].concat(new Array(days).fill(dayColW)).concat(tailColWidths);
@@ -3549,13 +3776,14 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   ctx.fillText(m.machineName + '　' + rangeLabel, padX, y + titleH / 2);
   y += titleH;
 
+  const countCols = widths.length - (m.settlement ? 2 : 0); // 結算區那兩欄以外的欄位
   const drawRow = (cells, opts) => {
     opts = opts || {};
     cells.forEach((cell, i) => {
       // 只有右邊那個「總出幣/432/441/總入幣/+/-」標籤欄套底色，跟
       // Excel（_writeLedgerSheet）的樣式規則一致——最左邊那欄（出幣/432/
       // 441/入幣/+/-）在 Excel 裡沒有套底色，這裡照抄同一個規則。
-      const isLabelCol = i === widths.length - 2;
+      const isLabelCol = i === widths.length - 2 || (m.settlement && i === widths.length - 4);
       if (opts.labelBg && isLabelCol) {
         ctx.fillStyle = colorSummaryLabelBg;
         ctx.fillRect(colX[i], y, widths[i], rowH);
@@ -3563,7 +3791,9 @@ function drawLedgerGridCanvas(rangeLabel, m) {
       ctx.font = (opts.bold ? 'bold ' : '') + '12px ' + font;
       ctx.fillStyle = opts.neg ? colorNeg : (opts.bold ? colorText : colorMuted);
       ctx.textAlign = 'center';
-      ctx.fillText(_gridCellText(cell), colX[i] + widths[i] / 2, y + rowH / 2);
+      // 432／441 列是支數不是金額，不加 $；但同一列右邊的結算區（前期、租金）還是金額
+      const isCount = opts.count && i < countCols;
+      ctx.fillText(_gridCellText(cell, isCount), colX[i] + widths[i] / 2, y + rowH / 2);
     });
     ctx.strokeStyle = colorBorder;
     ctx.beginPath();
@@ -3580,15 +3810,26 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   ctx.fillRect(padX, y + 1, tableRight - padX, dividerH - 2);
   y += dividerH;
 
-  m.summaryRows.forEach((row) => drawRow(row, { bold: true, labelBg: true, neg: row[0] === '+/-' }));
+  m.summaryRows.forEach((row) => drawRow(row, {
+    bold: true, labelBg: true, neg: row[0] === '+/-', count: row[0] === '432' || row[0] === '441'
+  }));
 
   return canvas;
 }
 
-function exportLedgerScreenshots(e) {
+async function exportLedgerScreenshots(e) {
+  const button = e && e.currentTarget; // await 之後 currentTarget 就變 null，先存起來
+  const p = state.reportParams;
+  let settlement = null;
+  if (_wantsSettlement(p)) {
+    const machines = await run(() => _listCategoryMachines(supabaseClient(), p.category), { button: button, busyText: '讀取中…' });
+    if (!machines) return;
+    settlement = await askSettlementOptions('截圖', machines);
+    if (!settlement) return;
+    if (!settlement.total) settlement = null; // 沒勾總額：照原本匯出
+  }
   run(async () => {
-    const p = state.reportParams;
-    const data = await api('exportLedgerGrids', p);
+    const data = await api('exportLedgerGrids', Object.assign({}, p, { settlement: settlement }));
     const rangeLabel = data.range.from + ' ~ ' + data.range.to;
 
     // 轉成 PNG：這裡前面已經等過一趟網路了，不用像 exportLedgerImage() 那樣為了
@@ -3622,7 +3863,7 @@ function exportLedgerScreenshots(e) {
     }
 
     await downloadScreenshotFiles(files);
-  }, { button: e && e.currentTarget, busyText: '匯出中…' });
+  }, { button: button, busyText: '匯出中…' });
 }
 
 /** canvas 轉 PNG Blob：有原生的 toBlob() 就用它（快、不佔用畫面），沒有才退回 toDataURL。 */
