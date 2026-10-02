@@ -793,3 +793,29 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   .detail-top .machine-switcher-group { grid-column: 1 / -1; }
   .detail-top .machine-switcher { flex-wrap: wrap; overflow-x: visible; }
 }
+
+/* 「今日營業開始」的滾輪選擇器（app.js 的 _wheelColumn／askBusinessDate） */
+.wheels {
+  position: relative; display: grid; grid-template-columns: 1.7fr 1fr 1fr; gap: 6px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 6px;
+}
+.wheels::before {
+  content: ""; position: absolute; left: 6px; right: 6px; top: 50%; height: 40px; margin-top: -20px;
+  background: var(--accent-soft); border-radius: 8px; pointer-events: none;
+}
+.wheel {
+  height: 200px; overflow-y: auto; scroll-snap-type: y mandatory; scrollbar-width: none;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+  -webkit-mask-image: linear-gradient(transparent, #000 30%, #000 70%, transparent);
+          mask-image: linear-gradient(transparent, #000 30%, #000 70%, transparent);
+}
+.wheel::-webkit-scrollbar { display: none; }
+.wheel-pad { height: 80px; }
+.wheel-item {
+  height: 40px; line-height: 40px; text-align: center; white-space: nowrap; cursor: pointer;
+  scroll-snap-align: center; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+.wheel-item.sel { color: var(--text); font-weight: 700; font-size: 17px; }
+.wheel-summary { text-align: center; margin-top: -4px; font-size: 14px; color: var(--muted); }
+.wheel-summary b { color: var(--text); }
+.wheel-overnight { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; color: var(--muted); cursor: pointer; }

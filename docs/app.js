@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v67';
+const APP_VERSION = 'v68';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -2491,18 +2491,43 @@ function _clearMachineDetailCache() {
 }
 
 /**
- * 「今日營業開始」：先跳視窗選營業日期跟開始時間（預設今天／現在，都不能選未來）——
- * 跨夜過了凌晨 0 點才開始、忘了按開始、或要補記前幾天的帳時，可以把這段營業
- * 算進選的那一天、從選的時間開始算「今日」。
+ * 滾輪選擇器的一欄：上下滑動、停在中間那格就是選到的（CSS 的 scroll-snap 對齊，
+ * 樣式在 styles.css 的 .wheel）。labels 是每一格的文字，initial 是一開始停在第幾格。
+ * 回傳 { el, get(), set(i) }；el 要先放進畫面才能捲到 initial，所以由呼叫端在
+ * 放進畫面後呼叫 set()。
+ */
+const WHEEL_ROW_H = 40;
+function _wheelColumn(labels, initial, onPick) {
+  const items = labels.map((l) => h('div', { class: 'wheel-item', text: l }));
+  const el = h('div', { class: 'wheel' }, [h('div', { class: 'wheel-pad' })].concat(items, [h('div', { class: 'wheel-pad' })]));
+  let cur = initial;
+  const mark = () => items.forEach((x, i) => x.classList.toggle('sel', i === cur));
+  el.addEventListener('scroll', () => {
+    const i = Math.max(0, Math.min(items.length - 1, Math.round(el.scrollTop / WHEEL_ROW_H)));
+    if (i !== cur) { cur = i; mark(); if (onPick) onPick(); }
+  });
+  // 點某一格也能直接選（不用滑）
+  items.forEach((x, i) => x.addEventListener('click', () => el.scrollTo({ top: i * WHEEL_ROW_H, behavior: 'smooth' })));
+  mark();
+  return {
+    el: el,
+    get: () => cur,
+    set: (i) => { cur = i; el.scrollTop = i * WHEEL_ROW_H; mark(); }
+  };
+}
+
+/** 往前可以選幾天（滾輪的日期欄）。 */
+const BIZ_PICK_DAYS = 60;
+
+/**
+ * 「今日營業開始」：跳視窗用滾輪選開始的日期｜時｜分（預設現在，分鐘 5 分一格），
+ * 營業日期就是開始的那一天；勾「跨夜」就算成前一天的營業（例如凌晨 2 點才開始、
+ * 其實是前一晚的營業）。開始時間不能晚於現在。
+ * 開始時間決定「今日」數字從哪一刻算起；這段營業記的帳都算進營業日期，直到按結單。
  * 已經在營業中的話，視窗裡一併提醒會先自動結算目前這個營業日。
  * 回傳 Promise：按開始 → { businessDate: 'yyyy-MM-dd', openedAt: ISO 字串 }；
  * 取消／點外面／往下滑關掉 → null。
  */
-function _localDateTimeValue(d) {
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
-    + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
-}
-
 function askBusinessDate(isOpen) {
   return new Promise((resolve) => {
     let settled = false;
@@ -2512,42 +2537,76 @@ function askBusinessDate(isOpen) {
       closeDialog();
       resolve(val);
     };
-    const today = todayInputValue();
-    const dateInput = h('input', { type: 'date', value: today, max: today });
-    const nowValue = _localDateTimeValue(new Date());
-    const timeInput = h('input', { type: 'datetime-local', value: nowValue, max: nowValue });
-    // 改了營業日期就把開始時間的日期跟著換過去（時間不動），省得兩個都要改；換過去會變未來就不動
-    dateInput.addEventListener('change', () => {
-      if (!dateInput.value || !timeInput.value) return;
-      const moved = dateInput.value + timeInput.value.slice(10);
-      if (moved <= _localDateTimeValue(new Date())) timeInput.value = moved;
-    });
-    const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
+    const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+    const md = (d) => (d.getMonth() + 1) + '/' + d.getDate() + '（' + WEEK[d.getDay()] + '）';
+    const ymd = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    const now = new Date();
+    const days = [];
+    for (let i = BIZ_PICK_DAYS - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      days.push(d);
+    }
+    const dayLabels = days.map((d, i) => i === days.length - 1 ? '今天' : i === days.length - 2 ? '昨天' : md(d));
+    const hourLabels = Array.from({ length: 24 }, (_, i) => pad2(i) + ' 時');
+    const minLabels = Array.from({ length: 12 }, (_, i) => pad2(i * 5) + ' 分');
+
+    const summary = h('div', { class: 'wheel-summary' });
+    const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:8px 0 0', hidden: true });
+    const overnightBox = h('input', { type: 'checkbox' });
+
+    const picked = () => {
+      const d = days[dayCol.get()];
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hourCol.get(), minCol.get() * 5);
+      const biz = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (overnightBox.checked ? 1 : 0));
+      return { start: start, biz: biz };
+    };
+    const refresh = () => {
+      const p = picked();
+      summary.innerHTML = '';
+      summary.appendChild(document.createTextNode('營業日 '));
+      summary.appendChild(h('b', { text: md(p.biz) }));
+      summary.appendChild(document.createTextNode('，' + md(p.start) + ' '));
+      summary.appendChild(h('b', { text: pad2(p.start.getHours()) + ':' + pad2(p.start.getMinutes()) }));
+      summary.appendChild(document.createTextNode(' 開始'));
+      errorEl.hidden = true;
+    };
+    const dayCol = _wheelColumn(dayLabels, days.length - 1, refresh);
+    const hourCol = _wheelColumn(hourLabels, now.getHours(), refresh);
+    const minCol = _wheelColumn(minLabels, Math.floor(now.getMinutes() / 5), refresh);
+    overnightBox.addEventListener('change', refresh);
+
     const body = [
       isOpen
         ? h('p', { class: 'confirm-msg', style: 'margin:0 0 12px', text: '目前已經在營業中。開始新的營業日會自動結算目前這個。' })
         : null,
-      dialogField('營業日期', dateInput),
-      dialogField('開始時間', timeInput),
-      h('p', { class: 'small muted', style: 'margin:-6px 0 12px', text: '這段營業的帳都會算進選的日期，直到按「結單」；開始時間之後記的帳才算進今日數字。' }),
+      h('div', { class: 'field' }, [
+        h('label', { text: '開始時間' }),
+        h('div', { class: 'wheels' }, [dayCol.el, hourCol.el, minCol.el])
+      ]),
+      summary,
+      h('label', { class: 'wheel-overnight' }, [overnightBox, h('span', { text: '跨夜：算成前一天的營業' })]),
+      h('p', { class: 'small muted', style: 'margin:6px 0 0', text: '這段營業的帳都會算進營業日，直到按「結單」；開始時間之後記的帳才算進今日數字。' }),
       errorEl
     ];
     const submit = () => {
-      const v = dateInput.value;
-      if (!v) { errorEl.textContent = '請選擇營業日期'; errorEl.hidden = false; return; }
-      if (v > today) { errorEl.textContent = '不能選未來的日期'; errorEl.hidden = false; return; }
-      const t = timeInput.value;
-      if (!t) { errorEl.textContent = '請選擇開始時間'; errorEl.hidden = false; return; }
-      const openedAt = new Date(t);
-      if (isNaN(openedAt.getTime())) { errorEl.textContent = '開始時間格式不對'; errorEl.hidden = false; return; }
-      if (openedAt.getTime() > Date.now() + 60000) { errorEl.textContent = '開始時間不能晚於現在'; errorEl.hidden = false; return; }
-      finish({ businessDate: v, openedAt: openedAt.toISOString() });
+      const p = picked();
+      if (p.start.getTime() > Date.now() + 60000) {
+        errorEl.textContent = '開始時間不能晚於現在';
+        errorEl.hidden = false;
+        return;
+      }
+      finish({ businessDate: ymd(p.biz), openedAt: p.start.toISOString() });
     };
     const backdrop = openDialog(isOpen ? '重新開始營業？' : '今日營業開始', body, [
       h('button', { class: 'btn', onclick: () => finish(null) }, '取消'),
       h('button', { class: 'btn btn-primary', onclick: submit }, isOpen ? '重新開始' : '開始')
     ]);
     backdrop._onClose = () => finish(null);
+    // 放進畫面後才能捲到預設的那一格
+    dayCol.set(days.length - 1);
+    hourCol.set(now.getHours());
+    minCol.set(Math.floor(now.getMinutes() / 5));
+    refresh();
   });
 }
 
