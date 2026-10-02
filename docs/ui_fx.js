@@ -416,7 +416,7 @@
 
   /* ── 底部對話框往下滑就關掉（跟一般手機 App 一樣）──
      用法：fxSwipeToClose(面板, 關掉的函式, 遮罩)。從上面的小把手／標題往下拉一定可以；
-     從面板其他地方拉，要面板本身已經捲到最上面、而且不是按在輸入框上（不然會搶走捲動／打字）。
+     從面板其他地方拉，要面板本身已經捲到最上面、而且不是按在輸入框或滾輪選擇器（.wheel）上（不然會搶走捲動／打字）。
      拉超過三成高度（最多 140px）或往下甩就關掉，不夠就彈回去；桌機置中的對話框不理 */
   window.fxSwipeToClose = function (sheet, close, backdrop) {
     try {
@@ -427,7 +427,7 @@
         if (e.touches.length !== 1 || window.innerWidth >= 760) return;
         var t = e.target;
         var onHead = t && t.closest && t.closest('.dialog-handle,.dialog > h3');
-        if (!onHead && (sheet.scrollTop > 0 || (t && t.closest && t.closest('input,textarea,select')))) return;
+        if (!onHead && (sheet.scrollTop > 0 || (t && t.closest && t.closest('input,textarea,select,.wheel')))) return;
         startY = e.touches[0].clientY; startX = e.touches[0].clientX; dy = 0; t0 = Date.now(); dragging = false;
       }, { passive: true });
       sheet.addEventListener('touchmove', function (e) {

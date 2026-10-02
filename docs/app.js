@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v68';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1561,7 +1561,7 @@ async function supabaseApi(action, payload) {
     addRecord: () => ['add_record', { p_machine_id: p.machineId, p_type: p.type, p_amount: p.amount, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addMeterRecord: () => ['add_meter_record', { p_machine_id: p.machineId, p_meter_start: p.meterStart, p_meter_end: p.meterEnd, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addPrizeRecord: () => ['add_prize_record', { p_machine_id: p.machineId, p_items: p.items, p_note: p.note || null, p_client_token: p.clientToken || '' }],
-    startBusinessDay: () => ['start_business_day', {}],
+    startBusinessDay: () => ['start_business_day', { p_business_date: p.businessDate || null, p_opened_at: p.openedAt || null }],
     endBusinessDay: () => ['end_business_day', {}],
     reopenBusinessDay: () => ['reopen_business_day', {}],
     saveDailyLedger: () => ['save_daily_ledger', {
@@ -2443,8 +2443,13 @@ function editDailyLedger(data) {
 function businessDayBar(biz) {
   if (!canRecord()) return null;
   const isOpen = !!(biz && biz.open);
+  // 選了不是今天的營業日期，狀態列要寫出來，免得以為帳記在今天
+  const bizDate = isOpen ? biz.current.businessDate : '';
+  const dateNote = bizDate && bizDate !== todayInputValue()
+    ? '營業日 ' + Number(bizDate.slice(5, 7)) + '/' + Number(bizDate.slice(8, 10)) + ' · '
+    : '';
   const status = isOpen
-    ? '營業中 · ' + formatTime(biz.current.openedAt) + ' 開始'
+    ? '營業中 · ' + dateNote + formatTime(biz.current.openedAt) + ' 開始'
       + (biz.current.openedByName ? '（' + biz.current.openedByName + '）' : '')
     : '尚未開始今日營業，記帳暫時照行事曆日期算';
 
@@ -2485,20 +2490,144 @@ function _clearMachineDetailCache() {
   });
 }
 
+/**
+ * 滾輪選擇器的一欄：上下滑動、停在中間那格就是選到的（CSS 的 scroll-snap 對齊，
+ * 樣式在 styles.css 的 .wheel）。labels 是每一格的文字，initial 是一開始停在第幾格。
+ * 回傳 { el, get(), set(i) }；el 要先放進畫面才能捲到 initial，所以由呼叫端在
+ * 放進畫面後呼叫 set()。
+ */
+const WHEEL_ROW_H = 40;
+function _wheelColumn(labels, initial, onPick) {
+  const items = labels.map((l) => h('div', { class: 'wheel-item', text: l }));
+  const el = h('div', { class: 'wheel' }, [h('div', { class: 'wheel-pad' })].concat(items, [h('div', { class: 'wheel-pad' })]));
+  let cur = initial;
+  const mark = () => items.forEach((x, i) => x.classList.toggle('sel', i === cur));
+  el.addEventListener('scroll', () => {
+    const i = Math.max(0, Math.min(items.length - 1, Math.round(el.scrollTop / WHEEL_ROW_H)));
+    if (i !== cur) { cur = i; mark(); if (onPick) onPick(); }
+  });
+  // 點某一格也能直接選（不用滑）
+  items.forEach((x, i) => x.addEventListener('click', () => el.scrollTo({ top: i * WHEEL_ROW_H, behavior: 'smooth' })));
+  mark();
+  return {
+    el: el,
+    get: () => cur,
+    set: (i) => { cur = i; el.scrollTop = i * WHEEL_ROW_H; mark(); }
+  };
+}
+
+/** 往前可以選幾天（滾輪的日期欄）。 */
+const BIZ_PICK_DAYS = 60;
+
+/**
+ * 「今日營業開始」：跳視窗用滾輪選開始的日期｜時｜分（預設現在，分鐘 5 分一格），
+ * 營業日期就是開始的那一天；勾「跨夜」就算成前一天的營業（例如凌晨 2 點才開始、
+ * 其實是前一晚的營業）。開始時間不能晚於現在。
+ * 開始時間決定「今日」數字從哪一刻算起；這段營業記的帳都算進營業日期，直到按結單。
+ * 已經在營業中的話，視窗裡一併提醒會先自動結算目前這個營業日。
+ * 回傳 Promise：按開始 → { businessDate: 'yyyy-MM-dd', openedAt: ISO 字串 }；
+ * 取消／點外面／往下滑關掉 → null。
+ */
+function askBusinessDate(isOpen) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      closeDialog();
+      resolve(val);
+    };
+    const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
+    const md = (d) => (d.getMonth() + 1) + '/' + d.getDate() + '（' + WEEK[d.getDay()] + '）';
+    const ymd = (d) => d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+    const now = new Date();
+    const days = [];
+    for (let i = BIZ_PICK_DAYS - 1; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+      days.push(d);
+    }
+    const dayLabels = days.map((d, i) => i === days.length - 1 ? '今天' : i === days.length - 2 ? '昨天' : md(d));
+    const hourLabels = Array.from({ length: 24 }, (_, i) => pad2(i) + ' 時');
+    const minLabels = Array.from({ length: 12 }, (_, i) => pad2(i * 5) + ' 分');
+
+    const summary = h('div', { class: 'wheel-summary' });
+    const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:8px 0 0', hidden: true });
+    const overnightBox = h('input', { type: 'checkbox' });
+
+    const picked = () => {
+      const d = days[dayCol.get()];
+      const start = new Date(d.getFullYear(), d.getMonth(), d.getDate(), hourCol.get(), minCol.get() * 5);
+      const biz = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (overnightBox.checked ? 1 : 0));
+      return { start: start, biz: biz };
+    };
+    const refresh = () => {
+      const p = picked();
+      summary.innerHTML = '';
+      summary.appendChild(document.createTextNode('營業日 '));
+      summary.appendChild(h('b', { text: md(p.biz) }));
+      summary.appendChild(document.createTextNode('，' + md(p.start) + ' '));
+      summary.appendChild(h('b', { text: pad2(p.start.getHours()) + ':' + pad2(p.start.getMinutes()) }));
+      summary.appendChild(document.createTextNode(' 開始'));
+      errorEl.hidden = true;
+    };
+    const dayCol = _wheelColumn(dayLabels, days.length - 1, refresh);
+    const hourCol = _wheelColumn(hourLabels, now.getHours(), refresh);
+    const minCol = _wheelColumn(minLabels, Math.floor(now.getMinutes() / 5), refresh);
+    overnightBox.addEventListener('change', refresh);
+
+    const body = [
+      isOpen
+        ? h('p', { class: 'confirm-msg', style: 'margin:0 0 12px', text: '目前已經在營業中。開始新的營業日會自動結算目前這個。' })
+        : null,
+      h('div', { class: 'field' }, [
+        h('label', { text: '開始時間' }),
+        h('div', { class: 'wheels' }, [dayCol.el, hourCol.el, minCol.el])
+      ]),
+      summary,
+      h('label', { class: 'wheel-overnight' }, [overnightBox, h('span', { text: '跨夜：算成前一天的營業' })]),
+      h('p', { class: 'small muted', style: 'margin:6px 0 0', text: '這段營業的帳都會算進營業日，直到按「結單」；開始時間之後記的帳才算進今日數字。' }),
+      errorEl
+    ];
+    const submit = () => {
+      const p = picked();
+      if (p.start.getTime() > Date.now() + 60000) {
+        errorEl.textContent = '開始時間不能晚於現在';
+        errorEl.hidden = false;
+        return;
+      }
+      finish({ businessDate: ymd(p.biz), openedAt: p.start.toISOString() });
+    };
+    const backdrop = openDialog(isOpen ? '重新開始營業？' : '今日營業開始', body, [
+      h('button', { class: 'btn', onclick: () => finish(null) }, '取消'),
+      h('button', { class: 'btn btn-primary', onclick: submit }, isOpen ? '重新開始' : '開始')
+    ]);
+    backdrop._onClose = () => finish(null);
+    // 放進畫面後才能捲到預設的那一格
+    dayCol.set(days.length - 1);
+    hourCol.set(now.getHours());
+    minCol.set(Math.floor(now.getMinutes() / 5));
+    refresh();
+  });
+}
+
 async function doStartBusinessDay(e) {
   const btn = e && e.currentTarget; // 見 askConfirm() 的說明：要在 await 之前記下來
   const biz = state.home && state.home.businessDay;
-  if (biz && biz.open && !(await askConfirm({
-    title: '重新開始今日營業？',
-    message: '目前已經在營業中。重新開始會自動結算目前這個營業日，並開一個新的。',
-    okText: '重新開始'
-  }))) return;
+  const picked = await askBusinessDate(!!(biz && biz.open));
+  if (!picked) return;
+  const businessDate = picked.businessDate;
+  const isToday = businessDate === todayInputValue();
   run(async () => {
-    await api('startBusinessDay', {});
+    await api('startBusinessDay', picked);
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('open');
-  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: btn, busyText: '處理中…' });
+  }, {
+    success: isToday
+      ? '已開始今日營業，所有機台的今日數字已重置'
+      : '已開始 ' + Number(businessDate.slice(5, 7)) + '/' + Number(businessDate.slice(8, 10)) + ' 的營業',
+    button: btn, busyText: '處理中…'
+  });
 }
 
 async function doEndBusinessDay(e) {

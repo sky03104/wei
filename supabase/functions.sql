@@ -709,30 +709,51 @@ $$;
 
 -- 按下「今日營業開始」：如果前一個營業日忘記結單，直接幫忙結掉
 -- （auto_closed=true），不會卡住不讓開新的。
-create or replace function start_business_day()
+-- 2026-10-02：前端「今日營業開始」可以選營業日期跟開始時間。
+-- p_business_date 帶 null 就是今天；p_opened_at 帶 null 就是現在。都不能選未來
+-- （開始時間容許 1 分鐘誤差，手機時鐘跟資料庫差一點點不要擋）。
+-- 開始時間決定「今日」數字從哪一刻算起（is_today_record()），選早一點，
+-- 這段時間已經記的帳就會算進這個營業日的今日數字。
+-- 營業中又開新的：目前那個在「新的開始時間」自動結算；新的開始時間不能
+-- 早於目前那個的開始時間，不然兩段會重疊。
+-- 參數刻意不設預設值，跟下面一參數／無參數的舊版本並存才不會分不清。
+create or replace function start_business_day(p_business_date date, p_opened_at timestamptz)
 returns jsonb
 language plpgsql
 as $$
 declare
   v_open biz_days;
   v_now timestamptz := now();
+  v_opened timestamptz := coalesce(p_opened_at, now());
   v_biz_id text := new_id('biz');
   v_previous_auto_closed boolean := false;
+  v_date date := coalesce(p_business_date, today_key());
 begin
   if not can_record() then
     raise exception '你的帳號沒有這個權限' using errcode = '42501';
   end if;
+  if v_date > today_key() then
+    raise exception '營業日期不能選未來的日期';
+  end if;
+  if v_opened > v_now + interval '1 minute' then
+    raise exception '開始時間不能晚於現在';
+  end if;
+  v_opened := least(v_opened, v_now);
 
   select * into v_open from open_biz_day();
   if found then
+    if v_opened < v_open.opened_at then
+      raise exception '開始時間不能早於目前營業日的開始時間（%）',
+        to_char(v_open.opened_at at time zone 'Asia/Taipei', 'MM/DD HH24:MI');
+    end if;
     update biz_days
-    set closed_at = v_now, closed_by = auth.uid(), auto_closed = true
+    set closed_at = v_opened, closed_by = auth.uid(), auto_closed = true
     where biz_id = v_open.biz_id;
     v_previous_auto_closed := true;
   end if;
 
   insert into biz_days (biz_id, business_date, opened_at, opened_by, auto_closed)
-  values (v_biz_id, today_key(), v_now, auth.uid(), false);
+  values (v_biz_id, v_date, v_opened, auth.uid(), false);
 
   return jsonb_build_object(
     'open', true,
@@ -740,6 +761,21 @@ begin
     'previousAutoClosed', v_previous_auto_closed
   );
 end;
+$$;
+
+-- 舊版本（舊版前端還會這樣呼叫）：沒帶的就是今天／現在。
+create or replace function start_business_day(p_business_date date)
+returns jsonb
+language sql
+as $$
+  select start_business_day(p_business_date, null::timestamptz);
+$$;
+
+create or replace function start_business_day()
+returns jsonb
+language sql
+as $$
+  select start_business_day(null::date, null::timestamptz);
 $$;
 
 -- 按下「今日營業結單」。沒有進行中的營業日就明確報錯，不要默默沒反應。
