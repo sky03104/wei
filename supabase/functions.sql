@@ -709,7 +709,10 @@ $$;
 
 -- 按下「今日營業開始」：如果前一個營業日忘記結單，直接幫忙結掉
 -- （auto_closed=true），不會卡住不讓開新的。
-create or replace function start_business_day()
+-- 2026-10-02：多一個帶營業日期的版本（前端「今日營業開始」可以選日期）。
+-- 帶 null 就是今天；不能選未來。參數刻意不設預設值，跟下面無參數的舊版本
+-- 並存也不會分不清：前端不帶參數 → 無參數版本，帶 p_business_date → 這個。
+create or replace function start_business_day(p_business_date date)
 returns jsonb
 language plpgsql
 as $$
@@ -718,9 +721,13 @@ declare
   v_now timestamptz := now();
   v_biz_id text := new_id('biz');
   v_previous_auto_closed boolean := false;
+  v_date date := coalesce(p_business_date, today_key());
 begin
   if not can_record() then
     raise exception '你的帳號沒有這個權限' using errcode = '42501';
+  end if;
+  if v_date > today_key() then
+    raise exception '營業日期不能選未來的日期';
   end if;
 
   select * into v_open from open_biz_day();
@@ -732,7 +739,7 @@ begin
   end if;
 
   insert into biz_days (biz_id, business_date, opened_at, opened_by, auto_closed)
-  values (v_biz_id, today_key(), v_now, auth.uid(), false);
+  values (v_biz_id, v_date, v_now, auth.uid(), false);
 
   return jsonb_build_object(
     'open', true,
@@ -740,6 +747,14 @@ begin
     'previousAutoClosed', v_previous_auto_closed
   );
 end;
+$$;
+
+-- 無參數的舊版本（舊版前端還會這樣呼叫）：等於選今天。
+create or replace function start_business_day()
+returns jsonb
+language sql
+as $$
+  select start_business_day(null::date);
 $$;
 
 -- 按下「今日營業結單」。沒有進行中的營業日就明確報錯，不要默默沒反應。

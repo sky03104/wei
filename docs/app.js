@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v65';
+const APP_VERSION = 'v66';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1561,7 +1561,7 @@ async function supabaseApi(action, payload) {
     addRecord: () => ['add_record', { p_machine_id: p.machineId, p_type: p.type, p_amount: p.amount, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addMeterRecord: () => ['add_meter_record', { p_machine_id: p.machineId, p_meter_start: p.meterStart, p_meter_end: p.meterEnd, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addPrizeRecord: () => ['add_prize_record', { p_machine_id: p.machineId, p_items: p.items, p_note: p.note || null, p_client_token: p.clientToken || '' }],
-    startBusinessDay: () => ['start_business_day', {}],
+    startBusinessDay: () => ['start_business_day', { p_business_date: p.businessDate || null }],
     endBusinessDay: () => ['end_business_day', {}],
     reopenBusinessDay: () => ['reopen_business_day', {}],
     saveDailyLedger: () => ['save_daily_ledger', {
@@ -2443,8 +2443,13 @@ function editDailyLedger(data) {
 function businessDayBar(biz) {
   if (!canRecord()) return null;
   const isOpen = !!(biz && biz.open);
+  // 選了不是今天的營業日期，狀態列要寫出來，免得以為帳記在今天
+  const bizDate = isOpen ? biz.current.businessDate : '';
+  const dateNote = bizDate && bizDate !== todayInputValue()
+    ? '營業日 ' + Number(bizDate.slice(5, 7)) + '/' + Number(bizDate.slice(8, 10)) + ' · '
+    : '';
   const status = isOpen
-    ? '營業中 · ' + formatTime(biz.current.openedAt) + ' 開始'
+    ? '營業中 · ' + dateNote + formatTime(biz.current.openedAt) + ' 開始'
       + (biz.current.openedByName ? '（' + biz.current.openedByName + '）' : '')
     : '尚未開始今日營業，記帳暫時照行事曆日期算';
 
@@ -2485,20 +2490,63 @@ function _clearMachineDetailCache() {
   });
 }
 
+/**
+ * 「今日營業開始」：先跳視窗選營業日期（預設今天，不能選未來）——跨夜過了
+ * 凌晨 0 點才開始、或要補記前幾天的帳時，可以把這段營業算進選的那一天。
+ * 已經在營業中的話，視窗裡一併提醒會先自動結算目前這個營業日。
+ * 回傳 Promise：按開始 → 'yyyy-MM-dd'；取消／點外面／往下滑關掉 → null。
+ */
+function askBusinessDate(isOpen) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (val) => {
+      if (settled) return;
+      settled = true;
+      closeDialog();
+      resolve(val);
+    };
+    const today = todayInputValue();
+    const dateInput = h('input', { type: 'date', value: today, max: today });
+    const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
+    const body = [
+      isOpen
+        ? h('p', { class: 'confirm-msg', style: 'margin:0 0 12px', text: '目前已經在營業中。開始新的營業日會自動結算目前這個。' })
+        : null,
+      dialogField('營業日期', dateInput),
+      h('p', { class: 'small muted', style: 'margin:-6px 0 12px', text: '這段營業的帳都會算進選的日期，直到按「結單」。' }),
+      errorEl
+    ];
+    const submit = () => {
+      const v = dateInput.value;
+      if (!v) { errorEl.textContent = '請選擇營業日期'; errorEl.hidden = false; return; }
+      if (v > today) { errorEl.textContent = '不能選未來的日期'; errorEl.hidden = false; return; }
+      finish(v);
+    };
+    const backdrop = openDialog(isOpen ? '重新開始營業？' : '今日營業開始', body, [
+      h('button', { class: 'btn', onclick: () => finish(null) }, '取消'),
+      h('button', { class: 'btn btn-primary', onclick: submit }, isOpen ? '重新開始' : '開始')
+    ]);
+    backdrop._onClose = () => finish(null);
+  });
+}
+
 async function doStartBusinessDay(e) {
   const btn = e && e.currentTarget; // 見 askConfirm() 的說明：要在 await 之前記下來
   const biz = state.home && state.home.businessDay;
-  if (biz && biz.open && !(await askConfirm({
-    title: '重新開始今日營業？',
-    message: '目前已經在營業中。重新開始會自動結算目前這個營業日，並開一個新的。',
-    okText: '重新開始'
-  }))) return;
+  const businessDate = await askBusinessDate(!!(biz && biz.open));
+  if (!businessDate) return;
+  const isToday = businessDate === todayInputValue();
   run(async () => {
-    await api('startBusinessDay', {});
+    await api('startBusinessDay', { businessDate: businessDate });
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('open');
-  }, { success: '已開始今日營業，所有機台的今日數字已重置', button: btn, busyText: '處理中…' });
+  }, {
+    success: isToday
+      ? '已開始今日營業，所有機台的今日數字已重置'
+      : '已開始 ' + Number(businessDate.slice(5, 7)) + '/' + Number(businessDate.slice(8, 10)) + ' 的營業',
+    button: btn, busyText: '處理中…'
+  });
 }
 
 async function doEndBusinessDay(e) {
