@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v66';
+const APP_VERSION = 'v67';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1561,7 +1561,7 @@ async function supabaseApi(action, payload) {
     addRecord: () => ['add_record', { p_machine_id: p.machineId, p_type: p.type, p_amount: p.amount, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addMeterRecord: () => ['add_meter_record', { p_machine_id: p.machineId, p_meter_start: p.meterStart, p_meter_end: p.meterEnd, p_note: p.note || null, p_client_token: p.clientToken || '' }],
     addPrizeRecord: () => ['add_prize_record', { p_machine_id: p.machineId, p_items: p.items, p_note: p.note || null, p_client_token: p.clientToken || '' }],
-    startBusinessDay: () => ['start_business_day', { p_business_date: p.businessDate || null }],
+    startBusinessDay: () => ['start_business_day', { p_business_date: p.businessDate || null, p_opened_at: p.openedAt || null }],
     endBusinessDay: () => ['end_business_day', {}],
     reopenBusinessDay: () => ['reopen_business_day', {}],
     saveDailyLedger: () => ['save_daily_ledger', {
@@ -2491,11 +2491,18 @@ function _clearMachineDetailCache() {
 }
 
 /**
- * 「今日營業開始」：先跳視窗選營業日期（預設今天，不能選未來）——跨夜過了
- * 凌晨 0 點才開始、或要補記前幾天的帳時，可以把這段營業算進選的那一天。
+ * 「今日營業開始」：先跳視窗選營業日期跟開始時間（預設今天／現在，都不能選未來）——
+ * 跨夜過了凌晨 0 點才開始、忘了按開始、或要補記前幾天的帳時，可以把這段營業
+ * 算進選的那一天、從選的時間開始算「今日」。
  * 已經在營業中的話，視窗裡一併提醒會先自動結算目前這個營業日。
- * 回傳 Promise：按開始 → 'yyyy-MM-dd'；取消／點外面／往下滑關掉 → null。
+ * 回傳 Promise：按開始 → { businessDate: 'yyyy-MM-dd', openedAt: ISO 字串 }；
+ * 取消／點外面／往下滑關掉 → null。
  */
+function _localDateTimeValue(d) {
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+    + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+
 function askBusinessDate(isOpen) {
   return new Promise((resolve) => {
     let settled = false;
@@ -2507,20 +2514,34 @@ function askBusinessDate(isOpen) {
     };
     const today = todayInputValue();
     const dateInput = h('input', { type: 'date', value: today, max: today });
+    const nowValue = _localDateTimeValue(new Date());
+    const timeInput = h('input', { type: 'datetime-local', value: nowValue, max: nowValue });
+    // 改了營業日期就把開始時間的日期跟著換過去（時間不動），省得兩個都要改；換過去會變未來就不動
+    dateInput.addEventListener('change', () => {
+      if (!dateInput.value || !timeInput.value) return;
+      const moved = dateInput.value + timeInput.value.slice(10);
+      if (moved <= _localDateTimeValue(new Date())) timeInput.value = moved;
+    });
     const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
     const body = [
       isOpen
         ? h('p', { class: 'confirm-msg', style: 'margin:0 0 12px', text: '目前已經在營業中。開始新的營業日會自動結算目前這個。' })
         : null,
       dialogField('營業日期', dateInput),
-      h('p', { class: 'small muted', style: 'margin:-6px 0 12px', text: '這段營業的帳都會算進選的日期，直到按「結單」。' }),
+      dialogField('開始時間', timeInput),
+      h('p', { class: 'small muted', style: 'margin:-6px 0 12px', text: '這段營業的帳都會算進選的日期，直到按「結單」；開始時間之後記的帳才算進今日數字。' }),
       errorEl
     ];
     const submit = () => {
       const v = dateInput.value;
       if (!v) { errorEl.textContent = '請選擇營業日期'; errorEl.hidden = false; return; }
       if (v > today) { errorEl.textContent = '不能選未來的日期'; errorEl.hidden = false; return; }
-      finish(v);
+      const t = timeInput.value;
+      if (!t) { errorEl.textContent = '請選擇開始時間'; errorEl.hidden = false; return; }
+      const openedAt = new Date(t);
+      if (isNaN(openedAt.getTime())) { errorEl.textContent = '開始時間格式不對'; errorEl.hidden = false; return; }
+      if (openedAt.getTime() > Date.now() + 60000) { errorEl.textContent = '開始時間不能晚於現在'; errorEl.hidden = false; return; }
+      finish({ businessDate: v, openedAt: openedAt.toISOString() });
     };
     const backdrop = openDialog(isOpen ? '重新開始營業？' : '今日營業開始', body, [
       h('button', { class: 'btn', onclick: () => finish(null) }, '取消'),
@@ -2533,11 +2554,12 @@ function askBusinessDate(isOpen) {
 async function doStartBusinessDay(e) {
   const btn = e && e.currentTarget; // 見 askConfirm() 的說明：要在 await 之前記下來
   const biz = state.home && state.home.businessDay;
-  const businessDate = await askBusinessDate(!!(biz && biz.open));
-  if (!businessDate) return;
+  const picked = await askBusinessDate(!!(biz && biz.open));
+  if (!picked) return;
+  const businessDate = picked.businessDate;
   const isToday = businessDate === todayInputValue();
   run(async () => {
-    await api('startBusinessDay', { businessDate: businessDate });
+    await api('startBusinessDay', picked);
     _clearMachineDetailCache();
     await loadHome();
     playShopLights('open');
