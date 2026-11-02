@@ -215,7 +215,8 @@ function _dailyLedgerPayload(row) {
     biz_id: row.biz_id || null,
     manual_432: toNumber(row.manual_432),
     manual_441: toNumber(row.manual_441),
-    manual_expense: toNumber(row.manual_expense)
+    manual_expense: toNumber(row.manual_expense),
+    manual_expense_items: _parseLedgerItems(row.manual_expense_items)
   }, ['updated_by']);
 }
 

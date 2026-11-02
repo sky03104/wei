@@ -382,6 +382,8 @@ function _sumLedgerItems(items) {
 function _publicDailyLedger(row) {
   const givenToOwnerItems = row ? _ledgerItemsOrLegacy(row.given_to_owner_items, row.given_to_owner, '台主給') : [];
   const takenByOwnerItems = row ? _ledgerItemsOrLegacy(row.taken_by_owner_items, row.taken_by_owner, '台主領') : [];
+  // 開銷明細：沒有明細的舊資料退回單一金額，顯示成一筆「開銷」
+  const manualExpenseItems = row ? _ledgerItemsOrLegacy(row.manual_expense_items, row.manual_expense, '開銷') : [];
   return {
     turnover: row ? toNumber(row.turnover) : 0,
     transport: row ? toNumber(row.transport) : 0,
@@ -393,6 +395,7 @@ function _publicDailyLedger(row) {
     manual432: row ? toNumber(row.manual_432) : 0,
     manual441: row ? toNumber(row.manual_441) : 0,
     manualExpense: row ? toNumber(row.manual_expense) : 0,
+    manualExpenseItems: manualExpenseItems,
     updatedAt: row ? row.updated_at : ''
   };
 }
@@ -450,7 +453,11 @@ function saveDailyLedger(user, payload) {
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
   const manual432 = _validOutflowAmount(payload.manual432);
   const manual441 = _validOutflowAmount(payload.manual441);
-  const manualExpense = _validOutflowAmount(payload.manualExpense);
+  // 開銷：帶了明細（manualExpenseItems）就以明細為準、總額＝明細加總；
+  // 沒帶（舊前端）就照舊用單一金額 manualExpense。
+  const manualExpenseItems = Array.isArray(payload.manualExpenseItems)
+    ? _sanitizeLedgerItems(payload.manualExpenseItems, _validOutflowAmount, '開銷') : null;
+  const manualExpense = manualExpenseItems ? _sumLedgerItems(manualExpenseItems) : _validOutflowAmount(payload.manualExpense);
 
   return withLock(function () {
     // 用跟 getDashboard() 讀取時同一套邊界（_relevantBizDayForToday()），
@@ -473,6 +480,7 @@ function saveDailyLedger(user, payload) {
       manual_432: manual432,
       manual_441: manual441,
       manual_expense: manualExpense,
+      manual_expense_items: JSON.stringify(manualExpenseItems || []),
       updated_by: user.userId,
       updated_at: nowIso()
     };

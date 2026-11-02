@@ -362,6 +362,7 @@ as $$
     'manual432', coalesce(p_row.manual_432, 0),
     'manual441', coalesce(p_row.manual_441, 0),
     'manualExpense', coalesce(p_row.manual_expense, 0),
+    'manualExpenseItems', ledger_items_or_legacy(p_row.manual_expense_items, p_row.manual_expense, '開銷'),
     'updatedAt', coalesce(p_row.updated_at::text, '')
   );
 $$;
@@ -847,6 +848,10 @@ $$;
 -- p_returned_to_house 對應「還內場」——前端已經不會再送這個欄位（見
 -- docs/app.js 的異動紀錄），這裡繼續接受、預設 0，只是為了不讓還沒
 -- 更新的舊前端呼叫直接壞掉，不代表這個功能要復活。
+-- 2026-11-02：新增 p_manual_expense_items（開銷明細，名稱可自訂，從 wei3 移植）。帶了就以明細為準，
+-- manual_expense 欄位存明細加總；沒帶（null，舊前端）就照舊用 p_manual_expense 單一金額。
+-- 舊的七參數版本要先 drop，不然新舊兩個版本並存、呼叫時參數對不上哪一個。
+drop function if exists save_daily_ledger(numeric, numeric, numeric, numeric, jsonb, jsonb, numeric);
 create or replace function save_daily_ledger(
   p_turnover numeric,
   p_manual_expense numeric,
@@ -854,14 +859,18 @@ create or replace function save_daily_ledger(
   p_manual441 numeric,
   p_given_to_owner_items jsonb,
   p_taken_by_owner_items jsonb,
-  p_returned_to_house numeric default 0
+  p_returned_to_house numeric default 0,
+  p_manual_expense_items jsonb default null
 )
 returns jsonb
 language plpgsql
 as $$
 declare
   v_turnover numeric := valid_signed_amount(p_turnover);
-  v_manual_expense numeric := valid_outflow_amount(p_manual_expense);
+  v_expense_items jsonb := case when p_manual_expense_items is null then null
+    else sanitize_ledger_items(p_manual_expense_items, true, '開銷') end;
+  v_manual_expense numeric := case when v_expense_items is null then valid_outflow_amount(p_manual_expense)
+    else sum_ledger_items(v_expense_items) end;
   v_manual432 numeric := valid_outflow_amount(p_manual432);
   v_manual441 numeric := valid_outflow_amount(p_manual441);
   v_given jsonb := sanitize_ledger_items(p_given_to_owner_items, false, '台主給');
@@ -880,11 +889,11 @@ begin
   insert into daily_ledger (
     ledger_id, business_date, biz_id, turnover, transport, given_to_owner, taken_by_owner,
     given_to_owner_items, taken_by_owner_items, returned_to_house, manual_432, manual_441,
-    manual_expense, updated_by, updated_at
+    manual_expense, manual_expense_items, updated_by, updated_at
   ) values (
     new_id('ldg'), v_business_date, v_relevant.biz_id, v_turnover, 0, 0, 0,
     v_given, v_taken, v_returned, v_manual432, v_manual441,
-    v_manual_expense, auth.uid(), now()
+    v_manual_expense, coalesce(v_expense_items, '[]'::jsonb), auth.uid(), now()
   )
   on conflict (business_date, (coalesce(biz_id, '')))
   do update set
@@ -898,6 +907,7 @@ begin
     manual_432 = excluded.manual_432,
     manual_441 = excluded.manual_441,
     manual_expense = excluded.manual_expense,
+    manual_expense_items = excluded.manual_expense_items,
     updated_by = excluded.updated_by,
     updated_at = excluded.updated_at;
 
@@ -1149,7 +1159,8 @@ as $$
   -- 逐天取那一天 daily_ledger 最新（seq 最大）的一列，同一天可能因為忘記
   -- 結單又重開之類的情況存過好幾列，只算最後那列，其餘視為被覆蓋。
   latest_ledger_per_day as (
-    select distinct on (business_date) business_date, manual_expense
+    select distinct on (business_date) business_date, manual_expense,
+      ledger_items_or_legacy(manual_expense_items, manual_expense, '開銷') as items
     from daily_ledger
     where business_date between (select range_from from range) and (select range_to from range)
     order by business_date, seq desc
@@ -1161,7 +1172,13 @@ as $$
     ),
     'count432', (select count432 from counts),
     'count441', (select count441 from counts),
-    'manualExpense', coalesce((select sum(manual_expense) from latest_ledger_per_day), 0)
+    'manualExpense', coalesce((select sum(manual_expense) from latest_ledger_per_day), 0),
+    -- 每天的開銷明細（只列有開銷的日子，日期由舊到新）
+    'manualExpenseDays', coalesce((
+      select jsonb_agg(jsonb_build_object('date', business_date::text, 'items', items) order by business_date)
+      from latest_ledger_per_day
+      where jsonb_array_length(items) > 0
+    ), '[]'::jsonb)
   );
 $$;
 

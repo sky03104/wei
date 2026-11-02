@@ -308,7 +308,7 @@ function exportAllData(user) {
         updatedBy: r.updated_by || '', updatedAt: r.updated_at, bizId: r.biz_id || '',
         manual432: r.manual_432, manual441: r.manual_441,
         givenToOwnerItems: r.given_to_owner_items || '[]', takenByOwnerItems: r.taken_by_owner_items || '[]',
-        manualExpense: r.manual_expense
+        manualExpense: r.manual_expense, manualExpenseItems: r.manual_expense_items || '[]'
       };
     }),
     records: _allRecordsForExport().map(function (r) {

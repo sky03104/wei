@@ -824,6 +824,33 @@ function _selfTestBody(results) {
     }, 'PERMISSION');
   });
 
+  _t(results, '每日手動帳目：開銷可以存好幾筆自訂名稱的明細，總額＝明細加總；沒帶明細的舊寫法照舊只存單一金額（顯示成一筆「開銷」）', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [],
+      manualExpenseItems: [{ name: '買飲料', amount: 200 }, { name: '', amount: 150 }, { name: '空的', amount: 0 }]
+    });
+    _assertEq(saved.manualExpense, 350, '開銷總額應該是明細加總 350');
+    _assertEq(saved.manualExpenseItems.length, 2, '金額 0 的那筆不存');
+    _assertEq(saved.manualExpenseItems[0].name, '買飲料', '自訂名稱要存下來');
+    _assertEq(saved.manualExpenseItems[1].name, '開銷', '名稱沒填就用預設名稱「開銷」');
+
+    const legacy = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [], manualExpense: 500
+    });
+    _assertEq(legacy.manualExpense, 500, '沒帶明細時照舊用單一金額');
+    _assertEq(legacy.manualExpenseItems.length, 1, '單一金額顯示成一筆');
+    _assertEq(legacy.manualExpenseItems[0].name, '開銷', '舊寫法的那一筆叫「開銷」');
+    _assertEq(legacy.manualExpenseItems[0].amount, 500, '金額一致');
+
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [],
+      manualExpenseItems: [{ name: '負數', amount: -5 }]
+    });
+  });
+
   _t(results, '每日手動帳目：前端「設定今日數字」已經不收運拿／還內場這兩個舊欄位，不帶這兩個 key 也要能存成功（曾經因為 undefined 被當非法數字擋掉整個請求）', function () {
     const saved = _ok({
       action: 'saveDailyLedger', token: patrolTok,
@@ -998,6 +1025,9 @@ function _selfTestBody(results) {
     _assertEq(inRange.count432, 5, '活動查詢只該算範圍內那天的432支數，outDate 那筆 99 不該算進來');
     _assertEq(inRange.count441, 7, '活動查詢只該算範圍內那天的441支數，outDate 那筆 99 不該算進來');
     _assertEq(inRange.manualExpense, 888, '活動查詢的開銷應該是那天存的 888');
+    _assertEq(inRange.manualExpenseDays.length, 1, '活動查詢逐日明細：只有 inDate 那天有開銷');
+    _assertEq(inRange.manualExpenseDays[0].date, inDate, '逐日明細的日期');
+    _assertEq(inRange.manualExpenseDays[0].items[0].amount, 888, '沒有明細的舊資料顯示成一筆 888');
 
     const boundedRange = _ok({ action: 'activityQuery', token: adminTok, from: outDate, to: inDate });
     _assertEq(boundedRange.count432, 5 + 99, '拉長區間把 outDate 也包進來後，432支數應該是兩天加總');

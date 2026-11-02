@@ -212,7 +212,8 @@ create table if not exists daily_ledger (
   manual_441             numeric not null default 0,
   given_to_owner_items   jsonb not null default '[]'::jsonb, -- [{name, amount}, ...]
   taken_by_owner_items   jsonb not null default '[]'::jsonb,
-  manual_expense         numeric not null default 0
+  manual_expense         numeric not null default 0,  -- 開銷總額（＝manual_expense_items 加總；舊資料只有這欄）
+  manual_expense_items   jsonb not null default '[]'::jsonb -- [{name, amount}, ...] 開銷明細，名稱可自訂
 );
 
 create index if not exists daily_ledger_business_date_idx on daily_ledger (business_date);

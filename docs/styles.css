@@ -682,6 +682,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   padding: 10px 0 4px; font-size: 13px; font-weight: 700; color: var(--warn);
 }
 .ledger-section-title:first-child { padding-top: 0; }
+.ledger-section-title.ledger-section-total { display: flex; justify-content: space-between; margin-top: 8px; }
 
 .color-swatches { display: flex; gap: 8px; flex-wrap: wrap; }
 .color-swatches button {
