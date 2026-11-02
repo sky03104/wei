@@ -199,7 +199,8 @@ function _syncDailyLedgerFromSupabase(SUPABASE_URL, KEY, uidMap) {
       manual_441: l.manual_441,
       given_to_owner_items: JSON.stringify(l.given_to_owner_items || []),
       taken_by_owner_items: JSON.stringify(l.taken_by_owner_items || []),
-      manual_expense: l.manual_expense
+      manual_expense: l.manual_expense,
+      manual_expense_items: JSON.stringify(l.manual_expense_items || [])
     }, ['updated_by']);
   });
   const result = _fullTableUpsert('DailyLedger', 'ledger_id', objs, function (o) { return o.updated_at; });

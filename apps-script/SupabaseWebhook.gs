@@ -213,7 +213,8 @@ function _webhookUpsertDailyLedger(l) {
     biz_id: l.biz_id || '',
     manual_432: l.manual_432,
     manual_441: l.manual_441,
-    manual_expense: l.manual_expense
+    manual_expense: l.manual_expense,
+    manual_expense_items: JSON.stringify(l.manual_expense_items || [])
   }, ['updated_by']), function (o) { return o.updated_at; });
   Logger.log('✓ webhook daily_ledger：' + result + '（' + l.ledger_id + '）');
 }

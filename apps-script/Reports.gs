@@ -230,7 +230,8 @@ function getActivityQuery(user, params) {
     range: range,
     count432: count432,
     count441: count441,
-    manualExpense: _sumManualExpenseInRange(range.from, range.to)
+    manualExpense: _sumManualExpenseInRange(range.from, range.to),
+    manualExpenseDays: _manualExpenseDaysInRange(range.from, range.to)
   };
 }
 
@@ -240,14 +241,27 @@ function getActivityQuery(user, params) {
  * 對「今天」的處理原則一致，只是這裡查的都是已經過去的日子，不用另外
  * 判斷「進行中 session」）加總開銷欄位。
  */
-function _sumManualExpenseInRange(from, to) {
+function _latestLedgerPerDayInRange(from, to) {
   const byDate = {};
   dbReadAll('DailyLedger').forEach(function (row) {
     const d = String(row.business_date);
     if (d < from || d > to) return;
     if (!byDate[d] || toNumber(row._row) > toNumber(byDate[d]._row)) byDate[d] = row;
   });
+  return byDate;
+}
+
+function _sumManualExpenseInRange(from, to) {
+  const byDate = _latestLedgerPerDayInRange(from, to);
   return Object.keys(byDate).reduce(function (sum, d) { return sum + toNumber(byDate[d].manual_expense); }, 0);
+}
+
+/** 每天的開銷明細（只列有開銷的日子，日期由舊到新）；沒有明細的舊資料顯示成一筆「開銷」。 */
+function _manualExpenseDaysInRange(from, to) {
+  const byDate = _latestLedgerPerDayInRange(from, to);
+  return Object.keys(byDate).sort().map(function (d) {
+    return { date: d, items: _ledgerItemsOrLegacy(byDate[d].manual_expense_items, byDate[d].manual_expense, '開銷') };
+  }).filter(function (day) { return day.items.length > 0; });
 }
 
 // ── 對帳表匯出（xlsx）───────────────────────────────────

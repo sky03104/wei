@@ -720,9 +720,10 @@ async function main() {
   await check('加總分頁顯示今日現金結餘明細，可以設定週轉金／開銷／432／441，台主給／台主領可以命名多筆', async () => {
     await page.waitForSelector('.ledger-row');
     // 「運拿」「還內場」已經不用了、「電子贏」改名「電子總結」、手動 432／441 改叫「活動出獎」，
-    // 另外多了「開銷」；台主給／台主領沒有資料時各顯示一行 $0 佔位（見 app.js 的 ledgerRows）。
+    // 另外多了「開銷」（獨立在最底下的黃色分組，標題右邊是加總，底下才是逐筆明細）；
+    // 台主給／台主領沒有資料時各顯示一行 $0 佔位（見 app.js 的 ledgerRows）。
     const rowLabels = await page.locator('.ledger-row .ledger-label').allTextContents();
-    for (const label of ['週轉金', '入幣', '出幣', '電子總結', '台主給', '432活動出獎', '441活動出獎', '開銷', '台主領', '總結餘']) {
+    for (const label of ['週轉金', '入幣', '出幣', '電子總結', '台主給', '432活動出獎', '441活動出獎', '台主領', '總結餘']) {
       assert(rowLabels.indexOf(label) >= 0, '結餘明細缺少「' + label + '」這一行，實際 ' + JSON.stringify(rowLabels));
     }
     for (const gone of ['運拿', '還內場']) {
@@ -731,6 +732,8 @@ async function main() {
     const sections = await page.locator('.ledger-section-title').allTextContents();
     assert(sections.indexOf('收入（+）') >= 0 && sections.indexOf('支出（-）') >= 0,
       '明細要分「收入（+）」「支出（-）」兩個小分類，實際 ' + JSON.stringify(sections));
+    assert(sections.some((t) => t.indexOf('開銷') === 0) && sections[sections.length - 1].indexOf('開銷') === 0,
+      '開銷要自成一個小分類、放在最底下，實際 ' + JSON.stringify(sections));
 
     const totalBefore = num(await page.locator('.ledger-row.ledger-total .ledger-value').textContent());
 
@@ -776,7 +779,9 @@ async function main() {
     await page.waitForSelector('.dialog');
     assert(await inputOf('週轉金').inputValue() === expectedTurnover,
       '今天還沒設定過時，週轉金應該預帶上一次已結單的總結餘「' + expectedTurnover + '」，實際「' + await inputOf('週轉金').inputValue() + '」');
-    assert(await inputOf('開銷').inputValue() === '', '今天還沒設定過時，開銷應該留白，不是 0');
+    const expenseBefore = await readItems('開銷');
+    assert(expenseBefore.length === 1 && expenseBefore[0].name === '' && expenseBefore[0].amount === '',
+      '今天還沒設定過時，開銷應該只有一列空白，實際 ' + JSON.stringify(expenseBefore));
     assert(await inputOf('432').inputValue() === '', '今天還沒設定過時，432 應該留白，不是 0');
     assert(await inputOf('441').inputValue() === '', '今天還沒設定過時，441 應該留白，不是 0');
     const givenBefore = await readItems('台主給');
@@ -788,7 +793,7 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     await inputOf('週轉金').fill('100');
-    await inputOf('開銷').fill('40'); // 開銷：輸入正數，系統會自動扣除
+    await fillItems('開銷', [{ name: '買飲料', amount: 25 }, { name: '修機台', amount: 15 }]); // 開銷：可以自訂名稱、好幾筆，輸入正數，系統會自動扣除（合計 40）
     await inputOf('432').fill('8');   // 手動活動支出：輸入正數，系統會自動扣除
     await inputOf('441').fill('3');
     await fillItems('台主給', [{ name: '老王', amount: 12 }, { name: '老李', amount: 8 }]); // 按 + 新增第二筆，兩位台主各自命名
@@ -807,6 +812,8 @@ async function main() {
     const rowLabelsAfter = await page.locator('.ledger-row .ledger-label').allTextContents();
     assert(rowLabelsAfter.indexOf('老王') >= 0 && rowLabelsAfter.indexOf('老李') >= 0,
       '結餘明細應該逐筆列出台主給的自訂名字，實際 ' + JSON.stringify(rowLabelsAfter));
+    assert(rowLabelsAfter.indexOf('買飲料') >= 0 && rowLabelsAfter.indexOf('修機台') >= 0,
+      '結餘明細應該逐筆列出開銷的自訂名字，實際 ' + JSON.stringify(rowLabelsAfter));
     assert(rowLabelsAfter.indexOf('老陳') >= 0, '結餘明細應該顯示台主領的自訂名字「老陳」，實際 ' + JSON.stringify(rowLabelsAfter));
     await shot('17-home-total-ledger');
 
@@ -815,7 +822,10 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     assert(await inputOf('週轉金').inputValue() === '100', '重新打開應該顯示剛存的週轉金');
-    assert(await inputOf('開銷').inputValue() === '40', '重新打開應該顯示剛存的開銷');
+    const expenseSaved = await readItems('開銷');
+    assert(expenseSaved.length === 2 && expenseSaved.some((it) => it.name === '買飲料' && it.amount === '25')
+      && expenseSaved.some((it) => it.name === '修機台' && it.amount === '15'),
+      '重新打開應該看到剛存的兩筆開銷，實際 ' + JSON.stringify(expenseSaved));
     assert(await inputOf('432').inputValue() === '8', '重新打開應該顯示剛存的 432');
     assert(await inputOf('441').inputValue() === '3', '重新打開應該顯示剛存的 441');
     const givenSaved = await readItems('台主給');
@@ -833,7 +843,7 @@ async function main() {
     await page.click('button:has-text("✎ 設定今日數字")');
     await page.waitForSelector('.dialog');
     await inputOf('週轉金').fill('0');
-    await inputOf('開銷').fill('0');
+    await fillItems('開銷', [{ name: '', amount: 0 }, { name: '', amount: 0 }]);
     await inputOf('432').fill('0');
     await inputOf('441').fill('0');
     await fillItems('台主給', [{ name: '', amount: 0 }, { name: '', amount: 0 }]);

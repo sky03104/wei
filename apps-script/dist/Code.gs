@@ -34,7 +34,7 @@ const SCHEMA = {
   Config: ['key', 'value'],
   BizDays: ['biz_id', 'business_date', 'opened_at', 'opened_by', 'closed_at', 'closed_by', 'auto_closed'],
   DailyLedger: ['ledger_id', 'business_date', 'turnover', 'transport', 'given_to_owner', 'taken_by_owner', 'returned_to_house', 'updated_by', 'updated_at', 'biz_id',
-    'manual_432', 'manual_441', 'given_to_owner_items', 'taken_by_owner_items', 'manual_expense']
+    'manual_432', 'manual_441', 'given_to_owner_items', 'taken_by_owner_items', 'manual_expense', 'manual_expense_items']
 };
 
 /**
@@ -53,7 +53,7 @@ const SCHEMA = {
  * 不要重蹈覆轍。
  */
 const TEXT_COLUMNS = ['created_at', 'last_login_at', 'voided_at', 'granted_at', 'expires_at', 'business_date', 'opened_at', 'closed_at', 'updated_at', 'name', 'prize_name',
-  'given_to_owner_items', 'taken_by_owner_items'];
+  'given_to_owner_items', 'taken_by_owner_items', 'manual_expense_items'];
 
 /**
  * 表頭給人看的中文標籤。
@@ -79,7 +79,7 @@ const HEADER_LABELS = {
   Config: ['設定鍵', '設定值'],
   BizDays: ['營業日編號', '營業日期', '開始時間', '開始人', '結束時間', '結束人', '自動結單'],
   DailyLedger: ['帳目編號', '營業日期', '週轉金', '運拿', '台主給（舊，已改用明細）', '台主領（舊，已改用明細）', '還內場', '更新人', '更新時間', '所屬營業日編號',
-    '手動活動支出432', '手動活動支出441', '台主給明細（JSON）', '台主領明細（JSON）', '開銷']
+    '手動活動支出432', '手動活動支出441', '台主給明細（JSON）', '台主領明細（JSON）', '開銷', '開銷明細（JSON）']
 };
 
 /**
@@ -1271,6 +1271,8 @@ function _sumLedgerItems(items) {
 function _publicDailyLedger(row) {
   const givenToOwnerItems = row ? _ledgerItemsOrLegacy(row.given_to_owner_items, row.given_to_owner, '台主給') : [];
   const takenByOwnerItems = row ? _ledgerItemsOrLegacy(row.taken_by_owner_items, row.taken_by_owner, '台主領') : [];
+  // 開銷明細：沒有明細的舊資料退回單一金額，顯示成一筆「開銷」
+  const manualExpenseItems = row ? _ledgerItemsOrLegacy(row.manual_expense_items, row.manual_expense, '開銷') : [];
   return {
     turnover: row ? toNumber(row.turnover) : 0,
     transport: row ? toNumber(row.transport) : 0,
@@ -1282,6 +1284,7 @@ function _publicDailyLedger(row) {
     manual432: row ? toNumber(row.manual_432) : 0,
     manual441: row ? toNumber(row.manual_441) : 0,
     manualExpense: row ? toNumber(row.manual_expense) : 0,
+    manualExpenseItems: manualExpenseItems,
     updatedAt: row ? row.updated_at : ''
   };
 }
@@ -1339,7 +1342,11 @@ function saveDailyLedger(user, payload) {
   const returnedToHouse = _validSignedAmount(payload.returnedToHouse);
   const manual432 = _validOutflowAmount(payload.manual432);
   const manual441 = _validOutflowAmount(payload.manual441);
-  const manualExpense = _validOutflowAmount(payload.manualExpense);
+  // 開銷：帶了明細（manualExpenseItems）就以明細為準、總額＝明細加總；
+  // 沒帶（舊前端）就照舊用單一金額 manualExpense。
+  const manualExpenseItems = Array.isArray(payload.manualExpenseItems)
+    ? _sanitizeLedgerItems(payload.manualExpenseItems, _validOutflowAmount, '開銷') : null;
+  const manualExpense = manualExpenseItems ? _sumLedgerItems(manualExpenseItems) : _validOutflowAmount(payload.manualExpense);
 
   return withLock(function () {
     // 用跟 getDashboard() 讀取時同一套邊界（_relevantBizDayForToday()），
@@ -1362,6 +1369,7 @@ function saveDailyLedger(user, payload) {
       manual_432: manual432,
       manual_441: manual441,
       manual_expense: manualExpense,
+      manual_expense_items: JSON.stringify(manualExpenseItems || []),
       updated_by: user.userId,
       updated_at: nowIso()
     };
@@ -2709,7 +2717,8 @@ function _dailyLedgerPayload(row) {
     biz_id: row.biz_id || null,
     manual_432: toNumber(row.manual_432),
     manual_441: toNumber(row.manual_441),
-    manual_expense: toNumber(row.manual_expense)
+    manual_expense: toNumber(row.manual_expense),
+    manual_expense_items: _parseLedgerItems(row.manual_expense_items)
   }, ['updated_by']);
 }
 
@@ -3540,7 +3549,8 @@ function _webhookUpsertDailyLedger(l) {
     biz_id: l.biz_id || '',
     manual_432: l.manual_432,
     manual_441: l.manual_441,
-    manual_expense: l.manual_expense
+    manual_expense: l.manual_expense,
+    manual_expense_items: JSON.stringify(l.manual_expense_items || [])
   }, ['updated_by']), function (o) { return o.updated_at; });
   Logger.log('✓ webhook daily_ledger：' + result + '（' + l.ledger_id + '）');
 }
@@ -3793,7 +3803,8 @@ function getActivityQuery(user, params) {
     range: range,
     count432: count432,
     count441: count441,
-    manualExpense: _sumManualExpenseInRange(range.from, range.to)
+    manualExpense: _sumManualExpenseInRange(range.from, range.to),
+    manualExpenseDays: _manualExpenseDaysInRange(range.from, range.to)
   };
 }
 
@@ -3803,14 +3814,27 @@ function getActivityQuery(user, params) {
  * 對「今天」的處理原則一致，只是這裡查的都是已經過去的日子，不用另外
  * 判斷「進行中 session」）加總開銷欄位。
  */
-function _sumManualExpenseInRange(from, to) {
+function _latestLedgerPerDayInRange(from, to) {
   const byDate = {};
   dbReadAll('DailyLedger').forEach(function (row) {
     const d = String(row.business_date);
     if (d < from || d > to) return;
     if (!byDate[d] || toNumber(row._row) > toNumber(byDate[d]._row)) byDate[d] = row;
   });
+  return byDate;
+}
+
+function _sumManualExpenseInRange(from, to) {
+  const byDate = _latestLedgerPerDayInRange(from, to);
   return Object.keys(byDate).reduce(function (sum, d) { return sum + toNumber(byDate[d].manual_expense); }, 0);
+}
+
+/** 每天的開銷明細（只列有開銷的日子，日期由舊到新）；沒有明細的舊資料顯示成一筆「開銷」。 */
+function _manualExpenseDaysInRange(from, to) {
+  const byDate = _latestLedgerPerDayInRange(from, to);
+  return Object.keys(byDate).sort().map(function (d) {
+    return { date: d, items: _ledgerItemsOrLegacy(byDate[d].manual_expense_items, byDate[d].manual_expense, '開銷') };
+  }).filter(function (day) { return day.items.length > 0; });
 }
 
 // ── 對帳表匯出（xlsx）───────────────────────────────────
@@ -4433,7 +4457,7 @@ function exportAllData(user) {
         updatedBy: r.updated_by || '', updatedAt: r.updated_at, bizId: r.biz_id || '',
         manual432: r.manual_432, manual441: r.manual_441,
         givenToOwnerItems: r.given_to_owner_items || '[]', takenByOwnerItems: r.taken_by_owner_items || '[]',
-        manualExpense: r.manual_expense
+        manualExpense: r.manual_expense, manualExpenseItems: r.manual_expense_items || '[]'
       };
     }),
     records: _allRecordsForExport().map(function (r) {
@@ -5697,6 +5721,33 @@ function _selfTestBody(results) {
     }, 'PERMISSION');
   });
 
+  _t(results, '每日手動帳目：開銷可以存好幾筆自訂名稱的明細，總額＝明細加總；沒帶明細的舊寫法照舊只存單一金額（顯示成一筆「開銷」）', function () {
+    const saved = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [],
+      manualExpenseItems: [{ name: '買飲料', amount: 200 }, { name: '', amount: 150 }, { name: '空的', amount: 0 }]
+    });
+    _assertEq(saved.manualExpense, 350, '開銷總額應該是明細加總 350');
+    _assertEq(saved.manualExpenseItems.length, 2, '金額 0 的那筆不存');
+    _assertEq(saved.manualExpenseItems[0].name, '買飲料', '自訂名稱要存下來');
+    _assertEq(saved.manualExpenseItems[1].name, '開銷', '名稱沒填就用預設名稱「開銷」');
+
+    const legacy = _ok({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [], manualExpense: 500
+    });
+    _assertEq(legacy.manualExpense, 500, '沒帶明細時照舊用單一金額');
+    _assertEq(legacy.manualExpenseItems.length, 1, '單一金額顯示成一筆');
+    _assertEq(legacy.manualExpenseItems[0].name, '開銷', '舊寫法的那一筆叫「開銷」');
+    _assertEq(legacy.manualExpenseItems[0].amount, 500, '金額一致');
+
+    _fails({
+      action: 'saveDailyLedger', token: patrolTok,
+      turnover: 0, manual432: 0, manual441: 0, givenToOwnerItems: [], takenByOwnerItems: [],
+      manualExpenseItems: [{ name: '負數', amount: -5 }]
+    });
+  });
+
   _t(results, '每日手動帳目：前端「設定今日數字」已經不收運拿／還內場這兩個舊欄位，不帶這兩個 key 也要能存成功（曾經因為 undefined 被當非法數字擋掉整個請求）', function () {
     const saved = _ok({
       action: 'saveDailyLedger', token: patrolTok,
@@ -5871,6 +5922,9 @@ function _selfTestBody(results) {
     _assertEq(inRange.count432, 5, '活動查詢只該算範圍內那天的432支數，outDate 那筆 99 不該算進來');
     _assertEq(inRange.count441, 7, '活動查詢只該算範圍內那天的441支數，outDate 那筆 99 不該算進來');
     _assertEq(inRange.manualExpense, 888, '活動查詢的開銷應該是那天存的 888');
+    _assertEq(inRange.manualExpenseDays.length, 1, '活動查詢逐日明細：只有 inDate 那天有開銷');
+    _assertEq(inRange.manualExpenseDays[0].date, inDate, '逐日明細的日期');
+    _assertEq(inRange.manualExpenseDays[0].items[0].amount, 888, '沒有明細的舊資料顯示成一筆 888');
 
     const boundedRange = _ok({ action: 'activityQuery', token: adminTok, from: outDate, to: inDate });
     _assertEq(boundedRange.count432, 5 + 99, '拉長區間把 outDate 也包進來後，432支數應該是兩天加總');

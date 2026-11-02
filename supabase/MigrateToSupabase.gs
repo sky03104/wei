@@ -139,7 +139,7 @@ function migrateToSupabase() {
       updated_at: l.updatedAt || new Date().toISOString(), biz_id: l.bizId || null,
       manual_432: _sbNum(l.manual432, 0), manual_441: _sbNum(l.manual441, 0),
       given_to_owner_items: _sbParseJson(l.givenToOwnerItems), taken_by_owner_items: _sbParseJson(l.takenByOwnerItems),
-      manual_expense: _sbNum(l.manualExpense, 0)
+      manual_expense: _sbNum(l.manualExpense, 0), manual_expense_items: _sbParseJson(l.manualExpenseItems)
     };
   }), 'ledger_id');
 
