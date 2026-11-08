@@ -190,7 +190,7 @@ const BACKEND = (window.APP_CONFIG && window.APP_CONFIG.BACKEND) || 'gas';
 
 /** 前端版本號，登入頁顯示用，方便確認手機上是不是最新版。
  *  跟 sw.js 的 CACHE_VERSION 手動保持一致——每次改前端兩個都要加。 */
-const APP_VERSION = 'v69';
+const APP_VERSION = 'v70';
 
 // ── 狀態 ────────────────────────────────────────────────
 
@@ -1254,11 +1254,12 @@ function _defaultRentName() {
 /**
  * 匯出前的「總額／前期／租金」視窗。回傳 Promise：
  *   沒勾總額按匯出 → { total: false }（照原本匯出，不加結算區）
- *   有勾總額按匯出 → { total: true, prev: {machineIds} | null, rent: {name, amount, machineIds} | null }
+ *   有勾總額按匯出 → { total: true, prev: {machineIds} | null, rent: {name, amount, machineIds} | null, summary: boolean }
+ *   summary：withSummary 為 true（匯出截圖）且勾了「加入週總額彙整表」，匯出時多一張各台總額的總表圖
  * machines：這次要匯出的骰台（_listCategoryMachines() 的結果），給租金勾選要扣哪幾台。
  *   取消／點外面／往下滑關掉 → null（不匯出）
  */
-function askSettlementOptions(kindLabel, machines) {
+function askSettlementOptions(kindLabel, machines, withSummary) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (val) => {
@@ -1271,6 +1272,7 @@ function askSettlementOptions(kindLabel, machines) {
     const totalBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
     const prevBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
     const rentBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
+    const summaryBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch' });
     const rentName = h('input', { type: 'text', value: _defaultRentName() });
     const rentAmt = h('input', { type: 'number', inputmode: 'numeric', min: '0', step: '1', placeholder: '例：4500' });
     const errorEl = h('p', { class: 'small', style: 'color:var(--danger);margin:0 0 8px', hidden: true });
@@ -1304,7 +1306,8 @@ function askSettlementOptions(kindLabel, machines) {
       toggleRow(prevBox, '加入前期', '勾要帶的機台，自動帶入該台上一期匯出時的總額'),
       prevFields,
       toggleRow(rentBox, '加入租金', '填一次名稱和金額，再勾要扣的機台'),
-      rentFields
+      rentFields,
+      withSummary ? toggleRow(summaryBox, '加入週總額彙整表', '多一張總表圖：每台機台的總額、小計，以及正的合計（出）、負的合計（收）') : null
     ]);
     totalBox.addEventListener('change', () => {
       totalOptions.hidden = !totalBox.checked;
@@ -1348,7 +1351,7 @@ function askSettlementOptions(kindLabel, machines) {
         }
         rent = { name: name, amount: Math.round(amount), machineIds: machineIds };
       }
-      finish({ total: true, prev: prev, rent: rent });
+      finish({ total: true, prev: prev, rent: rent, summary: !!(withSummary && summaryBox.checked) });
     };
 
     const backdrop = openDialog('匯出' + kindLabel, body, [
@@ -3997,6 +4000,100 @@ function drawLedgerGridCanvas(rangeLabel, m) {
   return canvas;
 }
 
+/**
+ * 週總額彙整表：每台骰台一列（編號、機台名稱、總額），最下面小計，
+ * 再分兩行寫「收」（負的合計）跟「出」（正的合計）。
+ * 總額 = 結算區那一列「總額」（本期＋前期－租金－入幣*5%），跟每台截圖右邊的總額同一個數字。
+ * 對照範例：A+1000 B-500 C+5000 D-3000 → 小計 +2500，收 3500，出 6000。
+ */
+function _summaryRowsFromGrids(machines) {
+  const rows = machines.map((m, i) => {
+    const totalRow = m.summaryRows[4] || [];
+    return { no: i + 1, name: m.machineName, total: Number(totalRow[totalRow.length - 1]) || 0 };
+  });
+  const sum = rows.reduce((a, r) => a + r.total, 0);
+  const pos = rows.filter((r) => r.total > 0).reduce((a, r) => a + r.total, 0);
+  const neg = rows.filter((r) => r.total < 0).reduce((a, r) => a + r.total, 0);
+  return { rows: rows, sum: sum, pay: pos, receive: -neg };
+}
+
+function drawSettlementSummaryCanvas(rangeLabel, machines) {
+  const scale = 2;
+  const font = 'system-ui, -apple-system, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif';
+  const colorBg = '#141926';
+  const colorBorder = '#263049';
+  const colorText = '#E8ECF5';
+  const colorMuted = '#8B96AD';
+  const colorNeg = '#F87171';
+  const colorPos = '#34D399';
+  const colorLabelBg = '#3A2230';
+
+  const data = _summaryRowsFromGrids(machines);
+  const padX = 16;
+  const rowH = 30;
+  const titleH = 36;
+  const dividerH = 5;
+  const widths = [56, 150, 130];
+  const colX = [padX];
+  widths.forEach((w) => colX.push(colX[colX.length - 1] + w));
+  const tableRight = colX[colX.length - 1];
+  const width = padX * 2 + widths.reduce((a, b) => a + b, 0);
+  const footerRows = 3; // 小計、收、出
+  const height = 12 + titleH + rowH /* 表頭 */ + data.rows.length * rowH + dividerH + footerRows * rowH + 12;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width * scale;
+  canvas.height = height * scale;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale, scale);
+  ctx.fillStyle = colorBg;
+  ctx.fillRect(0, 0, width, height);
+  ctx.textBaseline = 'middle';
+
+  let y = 12;
+  ctx.font = 'bold 16px ' + font;
+  ctx.fillStyle = colorText;
+  ctx.textAlign = 'left';
+  ctx.fillText('週總額彙整　' + rangeLabel, padX, y + titleH / 2);
+  y += titleH;
+
+  const signed = (n) => (n > 0 ? '+' : '') + money(n);
+  const drawRow = (cells, o) => {
+    o = o || {};
+    if (o.labelBg) {
+      ctx.fillStyle = colorLabelBg;
+      ctx.fillRect(colX[0], y, widths[0] + widths[1], rowH);
+    }
+    cells.forEach((cell, i) => {
+      ctx.font = (o.bold ? 'bold ' : '') + '13px ' + font;
+      let color = o.bold ? colorText : colorMuted;
+      if (i === 2 && typeof o.value === 'number') color = o.value < 0 ? colorNeg : (o.value > 0 ? colorPos : colorText);
+      ctx.fillStyle = color;
+      ctx.textAlign = 'center';
+      ctx.fillText(String(cell), colX[i] + widths[i] / 2, y + rowH / 2);
+    });
+    ctx.strokeStyle = colorBorder;
+    ctx.beginPath();
+    ctx.moveTo(padX, y + rowH - 0.5);
+    ctx.lineTo(tableRight, y + rowH - 0.5);
+    ctx.stroke();
+    y += rowH;
+  };
+
+  drawRow(['編號', '機台名稱', '總額'], { bold: true });
+  data.rows.forEach((r) => drawRow([r.no, r.name, signed(r.total)], { value: r.total }));
+
+  ctx.fillStyle = colorText;
+  ctx.fillRect(padX, y + 1, tableRight - padX, dividerH - 2);
+  y += dividerH;
+
+  drawRow(['', '小計', signed(data.sum)], { bold: true, labelBg: true, value: data.sum });
+  drawRow(['', '收（負的合計）', money(data.receive)], { bold: true, labelBg: true, value: data.receive ? -1 : 0 });
+  drawRow(['', '出（正的合計）', money(data.pay)], { bold: true, labelBg: true, value: data.pay ? 1 : 0 });
+
+  return canvas;
+}
+
 async function exportLedgerScreenshots(e) {
   const button = e && e.currentTarget; // await 之後 currentTarget 就變 null，先存起來
   const p = state.reportParams;
@@ -4004,7 +4101,7 @@ async function exportLedgerScreenshots(e) {
   if (_wantsSettlement(p)) {
     const machines = await run(() => _listCategoryMachines(supabaseClient(), p.category), { button: button, busyText: '讀取中…' });
     if (!machines) return;
-    settlement = await askSettlementOptions('截圖', machines);
+    settlement = await askSettlementOptions('截圖', machines, true);
     if (!settlement) return;
     if (!settlement.total) settlement = null; // 沒勾總額：照原本匯出
   }
@@ -4021,6 +4118,13 @@ async function exportLedgerScreenshots(e) {
       const blob = await _canvasToPngBlob(canvas);
       return (typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename };
     }));
+
+    // 勾了「加入週總額彙整表」：多一張總表圖，排在最前面（LINE 分享時第一張就是總表）
+    if (settlement && settlement.summary) {
+      const blob = await _canvasToPngBlob(drawSettlementSummaryCanvas(rangeLabel, data.machines));
+      const filename = '娃娃機週總額彙整_' + data.range.from + '_' + data.range.to + '.png';
+      files.unshift((typeof File !== 'undefined') ? new File([blob], filename, { type: 'image/png' }) : { blob: blob, filename: filename });
+    }
 
     // 分享面板／下載連結的取捨理由見 exportLedgerImage() 的說明——這裡
     // 一次可能有好幾個檔案，先試分享面板一次全部帶走（實測：iOS 原生
